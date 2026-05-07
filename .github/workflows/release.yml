@@ -39,10 +39,11 @@ jobs:
         with:
           name: spine-companion-${{ matrix.os }}
           path: |
-            release/*
-            !release/*.blockmap
-            !release/builder-debug.yml
-            !release/builder-effective-config.yaml
+            release/*.exe
+            release/*.AppImage
+            release/*.deb
+            release/*.dmg
+            release/*.zip
 
   publish:
     name: Publish GitHub Release
