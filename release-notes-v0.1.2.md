@@ -19,6 +19,10 @@
 - Let transparent empty window areas pass mouse events through to windows underneath.
 - Scale the companion mouse hit area dynamically so smaller models keep less empty drag margin.
 
+## Build Notes
+
+- Bun-based Electron/Vite build migration and macOS Apple Silicon release checks were proposed by Collaborator k1mlka luojunyuan.
+
 ## Windows Quick Start
 
 1. Download `spine-companion-0.1.2-windows-x64-portable.exe`.

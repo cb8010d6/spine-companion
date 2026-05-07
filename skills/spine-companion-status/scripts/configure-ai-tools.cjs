@@ -19,6 +19,7 @@ function hasFlag(name) {
 const repoRoot = path.resolve(argValue("--repo", process.cwd()));
 const target = argValue("--target", "all");
 const api = argValue("--api", "http://127.0.0.1:17388");
+const runtime = argValue("--runtime", process.env.SPINE_COMPANION_MCP_RUNTIME || "bun");
 const mcpServer = path.join(repoRoot, "scripts", "mcp-companion-server.mjs");
 
 if (!fs.existsSync(mcpServer)) {
@@ -55,10 +56,38 @@ function appendBlock(file, marker, block) {
 
 function mcpJsonEntry() {
   return {
-    command: "node",
+    command: runtime,
     args: [mcpServer.replace(/\\/g, "/")],
     env: { COMPANION_API: api }
   };
+}
+
+function codexMcpBlock() {
+  return `# Spine Companion local MCP bridge.
+[mcp_servers.spine_companion]
+command = "${runtime}"
+args = ["${mcpServer.replace(/\\/g, "/")}"]
+env = { COMPANION_API = "${api}" }`;
+}
+
+function upsertBlock(file, marker, block) {
+  ensureDir(path.dirname(file));
+  const current = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+  const start = current.indexOf(marker);
+  backup(file);
+  if (start === -1) {
+    fs.writeFileSync(file, `${current.trimEnd()}\n\n${block.trim()}\n`);
+    return "added";
+  }
+
+  const prefixStart = current.lastIndexOf("# Spine Companion local MCP bridge.", start);
+  const blockStart = prefixStart === -1 ? start : prefixStart;
+  const nextSection = current.slice(start + marker.length).search(/\n\[[^\]]+\]/);
+  const blockEnd = nextSection === -1
+    ? current.length
+    : start + marker.length + nextSection + 1;
+  fs.writeFileSync(file, `${current.slice(0, blockStart).trimEnd()}\n\n${block.trim()}\n\n${current.slice(blockEnd).trimStart()}`);
+  return "updated";
 }
 
 const policy = `<!-- spine-companion-status -->
@@ -82,21 +111,8 @@ function installCodex() {
   if (!fs.existsSync(configPath)) {
     console.log(`skip codex config, not found: ${configPath}`);
   } else {
-    const current = fs.readFileSync(configPath, "utf8");
-    if (!current.includes(marker)) {
-      backup(configPath);
-      const block = `
-# Spine Companion local MCP bridge.
-${marker}
-command = "node"
-args = ["${mcpServer.replace(/\\/g, "/")}"]
-env = { COMPANION_API = "${api}" }
-`;
-      fs.writeFileSync(configPath, `${current.trimEnd()}\n${block}`);
-      console.log(`configured Codex MCP: ${configPath}`);
-    } else {
-      console.log("Codex MCP already configured.");
-    }
+    const result = upsertBlock(configPath, marker, codexMcpBlock());
+    console.log(`${result} Codex MCP (${runtime}): ${configPath}`);
   }
   const agentsPath = path.join(os.homedir(), ".codex", "AGENTS.md");
   console.log(appendBlock(agentsPath, "spine-companion-status", policy) ? `updated ${agentsPath}` : "Codex AGENTS policy already exists.");
@@ -143,7 +159,7 @@ function installClaudeCli() {
   installClaudeCode();
   const payload = JSON.stringify({
     type: "stdio",
-    command: "node",
+    command: runtime,
     args: [mcpServer.replace(/\\/g, "/")],
     env: { COMPANION_API: api }
   });
@@ -167,7 +183,7 @@ const installers = {
 const defaultTargets = ["codex", "cursor", "claude-desktop", "claude-cli"];
 
 if (hasFlag("--help")) {
-  console.log("Usage: node scripts/configure-ai-tools.cjs --repo <spine-companion-repo> --target all|codex|codex-cli|cursor|claude-desktop|claude-code|claude-cli [--api http://127.0.0.1:17388]");
+  console.log("Usage: bun scripts/configure-ai-tools.cjs --repo <spine-companion-repo> --target all|codex|codex-cli|cursor|claude-desktop|claude-code|claude-cli [--api http://127.0.0.1:17388] [--runtime bun|node]");
   process.exit(0);
 }
 
