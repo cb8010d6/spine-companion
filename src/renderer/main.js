@@ -36,6 +36,7 @@ let currentUiSettings = {
 let currentBubbleAnchor = { x: 20, y: 28, scale: 1, side: "left" };
 let heldBubble = null;
 let bubbleHoldTimer = null;
+let completionToastTimer = null;
 let mousePassthrough = false;
 
 function applyUiSettings(settings = {}) {
@@ -104,6 +105,10 @@ function setMousePassthrough(enabled) {
 
 function updateMousePassthrough(event) {
   if (drag || !window.companion?.setMousePassthrough) {
+    setMousePassthrough(false);
+    return;
+  }
+  if (!completionToast.hidden) {
     setMousePassthrough(false);
     return;
   }
@@ -177,9 +182,15 @@ function updateCompletionToast(state) {
   if (key === lastCompletionKey) return;
   lastCompletionKey = key;
   completionToast.hidden = false;
+  setMousePassthrough(false);
+  window.clearTimeout(completionToastTimer);
   completionToast.dataset.state = id;
   completionTitle.textContent = id === "success" ? "Task complete" : "Task failed";
   completionMessage.textContent = String(state.message || (id === "success" ? "Finished successfully" : "Needs attention"));
+  completionToastTimer = window.setTimeout(() => {
+    completionToast.hidden = true;
+    setMousePassthrough(true);
+  }, 10000);
 }
 
 function wireDragging() {
@@ -309,6 +320,8 @@ async function boot() {
 
   completionToast.addEventListener("click", () => {
     completionToast.hidden = true;
+    window.clearTimeout(completionToastTimer);
+    setMousePassthrough(true);
   });
 }
 
