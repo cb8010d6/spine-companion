@@ -38,9 +38,9 @@ Local asset config is written to `companion.local.json`, which is ignored by git
 ### Run From Source
 
 ```bash
-npm install
-npm run setup:assets -- "C:\path\to\amiya_spine"
-npm run dev
+bun install
+bun run setup:assets -- "C:\path\to\amiya_spine"
+bun run dev
 ```
 
 For detailed deployment, startup, MCP, and troubleshooting steps, see
@@ -55,8 +55,8 @@ http://127.0.0.1:17389?api=http://127.0.0.1:17388
 For API-only browser preview without launching Electron:
 
 ```bash
-npm run dev:renderer
-npm run dev:api
+bun run dev:renderer
+bun run dev:api
 ```
 
 MVP means this is the smallest usable vertical slice: desktop shell, live Spine
@@ -83,7 +83,7 @@ State events are also available through:
 The MCP server lets Codex read and update the companion through the local API.
 
 ```bash
-npm run mcp:install:codex
+bun run mcp:install:codex
 ```
 
 This appends a `spine_companion` MCP server entry to `~/.codex/config.toml`.
@@ -101,8 +101,8 @@ The companion app or API must be running while Codex uses the MCP bridge.
 To install the reusable status reporting skill and configure common AI tools:
 
 ```bash
-npm run skill:install
-npm run ai:configure -- --target all
+bun run skill:install
+bun run ai:configure -- --target all
 ```
 
 Supported targets include Codex Desktop, Codex CLI, Cursor, Claude Desktop,
@@ -154,3 +154,17 @@ temporarily switches to `running` and mirrors the model left or right.
 - Keep local model paths in `companion.local.json` or environment variables.
 - Use `companion.config.example.json` as the public template.
 - Placeholder directories under `assets/` exist only to document placement.
+
+## macOS Release Signing
+
+GitHub Actions can build unsigned macOS artifacts, but Apple Silicon users may
+see Gatekeeper errors such as "damaged" or "cannot be opened". For public macOS
+downloads, configure these repository secrets so electron-builder can sign and
+notarize DMG/ZIP assets:
+
+- `MACOS_CERTIFICATE`
+- `MACOS_CERTIFICATE_PASSWORD`
+- `APPLE_API_KEY`
+- `APPLE_API_KEY_ID`
+- `APPLE_API_ISSUER`
+- `APPLE_TEAM_ID`

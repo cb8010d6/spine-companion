@@ -34,9 +34,9 @@
 ### 从源码运行
 
 ```bash
-npm install
-npm run setup:assets -- "C:\path\to\amiya_spine"
-npm run dev
+bun install
+bun run setup:assets -- "C:\path\to\amiya_spine"
+bun run dev
 ```
 
 详细部署、启动、MCP 和排错见 [docs/deployment.zh-CN.md](docs/deployment.zh-CN.md)。
@@ -65,7 +65,7 @@ curl -X POST http://127.0.0.1:17388/reminders -H "Content-Type: application/json
 ## Codex MCP 桥接
 
 ```bash
-npm run mcp:install:codex
+bun run mcp:install:codex
 ```
 
 这会把 `spine_companion` MCP server 写入 `~/.codex/config.toml`。安装后需要重启
@@ -82,8 +82,8 @@ Codex 或打开新会话。
 自动配置状态上报：
 
 ```bash
-npm run skill:install
-npm run ai:configure -- --target all
+bun run skill:install
+bun run ai:configure -- --target all
 ```
 
 其他 MCP 工具可以参考 [docs/ai-tools.zh-CN.md](docs/ai-tools.zh-CN.md)。
@@ -115,3 +115,16 @@ Windows 托盘菜单可以显示/隐藏状态面板、显示/隐藏工程进展�
 - 不要提交 `.skel`、`.atlas` 或贴图文件。
 - 本地模型路径放在 `companion.local.json` 或环境变量中。
 - 公共配置模板使用 `companion.config.example.json`。
+
+## macOS Release 签名
+
+GitHub Actions 可以构建未签名的 macOS 包，但 Apple Silicon 用户可能会遇到
+“已损坏”或“无法打开”的 Gatekeeper 提示。正式公开发布 macOS 包时，建议在
+GitHub 仓库 secrets 中配置以下值，让 electron-builder 自动签名和公证：
+
+- `MACOS_CERTIFICATE`
+- `MACOS_CERTIFICATE_PASSWORD`
+- `APPLE_API_KEY`
+- `APPLE_API_KEY_ID`
+- `APPLE_API_ISSUER`
+- `APPLE_TEAM_ID`

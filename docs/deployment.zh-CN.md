@@ -7,8 +7,7 @@
 
 ## 1. 环境要求
 
-- Node.js 20 或更新版本。
-- npm 10 或更新版本。
+- Bun 1.3 或更新版本。
 - 如果要贡献代码，需要 Git。
 - 一个本地 Spine 3.8 兼容模型目录，包含 `.skel`、`.atlas` 和贴图文件。
 
@@ -46,16 +45,16 @@ Release 版也会读取：
 ```bash
 git clone https://github.com/cb8010d6/spine-companion.git
 cd spine-companion
-npm install
-npm run setup:assets -- "C:\path\to\spine_model_folder"
-npm run dev
+bun install
+bun run setup:assets -- "C:\path\to\spine_model_folder"
+bun run dev
 ```
 
 浏览器预览：
 
 ```bash
-npm run dev:api
-npm run dev:renderer
+bun run dev:api
+bun run dev:renderer
 ```
 
 打开：
@@ -107,15 +106,15 @@ curl -X POST http://127.0.0.1:17388/reminders ^
 ## 5. Codex/MCP 桥接
 
 ```bash
-npm run mcp:install:codex
+bun run mcp:install:codex
 ```
 
 安装后需要重启 Codex 或打开新会话。MCP 本身不会自动推送状态，它只暴露工具；
 AI 客户端必须被指示主动调用工具。自动配置常见工具：
 
 ```bash
-npm run skill:install
-npm run ai:configure -- --target all
+bun run skill:install
+bun run ai:configure -- --target all
 ```
 
 ## 6. 构建与发布
@@ -123,22 +122,23 @@ npm run ai:configure -- --target all
 检查：
 
 ```bash
-npm run check
-npm run check:mcp
-npm run build
+bun run check
+bun run check:mcp
+bun run build
 ```
 
 本地 Windows 打包：
 
 ```bash
-npm run release:win
+bun run release:win
 ```
 
 macOS/Linux release 由 GitHub Actions 在对应 runner 上构建。
 
 ## 7. 排错
 
-- 模型缺失：重新运行 `npm run setup:assets -- "C:\path\to\spine_model_folder"`。
+- 模型缺失：重新运行 `bun run setup:assets -- "C:\path\to\spine_model_folder"`。
 - 端口冲突：设置 `COMPANION_PORT`，并同步更新 MCP 的 `COMPANION_API`。
 - Codex 看不到 MCP 工具：确认 `~/.codex/config.toml` 有 `[mcp_servers.spine_companion]`，然后重启 Codex。
+- macOS arm64 无法打开：GitHub Actions 生成的未签名 macOS 包可能被 Gatekeeper 拦截，Apple Silicon 上更常见。正式公开发布时，在 GitHub secrets 配置 `MACOS_CERTIFICATE`、`MACOS_CERTIFICATE_PASSWORD`、`APPLE_API_KEY`、`APPLE_API_KEY_ID`、`APPLE_API_ISSUER`、`APPLE_TEAM_ID`，让 release workflow 自动签名和公证。
 - 动画大小不一致：调整 `companion.config.json` 中的 `spine.scale`、`spine.framePadding`、`spine.stageBottomInset`、`spine.fitStates`、`spine.mixDurationMs`。

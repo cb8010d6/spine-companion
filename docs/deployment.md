@@ -7,8 +7,7 @@ assets, expose state APIs, and connect the optional Codex MCP bridge.
 
 ## 1. Requirements
 
-- Node.js 20 or newer.
-- npm 10 or newer.
+- Bun 1.3 or newer.
 - Git, if you want to clone or contribute.
 - A local Spine 3.8-compatible model folder containing `.skel`, `.atlas`, and
   texture files.
@@ -53,11 +52,15 @@ The release build also checks this per-user config path:
 ```bash
 git clone https://github.com/cb8010d6/spine-companion.git
 cd spine-companion
-npm install
+bun install
 ```
 
 If you are working from an unpacked source folder instead of GitHub, run the
-same `npm install` command in the project root.
+same command in the project root:
+
+```bash
+bun install
+```
 
 ## 4. Add Local Spine Assets
 
@@ -65,7 +68,7 @@ Copyrighted model assets are intentionally not included in the repository.
 Choose a local model folder that you have the right to use.
 
 ```bash
-npm run setup:assets -- "C:\path\to\spine_model_folder"
+bun run setup:assets -- "C:\path\to\spine_model_folder"
 ```
 
 The setup script validates that the folder contains a `.skel`, at least one
@@ -81,7 +84,7 @@ texture files.
 If the folder contains multiple `.skel` files, pass the skeleton filename:
 
 ```bash
-npm run setup:assets -- "C:\path\to\spine_model_folder" model.skel
+bun run setup:assets -- "C:\path\to\spine_model_folder" model.skel
 ```
 
 You can also skip `companion.local.json` and use environment variables:
@@ -89,7 +92,7 @@ You can also skip `companion.local.json` and use environment variables:
 ```bash
 set SPINE_ASSET_DIR=C:\path\to\spine_model_folder
 set SPINE_SKEL=model.skel
-npm run dev
+bun run dev
 ```
 
 On macOS or Linux:
@@ -97,7 +100,7 @@ On macOS or Linux:
 ```bash
 export SPINE_ASSET_DIR=/path/to/spine_model_folder
 export SPINE_SKEL=model.skel
-npm run dev
+bun run dev
 ```
 
 ## 5. Start The Desktop App
@@ -105,7 +108,7 @@ npm run dev
 For the current MVP source workflow:
 
 ```bash
-npm run dev
+bun run dev
 ```
 
 This starts:
@@ -123,8 +126,8 @@ Use this when you want to test the renderer in a browser without opening the
 desktop window:
 
 ```bash
-npm run dev:api
-npm run dev:renderer
+bun run dev:api
+bun run dev:renderer
 ```
 
 Open:
@@ -209,14 +212,14 @@ The MCP bridge lets Codex read and update the companion through the local API.
 Install the MCP entry into local Codex config:
 
 ```bash
-npm run mcp:install:codex
+bun run mcp:install:codex
 ```
 
 This appends the following shape to `~/.codex/config.toml`:
 
 ```toml
 [mcp_servers.spine_companion]
-command = "node"
+command = "bun"
 args = ["C:/path/to/spine-companion/scripts/mcp-companion-server.mjs"]
 env = { COMPANION_API = "http://127.0.0.1:17388" }
 ```
@@ -231,7 +234,7 @@ MCP tools:
 - `companion_reminder`
 - `companion_report_codex_phase`
 
-The desktop app or `npm run dev:api` must be running before the MCP tools can
+The desktop app or `bun run dev:api` must be running before the MCP tools can
 reach the companion.
 
 ## 9. Build And Checks
@@ -239,18 +242,18 @@ reach the companion.
 Run project checks:
 
 ```bash
-npm run check
-npm run check:mcp
-npm run build
+bun run check
+bun run check:mcp
+bun run build
 ```
 
-`npm run build` builds the renderer into `dist/`. Packaging an installer is not
+`bun run build` builds the renderer into `dist/`. Packaging an installer is not
 required for normal development.
 
 Create a Windows portable release artifact:
 
 ```bash
-npm run release:win
+bun run release:win
 ```
 
 The output is written to:
@@ -266,10 +269,10 @@ release/spine-companion-0.1.2-windows-x64-portable.exe
 Run:
 
 ```bash
-npm run setup:assets -- "C:\path\to\spine_model_folder"
+bun run setup:assets -- "C:\path\to\spine_model_folder"
 ```
 
-Then restart `npm run dev`.
+Then restart `bun run dev`.
 
 ### Port 17388 or 17389 is already in use
 
@@ -277,7 +280,7 @@ Change the API port:
 
 ```bash
 set COMPANION_PORT=17488
-npm run dev
+bun run dev
 ```
 
 If you change the API port, update browser preview URLs and the MCP config
@@ -287,6 +290,22 @@ If you change the API port, update browser preview URLs and the MCP config
 
 Confirm `~/.codex/config.toml` contains `[mcp_servers.spine_companion]`, then
 restart Codex or open a new session.
+
+### macOS arm64 app cannot be opened
+
+Unsigned macOS artifacts from GitHub Actions can be blocked by Gatekeeper,
+especially on Apple Silicon. For public macOS releases, configure repository
+secrets so the release workflow can sign and notarize:
+
+- `MACOS_CERTIFICATE`
+- `MACOS_CERTIFICATE_PASSWORD`
+- `APPLE_API_KEY`
+- `APPLE_API_KEY_ID`
+- `APPLE_API_ISSUER`
+- `APPLE_TEAM_ID`
+
+Without those secrets, users may need to remove quarantine manually or use a
+local development run instead of the release artifact.
 
 ### The model changes size between animations
 
@@ -306,4 +325,4 @@ Before pushing or publishing:
 - Confirm `companion.local.json` is not staged.
 - Confirm no `.skel`, `.atlas`, or texture files are staged.
 - Confirm `local-assets/`, `dist/`, `out/`, and `node_modules/` are not staged.
-- Run `npm run check`, `npm run check:mcp`, and `npm run build`.
+- Run `bun run check`, `bun run check:mcp`, and `bun run build`.

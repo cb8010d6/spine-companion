@@ -19,6 +19,10 @@
 - 透明空白窗口区域启用鼠标穿透，避免挡住下面的窗口。
 - 角色鼠标命中区域会随缩放动态调整，模型越小保留的空白拖动余量越少。
 
+## 构建说明
+
+- 本次使用 Bun 替代原构建链路，以及 macOS Apple Silicon release 检查，由 Collaborator k1mlka luojunyuan 提出。
+
 ## Windows 快速开始
 
 1. 下载 `spine-companion-0.1.2-windows-x64-portable.exe`。
