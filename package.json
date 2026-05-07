@@ -3,15 +3,19 @@
   "version": "0.1.1",
   "description": "Open-source desktop companion shell for local Spine 3.8 models.",
   "license": "MIT",
+  "author": {
+    "name": "Spine Companion contributors",
+    "email": "spine-companion@users.noreply.github.com"
+  },
   "main": "src/main/main.cjs",
   "scripts": {
     "dev": "concurrently -k \"vite --host 127.0.0.1 --port 17389\" \"wait-on http://127.0.0.1:17389 && electron .\"",
     "dev:renderer": "vite --host 127.0.0.1 --port 17389",
     "dev:api": "node scripts/dev-api.cjs",
     "build": "vite build",
-    "release:win": "npm run build && electron-builder --win portable --x64",
-    "release:linux": "npm run build && electron-builder --linux AppImage deb --x64",
-    "release:mac": "npm run build && electron-builder --mac dmg zip --x64 --arm64",
+    "release:win": "npm run build && electron-builder --win portable --x64 --publish never",
+    "release:linux": "npm run build && electron-builder --linux AppImage deb --x64 --publish never",
+    "release:mac": "npm run build && electron-builder --mac dmg zip --x64 --arm64 --publish never",
     "start": "node scripts/start-local.cjs",
     "start:electron": "electron .",
     "doctor": "node scripts/doctor.cjs",
