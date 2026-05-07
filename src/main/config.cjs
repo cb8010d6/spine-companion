@@ -52,6 +52,7 @@ const fallbackConfig = {
     mixDurationMs: 520,
     boundsSamples: 10,
     framePadding: 1.08,
+    maxViewportFill: 0.72,
     stageBottomInset: 154,
     fitStates: ["idle", "working", "running", "waiting", "reviewing", "success", "reminder"]
   },
@@ -62,7 +63,11 @@ const fallbackConfig = {
   },
   ui: {
     hudVisible: false,
-    bubbleVisible: true
+    bubbleVisible: true,
+    bubbleShadow: true,
+    bubbleBackground: "solid",
+    bubbleHoldMs: 8000,
+    dragMode: "compatible"
   },
   specialSegments: {
     review: { from: 2.6, to: 4.35, loop: true },
@@ -144,6 +149,7 @@ function getPublicConfig(config, serverOrigin) {
       mixDurationMs: config.spine.mixDurationMs,
       boundsSamples: config.spine.boundsSamples,
       framePadding: config.spine.framePadding,
+      maxViewportFill: config.spine.maxViewportFill,
       stageBottomInset: config.spine.stageBottomInset,
       fitStates: config.spine.fitStates
     },

@@ -22,5 +22,6 @@ contextBridge.exposeInMainWorld("companion", {
   },
   dragStart: (point) => ipcRenderer.send("companion:drag-start", point),
   dragMove: (point) => ipcRenderer.send("companion:drag-move", point),
-  dragEnd: () => ipcRenderer.send("companion:drag-end")
+  dragEnd: () => ipcRenderer.send("companion:drag-end"),
+  setMousePassthrough: (enabled) => ipcRenderer.send("companion:mouse-passthrough", Boolean(enabled))
 });

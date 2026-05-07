@@ -10,8 +10,18 @@ let mainWindow = null;
 let serverRuntime = null;
 let publicConfigCache = null;
 let dragState = null;
+let pendingDragPoint = null;
+let dragFrame = null;
 let tray = null;
-let uiSettings = { hudVisible: true, bubbleVisible: true };
+let mousePassthrough = false;
+let uiSettings = {
+  hudVisible: true,
+  bubbleVisible: true,
+  bubbleShadow: true,
+  bubbleBackground: "solid",
+  bubbleHoldMs: 8000,
+  dragMode: "compatible"
+};
 let alwaysOnTop = true;
 let isQuitting = false;
 
@@ -33,6 +43,22 @@ function setHudVisible(visible) {
 
 function setBubbleVisible(visible) {
   uiSettings = { ...uiSettings, bubbleVisible: Boolean(visible) };
+  updateUiSettings();
+}
+
+function setBubbleShadow(enabled) {
+  uiSettings = { ...uiSettings, bubbleShadow: Boolean(enabled) };
+  updateUiSettings();
+}
+
+function setBubbleBackground(background) {
+  const allowed = new Set(["solid", "soft", "clear", "light"]);
+  uiSettings = { ...uiSettings, bubbleBackground: allowed.has(background) ? background : "solid" };
+  updateUiSettings();
+}
+
+function setDragMode(mode) {
+  uiSettings = { ...uiSettings, dragMode: mode };
   updateUiSettings();
 }
 
@@ -101,10 +127,62 @@ function buildTrayMenu() {
       click: (item) => setBubbleVisible(item.checked)
     },
     {
+      label: "Bubble Shadow",
+      type: "checkbox",
+      checked: uiSettings.bubbleShadow !== false,
+      click: (item) => setBubbleShadow(item.checked)
+    },
+    {
+      label: "Bubble Background",
+      submenu: [
+        {
+          label: "Solid",
+          type: "radio",
+          checked: (uiSettings.bubbleBackground || "solid") === "solid",
+          click: () => setBubbleBackground("solid")
+        },
+        {
+          label: "Soft",
+          type: "radio",
+          checked: uiSettings.bubbleBackground === "soft",
+          click: () => setBubbleBackground("soft")
+        },
+        {
+          label: "Clear",
+          type: "radio",
+          checked: uiSettings.bubbleBackground === "clear",
+          click: () => setBubbleBackground("clear")
+        },
+        {
+          label: "Light",
+          type: "radio",
+          checked: uiSettings.bubbleBackground === "light",
+          click: () => setBubbleBackground("light")
+        }
+      ]
+    },
+    {
       label: "Always On Top",
       type: "checkbox",
       checked: alwaysOnTop,
       click: (item) => setAlwaysOnTop(item.checked)
+    },
+    {
+      label: "Drag Mode",
+      submenu: [
+        {
+          label: "Compatible",
+          type: "radio",
+          checked: (uiSettings.dragMode || "compatible") === "compatible",
+          click: () => setDragMode("compatible")
+        },
+        {
+          label: "Smooth",
+          type: "radio",
+          checked: uiSettings.dragMode === "smooth",
+          click: () => setDragMode("smooth")
+        }
+      ]
     },
     { type: "separator" },
     { label: "Zoom In", click: () => sendToRenderer("companion:scale", { delta: 0.08 }) },
@@ -184,35 +262,66 @@ function registerIpc(config) {
   ipcMain.on("companion:drag-start", (event, point) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win) return;
+    setMousePassthrough(false, win);
     dragState = {
       win,
       startX: Number(point.screenX),
       startY: Number(point.screenY),
       bounds: win.getBounds()
     };
+    pendingDragPoint = null;
   });
 
   ipcMain.on("companion:drag-move", (_event, point) => {
     if (!dragState) return;
-    const dx = Math.round(Number(point.screenX) - dragState.startX);
-    const dy = Math.round(Number(point.screenY) - dragState.startY);
-    dragState.win.setBounds({
-      ...dragState.bounds,
-      x: dragState.bounds.x + dx,
-      y: dragState.bounds.y + dy
-    });
+    pendingDragPoint = point;
+    if (dragFrame) return;
+    const dragFrameMs = uiSettings.dragMode === "smooth" ? 16 : 34;
+    dragFrame = setTimeout(() => {
+      dragFrame = null;
+      if (!dragState || !pendingDragPoint) return;
+      const dx = Math.round(Number(pendingDragPoint.screenX) - dragState.startX);
+      const dy = Math.round(Number(pendingDragPoint.screenY) - dragState.startY);
+      dragState.win.setPosition(dragState.bounds.x + dx, dragState.bounds.y + dy, false);
+    }, dragFrameMs);
   });
 
   ipcMain.on("companion:drag-end", () => {
+    if (dragFrame) {
+      clearTimeout(dragFrame);
+      dragFrame = null;
+    }
+    if (dragState && pendingDragPoint) {
+      const dx = Math.round(Number(pendingDragPoint.screenX) - dragState.startX);
+      const dy = Math.round(Number(pendingDragPoint.screenY) - dragState.startY);
+      dragState.win.setPosition(dragState.bounds.x + dx, dragState.bounds.y + dy, false);
+    }
     dragState = null;
+    pendingDragPoint = null;
   });
+
+  ipcMain.on("companion:mouse-passthrough", (event, enabled) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    setMousePassthrough(Boolean(enabled), win);
+  });
+}
+
+function setMousePassthrough(enabled, win = mainWindow) {
+  if (!win || win.isDestroyed() || dragState) return;
+  if (mousePassthrough === enabled) return;
+  mousePassthrough = enabled;
+  win.setIgnoreMouseEvents(enabled, { forward: true });
 }
 
 async function boot() {
   const config = loadConfig();
   uiSettings = {
     hudVisible: config.ui?.hudVisible !== false,
-    bubbleVisible: config.ui?.bubbleVisible !== false
+    bubbleVisible: config.ui?.bubbleVisible !== false,
+    bubbleShadow: config.ui?.bubbleShadow !== false,
+    bubbleBackground: config.ui?.bubbleBackground || "solid",
+    bubbleHoldMs: Number(config.ui?.bubbleHoldMs || 8000),
+    dragMode: config.ui?.dragMode || "compatible"
   };
   const origin = `http://${config.server.host}:${config.server.port}`;
   publicConfigCache = getPublicConfig(config, origin);

@@ -18,6 +18,16 @@ export class SpinePlayer {
     this.returnTimer = null;
     this.stableBounds = null;
     this.fitBounds = null;
+    this.screenScale = 1;
+    this.anchor = { x: 20, y: 28, scale: 1 };
+    this.anchorTarget = null;
+    this.dragMode = config.ui?.dragMode || "compatible";
+    this.dragActive = false;
+    this.minUserScale = 0.35;
+    this.maxUserScale = 1.55;
+    this.baseFitScale = null;
+    this.lastLayoutSize = { width: 0, height: 0 };
+    this.resizeTimer = null;
   }
 
   async init() {
@@ -33,7 +43,10 @@ export class SpinePlayer {
     this.app.stage.addChild(this.model);
 
     await this.loadSpine();
-    window.addEventListener("resize", () => this.layout());
+    window.addEventListener("resize", () => {
+      window.clearTimeout(this.resizeTimer);
+      this.resizeTimer = window.setTimeout(() => this.layout({ forceFitRecalc: true }), 90);
+    });
     this.stageElement.addEventListener("wheel", (event) => {
       event.preventDefault();
       this.adjustUserScale(event.deltaY > 0 ? -0.05 : 0.05);
@@ -75,12 +88,17 @@ export class SpinePlayer {
   }
 
   setUserScale(scale) {
-    this.userScale = scale;
+    const nextScale = Number(scale);
+    this.userScale = Number.isFinite(nextScale)
+      ? Math.min(this.maxUserScale, Math.max(this.minUserScale, nextScale))
+      : 1;
     this.layout();
   }
 
   adjustUserScale(delta) {
-    this.setUserScale(Math.min(1.7, Math.max(0.55, this.userScale + delta)));
+    const nextDelta = Number(delta);
+    if (!Number.isFinite(nextDelta)) return;
+    this.setUserScale(this.userScale + nextDelta);
   }
 
   resetUserScale() {
@@ -90,6 +108,21 @@ export class SpinePlayer {
   setHudVisible(visible) {
     this.hudVisible = Boolean(visible);
     this.layout();
+  }
+
+  setDragMode(mode) {
+    this.dragMode = mode === "smooth" ? "smooth" : "compatible";
+    this.applyTickerMode();
+  }
+
+  setDragActive(active) {
+    this.dragActive = Boolean(active);
+    this.applyTickerMode();
+  }
+
+  applyTickerMode() {
+    if (!this.app) return;
+    this.app.ticker.maxFPS = this.dragActive && this.dragMode !== "smooth" ? 30 : 0;
   }
 
   setDirection(direction) {
@@ -201,25 +234,101 @@ export class SpinePlayer {
     this.spine.y = -(bounds.y + bounds.height);
   }
 
-  layout() {
+  layout(options = {}) {
     if (!this.app || !this.spine) return;
 
-    const width = this.app.renderer.width / this.app.renderer.resolution;
-    const height = this.app.renderer.height / this.app.renderer.resolution;
+    const width = this.stageElement.clientWidth || this.app.renderer.width / this.app.renderer.resolution;
+    const height = this.stageElement.clientHeight || this.app.renderer.height / this.app.renderer.resolution;
+    if (width < 120 || height < 160) return;
     const fitBounds = this.fitBounds || this.stableBounds || this.spine.getLocalBounds();
+    const boundsWidth = Math.max(80, Number(fitBounds.width || 0));
+    const boundsHeight = Math.max(120, Number(fitBounds.height || 0));
     const padding = Math.max(1, Number(this.config.spine.framePadding || 1.12));
     const availableWidth = Math.max(1, width * 0.86);
     const bottomInset = this.hudVisible ? Number(this.config.spine.stageBottomInset || 0) : 0;
     const usableHeight = Math.max(1, height - bottomInset);
     const availableHeight = Math.max(1, usableHeight * 0.94);
-    const fitScale = Math.min(availableWidth / (fitBounds.width * padding), availableHeight / (fitBounds.height * padding));
+    const measuredFitScale = Math.min(availableWidth / (boundsWidth * padding), availableHeight / (boundsHeight * padding));
+    const sizeChanged = Math.abs(width - this.lastLayoutSize.width) > 8 || Math.abs(height - this.lastLayoutSize.height) > 8;
+    if (!this.baseFitScale || options.forceFitRecalc || sizeChanged) {
+      this.baseFitScale = measuredFitScale;
+      this.lastLayoutSize = { width, height };
+    }
+    const fitScale = Math.min(measuredFitScale, this.baseFitScale * 1.08);
     const configuredScale = Number(this.config.spine.scale || 1);
-    const scale = fitScale * configuredScale * this.userScale;
+    const rawScale = fitScale * configuredScale * this.userScale;
+    const fill = Math.max(0.45, Math.min(0.9, Number(this.config.spine.maxViewportFill || 0.72)));
+    const maxScaleByHeight = (height * fill) / boundsHeight;
+    const maxScaleByWidth = (width * 0.86) / boundsWidth;
+    const scale = Math.max(0.01, Math.min(rawScale, maxScaleByHeight, maxScaleByWidth));
     const mirror = this.direction === "left" ? -1 : 1;
 
+    this.screenScale = scale;
     this.model.scale.set(scale * mirror, scale);
     this.model.x = width / 2 + Number(this.config.spine.offsetX || 0);
     this.model.y = usableHeight * 0.96 + Number(this.config.spine.offsetY || 0);
+    this.updateAnchor(width, height);
+  }
+
+  updateAnchor(stageWidth, stageHeight) {
+    if (!this.spine || !this.stableBounds) return;
+    const bounds = this.stableBounds;
+    const side = this.direction === "left" ? 1 : -1;
+    const smallModel = this.userScale < 0.82;
+    const tinyModel = this.userScale < 0.68;
+    const horizontalFactor = tinyModel ? 0.72 : smallModel ? 0.58 : 0.38;
+    const verticalFactor = tinyModel ? 0.92 : smallModel ? 0.86 : 0.8;
+    const anchorScale = Math.max(0.74, Math.min(1.08, 0.82 + this.userScale * 0.14));
+    const x = this.model.x + side * bounds.width * this.screenScale * horizontalFactor;
+    const modelTop = this.model.y - bounds.height * this.screenScale;
+    const modelShoulder = this.model.y - bounds.height * this.screenScale * verticalFactor;
+    const minY = Math.max(10, modelTop + 8 * anchorScale);
+    const maxY = Math.max(minY, stageHeight - 86 * anchorScale);
+    const target = {
+      x: Math.max(12, Math.min(stageWidth - 48, x)),
+      y: Math.max(minY, Math.min(maxY, modelShoulder)),
+      scale: anchorScale,
+      side: this.direction === "left" ? "right" : "left"
+    };
+
+    const canSmooth = this.anchorTarget
+      && this.anchorTarget.side === target.side
+      && Math.abs(this.anchorTarget.scale - target.scale) < 0.015;
+    if (canSmooth) {
+      target.y = Math.max(target.y, this.anchorTarget.y - 22);
+    }
+    const mix = canSmooth ? 0.42 : 1;
+    this.anchor = {
+      x: this.anchor.x + (target.x - this.anchor.x) * mix,
+      y: this.anchor.y + (target.y - this.anchor.y) * mix,
+      scale: target.scale,
+      side: target.side
+    };
+    this.anchorTarget = target;
+    this.onAnchorChange?.(this.anchor);
+  }
+
+  getAnchor() {
+    return { ...this.anchor };
+  }
+
+  getInteractiveBounds() {
+    if (!this.model || !this.stableBounds) return null;
+    const width = this.stableBounds.width * this.screenScale;
+    const height = this.stableBounds.height * this.screenScale;
+    const zoomRange = Math.max(0.01, this.maxUserScale - this.minUserScale);
+    const zoomRatio = Math.max(0, Math.min(1, (this.userScale - this.minUserScale) / zoomRange));
+    const hitWidth = width * (0.62 + zoomRatio * 0.18);
+    const hitHeight = height * (0.72 + zoomRatio * 0.16);
+    const paddingX = Math.max(3, width * (0.012 + zoomRatio * 0.025));
+    const paddingTop = Math.max(2, height * (0.006 + zoomRatio * 0.018));
+    const paddingBottom = Math.max(8, height * (0.018 + zoomRatio * 0.028));
+    return {
+      left: this.model.x - hitWidth / 2 - paddingX,
+      right: this.model.x + hitWidth / 2 + paddingX,
+      top: this.model.y - hitHeight - paddingTop,
+      bottom: this.model.y + paddingBottom
+    };
   }
 
   destroy() {

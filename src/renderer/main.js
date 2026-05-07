@@ -12,6 +12,9 @@ const stateControls = document.getElementById("state-controls");
 const progressBubble = document.getElementById("progress-bubble");
 const bubbleTitle = document.getElementById("bubble-title");
 const bubbleMessage = document.getElementById("bubble-message");
+const completionToast = document.getElementById("completion-toast");
+const completionTitle = document.getElementById("completion-title");
+const completionMessage = document.getElementById("completion-message");
 const reminderForm = document.getElementById("reminder-form");
 const reminderText = document.getElementById("reminder-text");
 const reminderDelay = document.getElementById("reminder-delay");
@@ -21,14 +24,52 @@ let provider = null;
 let player = null;
 let drag = null;
 let currentState = { state: "idle", source: "system" };
-let currentUiSettings = { hudVisible: true, bubbleVisible: true };
+let lastCompletionKey = "";
+let currentUiSettings = {
+  hudVisible: true,
+  bubbleVisible: true,
+  bubbleShadow: true,
+  bubbleBackground: "solid",
+  bubbleHoldMs: 8000,
+  dragMode: "compatible"
+};
+let currentBubbleAnchor = { x: 20, y: 28, scale: 1, side: "left" };
+let heldBubble = null;
+let bubbleHoldTimer = null;
+let mousePassthrough = false;
 
 function applyUiSettings(settings = {}) {
   currentUiSettings = { ...currentUiSettings, ...settings };
   document.body.classList.toggle("hud-hidden", currentUiSettings.hudVisible === false);
   document.body.classList.toggle("bubble-hidden", currentUiSettings.bubbleVisible === false);
+  document.body.classList.toggle("bubble-no-shadow", currentUiSettings.bubbleShadow === false);
+  document.body.classList.toggle("dragging-compatible", currentUiSettings.dragMode !== "smooth");
+  document.body.dataset.bubbleBackground = currentUiSettings.bubbleBackground || "solid";
   player?.setHudVisible(currentUiSettings.hudVisible !== false);
+  player?.setDragMode(currentUiSettings.dragMode || "compatible");
   updateBubble(currentState);
+}
+
+function applyBubbleAnchor(anchor = currentBubbleAnchor) {
+  currentBubbleAnchor = { ...currentBubbleAnchor, ...anchor };
+  const scale = Number(currentBubbleAnchor.scale || 1);
+  const rect = progressBubble.getBoundingClientRect();
+  const naturalWidth = rect.width / scale || progressBubble.offsetWidth || 245;
+  const naturalHeight = rect.height / scale || progressBubble.offsetHeight || 72;
+  const visualWidth = naturalWidth * scale;
+  const visualHeight = naturalHeight * scale;
+  const inset = 8;
+  const rawX = currentBubbleAnchor.side === "right"
+    ? currentBubbleAnchor.x - visualWidth
+    : currentBubbleAnchor.x;
+  const maxX = Math.max(inset, window.innerWidth - visualWidth - inset);
+  const maxY = Math.max(inset, window.innerHeight - visualHeight - inset);
+  const x = Math.max(inset, Math.min(maxX, rawX));
+  const y = Math.max(inset, Math.min(maxY, currentBubbleAnchor.y));
+  progressBubble.style.left = `${Math.round(x)}px`;
+  progressBubble.style.top = `${Math.round(y)}px`;
+  progressBubble.style.setProperty("--bubble-scale", String(scale));
+  progressBubble.dataset.side = currentBubbleAnchor.side || "left";
 }
 
 function renderStateControls(sendState) {
@@ -41,6 +82,39 @@ function renderStateControls(sendState) {
     button.addEventListener("click", () => sendState({ state: item.id, source: "hud" }));
     stateControls.appendChild(button);
   }
+}
+
+function rectContains(rect, x, y) {
+  if (!rect) return false;
+  return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+}
+
+function elementContainsPoint(element, x, y) {
+  if (!element || element.hidden) return false;
+  const style = window.getComputedStyle(element);
+  if (style.display === "none" || style.visibility === "hidden" || style.pointerEvents === "none") return false;
+  return rectContains(element.getBoundingClientRect(), x, y);
+}
+
+function setMousePassthrough(enabled) {
+  if (!window.companion?.setMousePassthrough || mousePassthrough === enabled) return;
+  mousePassthrough = enabled;
+  window.companion.setMousePassthrough(enabled);
+}
+
+function updateMousePassthrough(event) {
+  if (drag || !window.companion?.setMousePassthrough) {
+    setMousePassthrough(false);
+    return;
+  }
+
+  const x = event.clientX;
+  const y = event.clientY;
+  const interactive = rectContains(player?.getInteractiveBounds?.(), x, y)
+    || elementContainsPoint(document.getElementById("hud"), x, y)
+    || elementContainsPoint(completionToast, x, y)
+    || elementContainsPoint(emptyState, x, y);
+  setMousePassthrough(!interactive);
 }
 
 function updateHud(state) {
@@ -56,13 +130,56 @@ function updateHud(state) {
 
 function updateBubble(state) {
   const id = state?.state || "idle";
-  const message = String(state?.message || "").trim();
-  const shouldShow = currentUiSettings.bubbleVisible !== false && message && id !== "idle";
+  const message = String(state?.message || defaultMessageForState(id, state?.source)).trim();
+  if (message && id !== "idle") {
+    heldBubble = { ...state, state: id, message };
+    window.clearTimeout(bubbleHoldTimer);
+    bubbleHoldTimer = window.setTimeout(() => {
+      heldBubble = null;
+      updateBubble(currentState);
+    }, Number(currentUiSettings.bubbleHoldMs || 8000));
+  }
+  const displayState = id === "idle" && heldBubble ? heldBubble : { ...state, state: id, message };
+  const displayId = displayState?.state || "idle";
+  const displayMessage = String(displayState?.message || "").trim();
+  const shouldShow = currentUiSettings.bubbleVisible !== false && displayMessage && displayId !== "idle";
   progressBubble.hidden = !shouldShow;
   if (!shouldShow) return;
-  bubbleTitle.textContent = state?.source === "codex-mcp" ? "Codex" : id[0].toUpperCase() + id.slice(1);
-  bubbleMessage.textContent = message;
-  progressBubble.dataset.state = id;
+  bubbleTitle.textContent = displayState?.source === "codex-mcp"
+    ? "Codex"
+    : displayId[0].toUpperCase() + displayId.slice(1);
+  bubbleMessage.textContent = displayMessage;
+  progressBubble.dataset.state = displayId;
+  applyBubbleAnchor(player?.getAnchor?.() || currentBubbleAnchor);
+  window.requestAnimationFrame(() => {
+    if (!progressBubble.hidden) applyBubbleAnchor(player?.getAnchor?.() || currentBubbleAnchor);
+  });
+}
+
+function defaultMessageForState(id, source) {
+  if (source !== "codex-mcp") return "";
+  const messages = {
+    working: "Working on it",
+    reviewing: "Reviewing changes",
+    running: "Running checks",
+    waiting: "Waiting",
+    success: "Task complete",
+    failed: "Task failed",
+    reminder: "Reminder"
+  };
+  return messages[id] || "";
+}
+
+function updateCompletionToast(state) {
+  const id = state?.state || "idle";
+  if (id !== "success" && id !== "failed") return;
+  const key = `${id}:${state.updatedAt || ""}`;
+  if (key === lastCompletionKey) return;
+  lastCompletionKey = key;
+  completionToast.hidden = false;
+  completionToast.dataset.state = id;
+  completionTitle.textContent = id === "success" ? "Task complete" : "Task failed";
+  completionMessage.textContent = String(state.message || (id === "success" ? "Finished successfully" : "Needs attention"));
 }
 
 function wireDragging() {
@@ -76,6 +193,8 @@ function wireDragging() {
       lastDirection: "",
       returnTo: currentState.state || "idle"
     };
+    document.body.classList.add("is-dragging");
+    player?.setDragActive(true);
     window.companion?.dragStart({ screenX: event.screenX, screenY: event.screenY });
     shell.setPointerCapture(event.pointerId);
   });
@@ -128,8 +247,16 @@ function wireDragging() {
       });
     }
     drag = null;
+    player?.setDragActive(false);
+    document.body.classList.remove("is-dragging");
     shell.releasePointerCapture(event.pointerId);
   });
+}
+
+function wireMousePassthrough() {
+  window.addEventListener("mousemove", updateMousePassthrough);
+  window.addEventListener("mouseenter", updateMousePassthrough);
+  window.addEventListener("mouseleave", () => setMousePassthrough(true));
 }
 
 async function boot() {
@@ -138,11 +265,18 @@ async function boot() {
   provider = createStateProvider(config);
   renderStateControls((state) => provider.setState(state));
   wireDragging();
+  wireMousePassthrough();
 
   try {
     player = new SpinePlayer(stage, config);
     await player.init();
     player.onAutoReturn = (state) => provider.setState({ state, source: "renderer" });
+    player.onAnchorChange = (anchor) => {
+      applyBubbleAnchor(anchor);
+      updateBubble(currentState);
+    };
+    applyBubbleAnchor(player.getAnchor());
+    setMousePassthrough(true);
   } catch (error) {
     emptyState.hidden = false;
     emptyState.querySelector("span").textContent = error.message;
@@ -151,6 +285,7 @@ async function boot() {
   await provider.start((state) => {
     updateHud(state);
     updateBubble(state);
+    updateCompletionToast(state);
     player?.applyState(state);
   });
 
@@ -170,6 +305,10 @@ async function boot() {
       inSeconds: Number(reminderDelay.value || 10)
     });
     reminderText.value = "";
+  });
+
+  completionToast.addEventListener("click", () => {
+    completionToast.hidden = true;
   });
 }
 

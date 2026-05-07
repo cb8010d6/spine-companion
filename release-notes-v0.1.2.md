@@ -10,6 +10,14 @@
 - Create the tray before the window is shown and set the Windows AppUserModelId.
 - Add a Codex-style progress bubble next to the model for state messages.
 - Add a tray toggle for the progress bubble.
+- Clamp model layout scale to prevent occasional oversized unrecoverable renders.
+- Keep recent progress visible briefly even when the state returns to idle.
+- Stabilize progress bubble anchoring so message height and small model scales do not push it too far upward.
+- Add task completion notifications that dismiss on click.
+- Add tray toggles for bubble shadow, background style, and drag mode.
+- Add a light progress bubble theme with a white background and dark text.
+- Let transparent empty window areas pass mouse events through to windows underneath.
+- Scale the companion mouse hit area dynamically so smaller models keep less empty drag margin.
 
 ## Windows Quick Start
 
