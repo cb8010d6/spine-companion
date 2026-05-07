@@ -20,9 +20,15 @@ function localConfigCandidates() {
   const candidates = [
     localConfigPath,
     path.join(process.cwd(), "companion.local.json"),
+    process.env.PORTABLE_EXECUTABLE_FILE
+      ? path.join(path.dirname(process.env.PORTABLE_EXECUTABLE_FILE), "companion.local.json")
+      : "",
+    process.env.PORTABLE_EXECUTABLE_DIR
+      ? path.join(process.env.PORTABLE_EXECUTABLE_DIR, "companion.local.json")
+      : "",
     path.join(path.dirname(process.execPath), "companion.local.json"),
     path.join(userConfigDir(), "companion.local.json")
-  ];
+  ].filter(Boolean);
   return [...new Set(candidates.map((file) => path.normalize(file)))];
 }
 
@@ -53,6 +59,9 @@ const fallbackConfig = {
     initial: "idle",
     pollMs: 1000,
     sources: [{ type: "local-http" }]
+  },
+  ui: {
+    hudVisible: true
   },
   specialSegments: {
     review: { from: 2.6, to: 4.35, loop: true },
@@ -137,6 +146,7 @@ function getPublicConfig(config, serverOrigin) {
       stageBottomInset: config.spine.stageBottomInset,
       fitStates: config.spine.fitStates
     },
+    ui: config.ui,
     state: config.state,
     specialSegments: config.specialSegments
   };

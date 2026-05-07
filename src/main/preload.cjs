@@ -10,6 +10,16 @@ contextBridge.exposeInMainWorld("companion", {
     ipcRenderer.on("companion:state", handler);
     return () => ipcRenderer.off("companion:state", handler);
   },
+  onUi: (callback) => {
+    const handler = (_event, settings) => callback(settings);
+    ipcRenderer.on("companion:ui", handler);
+    return () => ipcRenderer.off("companion:ui", handler);
+  },
+  onScale: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on("companion:scale", handler);
+    return () => ipcRenderer.off("companion:scale", handler);
+  },
   dragStart: (point) => ipcRenderer.send("companion:drag-start", point),
   dragMove: (point) => ipcRenderer.send("companion:drag-move", point),
   dragEnd: () => ipcRenderer.send("companion:drag-end")
