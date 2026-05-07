@@ -5,6 +5,27 @@ const rootDir = path.resolve(__dirname, "..", "..");
 const committedConfigPath = path.join(rootDir, "companion.config.json");
 const localConfigPath = path.join(rootDir, "companion.local.json");
 
+function userConfigDir() {
+  if (process.env.SPINE_COMPANION_CONFIG_DIR) return process.env.SPINE_COMPANION_CONFIG_DIR;
+  if (process.platform === "win32" && process.env.APPDATA) return path.join(process.env.APPDATA, "spine-companion");
+  if (process.platform === "darwin" && process.env.HOME) {
+    return path.join(process.env.HOME, "Library", "Application Support", "spine-companion");
+  }
+  if (process.env.XDG_CONFIG_HOME) return path.join(process.env.XDG_CONFIG_HOME, "spine-companion");
+  if (process.env.HOME) return path.join(process.env.HOME, ".config", "spine-companion");
+  return rootDir;
+}
+
+function localConfigCandidates() {
+  const candidates = [
+    localConfigPath,
+    path.join(process.cwd(), "companion.local.json"),
+    path.join(path.dirname(process.execPath), "companion.local.json"),
+    path.join(userConfigDir(), "companion.local.json")
+  ];
+  return [...new Set(candidates.map((file) => path.normalize(file)))];
+}
+
 const fallbackConfig = {
   window: {
     width: 360,
@@ -70,7 +91,12 @@ function resolveMaybeRelative(value) {
 
 function loadConfig() {
   let config = mergeDeep(fallbackConfig, readJsonIfExists(committedConfigPath));
-  config = mergeDeep(config, readJsonIfExists(localConfigPath));
+  let resolvedLocalConfigPath = "";
+  for (const candidate of localConfigCandidates()) {
+    if (!fs.existsSync(candidate)) continue;
+    config = mergeDeep(config, readJsonIfExists(candidate));
+    resolvedLocalConfigPath = candidate;
+  }
 
   if (process.env.SPINE_ASSET_DIR) {
     config.spine.assetDir = process.env.SPINE_ASSET_DIR;
@@ -83,8 +109,9 @@ function loadConfig() {
   }
 
   config.rootDir = rootDir;
+  config.localConfigPath = resolvedLocalConfigPath || localConfigCandidates()[0];
   config.spine.assetDir = resolveMaybeRelative(config.spine.assetDir);
-  config.hasLocalConfig = fs.existsSync(localConfigPath);
+  config.hasLocalConfig = Boolean(resolvedLocalConfigPath);
   return config;
 }
 
@@ -119,5 +146,6 @@ module.exports = {
   loadConfig,
   getPublicConfig,
   rootDir,
-  localConfigPath
+  localConfigPath,
+  localConfigCandidates
 };

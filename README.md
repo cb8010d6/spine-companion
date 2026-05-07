@@ -16,6 +16,25 @@ Local asset config is written to `companion.local.json`, which is ignored by git
 
 ## Quick Start
 
+### Use A Release Build
+
+1. Download `spine-companion-0.1.0-windows-x64-portable.exe` from the latest
+   GitHub Release.
+2. Put `companion.local.json` next to the exe:
+
+```json
+{
+  "spine": {
+    "assetDir": "C:\\path\\to\\spine_model_folder",
+    "skel": "model.skel"
+  }
+}
+```
+
+3. Double-click the exe.
+
+### Run From Source
+
 ```bash
 npm install
 npm run setup:assets -- "C:\path\to\amiya_spine"

@@ -1,0 +1,26 @@
+appId: dev.spine-companion.desktop
+productName: Spine Companion
+artifactName: spine-companion-${version}-${os}-${arch}.${ext}
+directories:
+  output: release
+files:
+  - dist/**
+  - src/main/**
+  - src/shared/**
+  - companion.config.json
+  - package.json
+  - LICENSE
+extraResources:
+  - from: companion.local.example.json
+    to: companion.local.example.json
+  - from: assets/README.md
+    to: ASSET_POLICY.txt
+asar: true
+win:
+  target:
+    - target: portable
+      arch:
+        - x64
+  signAndEditExecutable: false
+portable:
+  artifactName: spine-companion-${version}-windows-x64-portable.${ext}

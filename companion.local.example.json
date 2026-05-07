@@ -1,0 +1,6 @@
+{
+  "spine": {
+    "assetDir": "C:\\path\\to\\spine_model_folder",
+    "skel": "model.skel"
+  }
+}

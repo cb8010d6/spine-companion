@@ -17,7 +17,36 @@ The app has been verified with:
 - `pixi-spine@3.1.2`
 - Spine 3.8 `.skel/.atlas/.png` assets
 
-## 2. Clone And Install
+## 2. Easiest Windows Release Startup
+
+Use this path if you only want to run the app.
+
+1. Download `spine-companion-0.1.0-windows-x64-portable.exe` from the GitHub
+   Release page.
+2. Create a file named `companion.local.json` in the same folder as the exe.
+3. Put this in the file and edit the two paths:
+
+```json
+{
+  "spine": {
+    "assetDir": "C:\\path\\to\\spine_model_folder",
+    "skel": "model.skel"
+  }
+}
+```
+
+4. Double-click the exe.
+
+The app does not ship copyrighted Spine model assets. Your `assetDir` must point
+to a local folder containing `.skel`, `.atlas`, and texture files.
+
+The release build also checks this per-user config path:
+
+```text
+%APPDATA%\spine-companion\companion.local.json
+```
+
+## 3. Clone And Install
 
 ```bash
 git clone https://github.com/cb8010d6/spine-companion.git
@@ -28,7 +57,7 @@ npm install
 If you are working from an unpacked source folder instead of GitHub, run the
 same `npm install` command in the project root.
 
-## 3. Add Local Spine Assets
+## 4. Add Local Spine Assets
 
 Copyrighted model assets are intentionally not included in the repository.
 Choose a local model folder that you have the right to use.
@@ -69,7 +98,7 @@ export SPINE_SKEL=model.skel
 npm run dev
 ```
 
-## 4. Start The Desktop App
+## 5. Start The Desktop App
 
 For the current MVP source workflow:
 
@@ -86,7 +115,7 @@ This starts:
 The window is frameless, transparent, always-on-top, draggable, and supports
 wheel scaling over the model stage.
 
-## 5. Browser Preview Mode
+## 6. Browser Preview Mode
 
 Use this when you want to test the renderer in a browser without opening the
 desktop window:
@@ -104,7 +133,7 @@ http://127.0.0.1:17389?api=http://127.0.0.1:17388
 
 The browser preview uses the same local HTTP state API as external integrations.
 
-## 6. State API
+## 7. State API
 
 The local API listens on:
 
@@ -171,7 +200,7 @@ Event streams:
 - SSE: `GET /events`
 - WebSocket: `ws://127.0.0.1:17388/ws`
 
-## 7. Codex MCP Bridge
+## 8. Codex MCP Bridge
 
 The MCP bridge lets Codex read and update the companion through the local API.
 
@@ -203,7 +232,7 @@ MCP tools:
 The desktop app or `npm run dev:api` must be running before the MCP tools can
 reach the companion.
 
-## 8. Build And Checks
+## 9. Build And Checks
 
 Run project checks:
 
@@ -214,9 +243,21 @@ npm run build
 ```
 
 `npm run build` builds the renderer into `dist/`. Packaging an installer is not
-yet configured in this MVP. The runtime path for day-to-day use is `npm run dev`.
+required for normal development.
 
-## 9. Troubleshooting
+Create a Windows portable release artifact:
+
+```bash
+npm run release:win
+```
+
+The output is written to:
+
+```text
+release/spine-companion-0.1.0-windows-x64-portable.exe
+```
+
+## 10. Troubleshooting
 
 ### The app says the Spine asset is missing
 
@@ -256,7 +297,7 @@ these values in `companion.config.json`:
 - `spine.fitStates`
 - `spine.mixDurationMs`
 
-## 10. Open-Source Safety Checklist
+## 11. Open-Source Safety Checklist
 
 Before pushing or publishing:
 

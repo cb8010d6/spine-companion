@@ -9,7 +9,10 @@
     "dev:renderer": "vite --host 127.0.0.1 --port 17389",
     "dev:api": "node scripts/dev-api.cjs",
     "build": "vite build",
-    "start": "electron .",
+    "release:win": "npm run build && electron-builder --win portable --x64",
+    "start": "node scripts/start-local.cjs",
+    "start:electron": "electron .",
+    "doctor": "node scripts/doctor.cjs",
     "setup:assets": "node scripts/setup-local-assets.cjs",
     "capture:preview": "electron scripts/capture-preview.cjs",
     "mcp:server": "node scripts/mcp-companion-server.mjs",
@@ -27,6 +30,7 @@
   "devDependencies": {
     "concurrently": "9.1.2",
     "electron": "35.1.5",
+    "electron-builder": "^26.0.12",
     "vite": "6.2.4",
     "wait-on": "8.0.3"
   }
