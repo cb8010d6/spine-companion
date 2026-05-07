@@ -1,0 +1,33 @@
+{
+  "name": "spine-companion",
+  "version": "0.1.0",
+  "description": "Open-source desktop companion shell for local Spine 3.8 models.",
+  "license": "MIT",
+  "main": "src/main/main.cjs",
+  "scripts": {
+    "dev": "concurrently -k \"vite --host 127.0.0.1 --port 17389\" \"wait-on http://127.0.0.1:17389 && electron .\"",
+    "dev:renderer": "vite --host 127.0.0.1 --port 17389",
+    "dev:api": "node scripts/dev-api.cjs",
+    "build": "vite build",
+    "start": "electron .",
+    "setup:assets": "node scripts/setup-local-assets.cjs",
+    "capture:preview": "electron scripts/capture-preview.cjs",
+    "mcp:server": "node scripts/mcp-companion-server.mjs",
+    "mcp:install:codex": "node scripts/install-codex-mcp.cjs",
+    "check:mcp": "node scripts/check-mcp-bridge.mjs",
+    "check": "node scripts/check-project.cjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "pixi-spine": "3.1.2",
+    "pixi.js": "6.5.10",
+    "ws": "8.18.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "concurrently": "9.1.2",
+    "electron": "35.1.5",
+    "vite": "6.2.4",
+    "wait-on": "8.0.3"
+  }
+}

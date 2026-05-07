@@ -1,0 +1,14 @@
+node_modules/
+dist/
+release/
+out/
+*.log
+
+# Local runtime configuration and proprietary test assets.
+companion.local.json
+local-assets/
+assets/**/*.atlas
+assets/**/*.png
+assets/**/*.skel
+!assets/README.md
+!assets/spine/.gitkeep

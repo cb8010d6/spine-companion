@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Spine Companion</title>
+  </head>
+  <body>
+    <div id="app">
+      <main id="stage-shell" data-testid="stage-shell">
+        <section id="stage" aria-label="Spine companion stage"></section>
+        <section id="hud" class="hud">
+          <div class="status-row">
+            <span id="state-dot" class="state-dot"></span>
+            <span id="state-label">loading</span>
+            <span id="source-label">system</span>
+          </div>
+          <div id="state-controls" class="state-controls" aria-label="State controls"></div>
+          <form id="reminder-form" class="reminder-form">
+            <input id="reminder-text" aria-label="Reminder text" placeholder="Reminder" autocomplete="off" />
+            <input id="reminder-delay" aria-label="Reminder delay seconds" type="number" min="1" value="10" />
+            <button type="submit">Set</button>
+          </form>
+        </section>
+        <div id="empty-state" class="empty-state" hidden>
+          <strong>Missing Spine asset</strong>
+          <span>Run npm run setup:assets -- &lt;spine-folder&gt;</span>
+        </div>
+      </main>
+    </div>
+    <script type="module" src="/src/renderer/main.js"></script>
+  </body>
+</html>

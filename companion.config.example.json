@@ -1,0 +1,50 @@
+{
+  "window": {
+    "width": 360,
+    "height": 460,
+    "alwaysOnTop": true,
+    "transparent": true
+  },
+  "server": {
+    "host": "127.0.0.1",
+    "port": 17388
+  },
+  "spine": {
+    "assetDir": "C:\\path\\to\\amiya_spine",
+    "skel": "amiya.skel",
+    "scale": 0.86,
+    "offsetX": 0,
+    "offsetY": -18,
+    "mixDurationMs": 520,
+    "boundsSamples": 10,
+    "framePadding": 1.08,
+    "stageBottomInset": 154,
+    "fitStates": ["idle", "working", "running", "waiting", "reviewing", "success", "reminder"]
+  },
+  "state": {
+    "initial": "idle",
+    "pollMs": 1000,
+    "sources": [
+      {
+        "type": "local-http"
+      }
+    ]
+  },
+  "specialSegments": {
+    "review": {
+      "from": 2.6,
+      "to": 4.35,
+      "loop": true
+    },
+    "success": {
+      "from": 4.4,
+      "to": 7.2,
+      "loop": false
+    },
+    "special": {
+      "from": 0,
+      "to": 14.433,
+      "loop": true
+    }
+  }
+}

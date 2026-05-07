@@ -1,0 +1,137 @@
+class IpcStateProvider {
+  constructor() {
+    this.unsubscribe = null;
+  }
+
+  async start(onState) {
+    if (!window.companion) throw new Error("Electron companion bridge is not available.");
+    this.unsubscribe = window.companion.onState(onState);
+    onState(await window.companion.getState());
+  }
+
+  stop() {
+    if (this.unsubscribe) this.unsubscribe();
+  }
+
+  setState(state) {
+    return window.companion.setState(state);
+  }
+
+  createReminder(reminder) {
+    return window.companion.createReminder(reminder);
+  }
+}
+
+class HttpStateProvider {
+  constructor(baseUrl, pollMs = 1000) {
+    this.baseUrl = baseUrl.replace(/\/$/, "");
+    this.pollMs = pollMs;
+    this.timer = null;
+  }
+
+  async start(onState) {
+    const poll = async () => {
+      const response = await fetch(`${this.baseUrl}/state`, { cache: "no-store" });
+      if (response.ok) onState(await response.json());
+    };
+    await poll();
+    this.timer = setInterval(() => {
+      poll().catch(() => {});
+    }, this.pollMs);
+  }
+
+  stop() {
+    if (this.timer) clearInterval(this.timer);
+  }
+
+  async setState(state) {
+    const response = await fetch(`${this.baseUrl}/state`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(state)
+    });
+    return response.json();
+  }
+
+  async createReminder(reminder) {
+    const response = await fetch(`${this.baseUrl}/reminders`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(reminder)
+    });
+    return response.json();
+  }
+}
+
+class JsonStateProvider {
+  constructor(url, pollMs = 1000) {
+    this.url = url;
+    this.pollMs = pollMs;
+    this.timer = null;
+  }
+
+  async start(onState) {
+    const poll = async () => {
+      const response = await fetch(this.url, { cache: "no-store" });
+      if (response.ok) onState(await response.json());
+    };
+    await poll();
+    this.timer = setInterval(() => {
+      poll().catch(() => {});
+    }, this.pollMs);
+  }
+
+  stop() {
+    if (this.timer) clearInterval(this.timer);
+  }
+}
+
+class WebSocketStateProvider {
+  constructor(url) {
+    this.url = url;
+    this.socket = null;
+  }
+
+  start(onState) {
+    this.socket = new WebSocket(this.url);
+    this.socket.addEventListener("message", (event) => {
+      const parsed = JSON.parse(event.data);
+      onState(parsed.payload || parsed);
+    });
+  }
+
+  stop() {
+    if (this.socket) this.socket.close();
+  }
+
+  setState(state) {
+    if (this.socket?.readyState === WebSocket.OPEN) {
+      this.socket.send(JSON.stringify({ type: "state", payload: state }));
+    }
+  }
+}
+
+export function createStateProvider(config) {
+  const search = new URLSearchParams(location.search);
+  const providerType = search.get("provider") || (window.companion ? "ipc" : "local-http");
+  const pollMs = Number(config.state?.pollMs || 1000);
+
+  if (providerType === "ipc") return new IpcStateProvider();
+  if (providerType === "json") return new JsonStateProvider(search.get("source") || "state.json", pollMs);
+  if (providerType === "websocket") {
+    return new WebSocketStateProvider(search.get("ws") || config.server.websocketUrl);
+  }
+
+  const api = search.get("api") || config.server.origin;
+  return new HttpStateProvider(api, pollMs);
+}
+
+export async function loadRuntimeConfig() {
+  if (window.companion) return window.companion.getConfig();
+
+  const search = new URLSearchParams(location.search);
+  const api = (search.get("api") || "http://127.0.0.1:17388").replace(/\/$/, "");
+  const response = await fetch(`${api}/config`, { cache: "no-store" });
+  if (!response.ok) throw new Error(`Unable to load companion config from ${api}.`);
+  return response.json();
+}
