@@ -1,10 +1,12 @@
 # Spine Companion
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 Open-source desktop companion MVP for Spine 3.8 models. It uses Electron,
 `pixi.js@6.5.10`, and `pixi-spine@3.1.2` to render `.skel/.atlas/.png` directly
 with transparent background, always-on-top window behavior, dragging, scaling,
-click interaction, state transitions, a local status API, MCP bridge, and simple
-reminders.
+click interaction, state transitions, a local status API, MCP bridge, tray
+controls, and simple reminders.
 
 ## Asset Policy
 
@@ -18,7 +20,7 @@ Local asset config is written to `companion.local.json`, which is ignored by git
 
 ### Use A Release Build
 
-1. Download `spine-companion-0.1.0-windows-x64-portable.exe` from the latest
+1. Download `spine-companion-0.1.1-windows-x64-portable.exe` from the latest
    GitHub Release.
 2. Put `companion.local.json` next to the exe:
 
@@ -96,6 +98,17 @@ Available MCP tools:
 
 The companion app or API must be running while Codex uses the MCP bridge.
 
+To install the reusable status reporting skill and configure common AI tools:
+
+```bash
+npm run skill:install
+npm run ai:configure -- --target all
+```
+
+Supported targets include Codex Desktop, Codex CLI, Cursor, Claude Desktop,
+Claude Code, and Claude CLI. Unsupported MCP tools can copy the JSON snippets in
+[docs/ai-tools.md](docs/ai-tools.md).
+
 ## States And Animations
 
 | State | Spine animation |
@@ -127,6 +140,13 @@ The renderer supports these state sources:
 
 See [docs/architecture.md](docs/architecture.md) for the intended MCP bridge
 shape.
+
+## Desktop Controls
+
+The Windows tray menu can show or hide the status panel, toggle always-on-top,
+zoom the model, reset size, switch states, and quit. Dragging the transparent
+stage moves the window; horizontal dragging temporarily switches to `running`
+and mirrors the model left or right.
 
 ## Open-Source Notes
 

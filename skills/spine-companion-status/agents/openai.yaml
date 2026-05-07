@@ -1,0 +1,3 @@
+display_name: Spine Companion Status
+short_description: Configure AI tools for companion state reporting.
+default_prompt: Configure this AI tool to report work phases to my local Spine Companion via MCP.

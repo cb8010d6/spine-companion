@@ -17,6 +17,13 @@ const emptyState = document.getElementById("empty-state");
 let provider = null;
 let player = null;
 let drag = null;
+let currentState = { state: "idle", source: "system" };
+let lastDragRunAt = 0;
+
+function applyUiSettings(settings = {}) {
+  document.body.classList.toggle("hud-hidden", settings.hudVisible === false);
+  player?.setHudVisible(settings.hudVisible !== false);
+}
 
 function renderStateControls(sendState) {
   stateControls.innerHTML = "";
@@ -32,6 +39,7 @@ function renderStateControls(sendState) {
 
 function updateHud(state) {
   const id = state.state || "idle";
+  currentState = state;
   stateLabel.textContent = id;
   sourceLabel.textContent = state.source || "local";
   stateDot.dataset.state = id;
@@ -46,7 +54,9 @@ function wireDragging() {
     drag = {
       moved: false,
       x: event.screenX,
-      y: event.screenY
+      y: event.screenY,
+      lastX: event.screenX,
+      returnTo: currentState.state || "idle"
     };
     window.companion?.dragStart({ screenX: event.screenX, screenY: event.screenY });
     shell.setPointerCapture(event.pointerId);
@@ -56,13 +66,31 @@ function wireDragging() {
     if (!drag) return;
     const distance = Math.abs(event.screenX - drag.x) + Math.abs(event.screenY - drag.y);
     if (distance > 3) drag.moved = true;
+    const dx = event.screenX - drag.lastX;
+    const now = performance.now();
+    if (drag.moved && Math.abs(dx) >= 2 && provider && now - lastDragRunAt > 140) {
+      lastDragRunAt = now;
+      provider.setState({
+        state: "running",
+        direction: dx < 0 ? "left" : "right",
+        source: "drag"
+      });
+    }
+    drag.lastX = event.screenX;
     window.companion?.dragMove({ screenX: event.screenX, screenY: event.screenY });
   });
 
   shell.addEventListener("pointerup", async (event) => {
     if (!drag) return;
+    const completedDrag = drag.moved;
+    const returnTo = drag.returnTo || "idle";
     window.companion?.dragEnd();
-    if (!drag.moved && provider) {
+    if (completedDrag && provider) {
+      await provider.setState({
+        state: returnTo,
+        source: "drag-end"
+      });
+    } else if (provider) {
       await provider.setState({
         state: "reminder",
         source: "click",
@@ -78,6 +106,7 @@ function wireDragging() {
 
 async function boot() {
   const config = await loadRuntimeConfig();
+  applyUiSettings(config.ui);
   provider = createStateProvider(config);
   renderStateControls((state) => provider.setState(state));
   wireDragging();
@@ -94,6 +123,15 @@ async function boot() {
   await provider.start((state) => {
     updateHud(state);
     player?.applyState(state);
+  });
+
+  window.companion?.onUi((settings) => applyUiSettings(settings));
+  window.companion?.onScale((payload) => {
+    if (payload?.action === "reset") {
+      player?.resetUserScale();
+      return;
+    }
+    player?.adjustUserScale(Number(payload?.delta || 0));
   });
 
   reminderForm.addEventListener("submit", async (event) => {

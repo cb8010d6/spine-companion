@@ -1,5 +1,7 @@
 # Codex MCP Bridge
 
+[English](codex-mcp.md) | [简体中文](codex-mcp.zh-CN.md)
+
 The bridge is a local stdio MCP server. Codex launches it, the bridge calls the
 companion HTTP API, and the desktop renderer reacts to state changes.
 
@@ -39,3 +41,8 @@ Tools exposed:
 
 The companion desktop app or `npm run dev:api` must be running before these
 tools are useful.
+
+MCP does not push Codex status automatically by itself. It exposes tools; the AI
+client must be instructed to call them. Use `npm run skill:install` and
+`npm run ai:configure -- --target all` to install persistent reporting rules for
+supported tools.

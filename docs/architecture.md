@@ -1,5 +1,7 @@
 # Architecture
 
+[English](architecture.md) | [简体中文](architecture.zh-CN.md)
+
 ```mermaid
 flowchart LR
   Codex["Codex / git / tests / calendar"] --> Bridge["optional status bridge"]

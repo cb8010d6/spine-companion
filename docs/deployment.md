@@ -1,5 +1,7 @@
 # Deployment And Startup Guide
 
+[English](deployment.md) | [简体中文](deployment.zh-CN.md)
+
 This guide explains how to run Spine Companion from source, connect local Spine
 assets, expose state APIs, and connect the optional Codex MCP bridge.
 
@@ -21,7 +23,7 @@ The app has been verified with:
 
 Use this path if you only want to run the app.
 
-1. Download `spine-companion-0.1.0-windows-x64-portable.exe` from the GitHub
+1. Download `spine-companion-0.1.1-windows-x64-portable.exe` from the GitHub
    Release page.
 2. Create a file named `companion.local.json` in the same folder as the exe.
 3. Put this in the file and edit the two paths:
@@ -254,7 +256,7 @@ npm run release:win
 The output is written to:
 
 ```text
-release/spine-companion-0.1.0-windows-x64-portable.exe
+release/spine-companion-0.1.1-windows-x64-portable.exe
 ```
 
 ## 10. Troubleshooting

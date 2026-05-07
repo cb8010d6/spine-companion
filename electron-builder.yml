@@ -24,3 +24,23 @@ win:
   signAndEditExecutable: false
 portable:
   artifactName: spine-companion-${version}-windows-x64-portable.${ext}
+linux:
+  category: Utility
+  target:
+    - target: AppImage
+      arch:
+        - x64
+    - target: deb
+      arch:
+        - x64
+mac:
+  category: public.app-category.productivity
+  target:
+    - target: dmg
+      arch:
+        - x64
+        - arm64
+    - target: zip
+      arch:
+        - x64
+        - arm64

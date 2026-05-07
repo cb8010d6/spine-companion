@@ -1,5 +1,7 @@
 # Spine Companion v0.1.0
 
+[English](release-notes-v0.1.0.md) | [简体中文](release-notes-v0.1.0.zh-CN.md)
+
 First public MVP release.
 
 ## What Is Included

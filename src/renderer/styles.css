@@ -67,6 +67,10 @@ canvas {
   -webkit-app-region: no-drag;
 }
 
+.hud-hidden .hud {
+  display: none;
+}
+
 .status-row {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;

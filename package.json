@@ -1,6 +1,6 @@
 {
   "name": "spine-companion",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Open-source desktop companion shell for local Spine 3.8 models.",
   "license": "MIT",
   "main": "src/main/main.cjs",
@@ -10,6 +10,8 @@
     "dev:api": "node scripts/dev-api.cjs",
     "build": "vite build",
     "release:win": "npm run build && electron-builder --win portable --x64",
+    "release:linux": "npm run build && electron-builder --linux AppImage deb --x64",
+    "release:mac": "npm run build && electron-builder --mac dmg zip --x64 --arm64",
     "start": "node scripts/start-local.cjs",
     "start:electron": "electron .",
     "doctor": "node scripts/doctor.cjs",
@@ -17,6 +19,8 @@
     "capture:preview": "electron scripts/capture-preview.cjs",
     "mcp:server": "node scripts/mcp-companion-server.mjs",
     "mcp:install:codex": "node scripts/install-codex-mcp.cjs",
+    "ai:configure": "node skills/spine-companion-status/scripts/configure-ai-tools.cjs --repo .",
+    "skill:install": "node scripts/install-status-skill.cjs",
     "check:mcp": "node scripts/check-mcp-bridge.mjs",
     "check": "node scripts/check-project.cjs"
   },

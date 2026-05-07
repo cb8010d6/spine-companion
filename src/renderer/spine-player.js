@@ -13,6 +13,7 @@ export class SpinePlayer {
     this.baseScale = 1;
     this.userScale = 1;
     this.direction = "right";
+    this.hudVisible = config.ui?.hudVisible !== false;
     this.returnTimer = null;
     this.stableBounds = null;
     this.fitBounds = null;
@@ -34,8 +35,7 @@ export class SpinePlayer {
     window.addEventListener("resize", () => this.layout());
     this.stageElement.addEventListener("wheel", (event) => {
       event.preventDefault();
-      const delta = event.deltaY > 0 ? -0.05 : 0.05;
-      this.setUserScale(Math.min(1.7, Math.max(0.55, this.userScale + delta)));
+      this.adjustUserScale(event.deltaY > 0 ? -0.05 : 0.05);
     }, { passive: false });
   }
 
@@ -75,6 +75,19 @@ export class SpinePlayer {
 
   setUserScale(scale) {
     this.userScale = scale;
+    this.layout();
+  }
+
+  adjustUserScale(delta) {
+    this.setUserScale(Math.min(1.7, Math.max(0.55, this.userScale + delta)));
+  }
+
+  resetUserScale() {
+    this.setUserScale(1);
+  }
+
+  setHudVisible(visible) {
+    this.hudVisible = Boolean(visible);
     this.layout();
   }
 
@@ -183,7 +196,7 @@ export class SpinePlayer {
     const fitBounds = this.fitBounds || this.stableBounds || this.spine.getLocalBounds();
     const padding = Math.max(1, Number(this.config.spine.framePadding || 1.12));
     const availableWidth = Math.max(1, width * 0.86);
-    const bottomInset = Number(this.config.spine.stageBottomInset || 0);
+    const bottomInset = this.hudVisible ? Number(this.config.spine.stageBottomInset || 0) : 0;
     const usableHeight = Math.max(1, height - bottomInset);
     const availableHeight = Math.max(1, usableHeight * 0.94);
     const fitScale = Math.min(availableWidth / (fitBounds.width * padding), availableHeight / (fitBounds.height * padding));
