@@ -3,6 +3,15 @@
   font-family: Inter, "Segoe UI", Arial, sans-serif;
   background: transparent;
   color: #f7f8fa;
+  --panel: rgba(21, 24, 29, 0.72);
+  --panel-strong: rgba(17, 19, 23, 0.88);
+  --line: rgba(255, 255, 255, 0.12);
+  --muted: #b9c3ce;
+  --text: #f8fafc;
+  --accent: #65d1c3;
+  --warn: #f2ba63;
+  --ok: #86d982;
+  --bad: #ee7d7d;
 }
 
 * {
@@ -53,21 +62,100 @@ canvas {
 
 .hud {
   position: absolute;
-  left: 10px;
-  right: 10px;
-  bottom: 10px;
+  left: 14px;
+  right: 14px;
+  bottom: 12px;
   display: grid;
-  gap: 7px;
-  padding: 9px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
   border-radius: 8px;
-  background: rgba(18, 21, 26, 0.78);
-  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.28);
-  backdrop-filter: blur(14px);
+  background: var(--panel);
+  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.22);
+  backdrop-filter: blur(18px) saturate(1.08);
   -webkit-app-region: no-drag;
 }
 
 .hud-hidden .hud {
+  display: none;
+}
+
+.progress-bubble {
+  position: absolute;
+  left: 20px;
+  top: 28px;
+  display: grid;
+  gap: 5px;
+  width: min(245px, calc(100vw - 48px));
+  min-height: 52px;
+  padding: 11px 13px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0)),
+    var(--panel-strong);
+  box-shadow: 0 16px 34px rgba(0, 0, 0, 0.28);
+  color: var(--text);
+  backdrop-filter: blur(18px) saturate(1.08);
+  pointer-events: none;
+  animation: bubble-in 160ms ease-out;
+}
+
+.progress-bubble::after {
+  position: absolute;
+  left: 34px;
+  bottom: -6px;
+  width: 10px;
+  height: 10px;
+  transform: rotate(45deg);
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-strong);
+  content: "";
+}
+
+.progress-bubble strong {
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.progress-bubble span {
+  color: #eef3f7;
+  font-size: 13px;
+  line-height: 1.36;
+  overflow-wrap: anywhere;
+}
+
+.progress-bubble[data-state="running"],
+.progress-bubble[data-state="reminder"] {
+  border-color: rgba(242, 186, 99, 0.34);
+}
+
+.progress-bubble[data-state="running"] strong,
+.progress-bubble[data-state="reminder"] strong {
+  color: var(--warn);
+}
+
+.progress-bubble[data-state="success"] {
+  border-color: rgba(134, 217, 130, 0.36);
+}
+
+.progress-bubble[data-state="success"] strong {
+  color: var(--ok);
+}
+
+.progress-bubble[data-state="failed"] {
+  border-color: rgba(238, 125, 125, 0.4);
+}
+
+.progress-bubble[data-state="failed"] strong {
+  color: var(--bad);
+}
+
+.bubble-hidden .progress-bubble {
   display: none;
 }
 
@@ -77,6 +165,7 @@ canvas {
   align-items: center;
   gap: 7px;
   min-width: 0;
+  color: var(--text);
   font-size: 12px;
   line-height: 1.2;
 }
@@ -132,7 +221,7 @@ button,
 input {
   height: 28px;
   min-width: 0;
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  border: 1px solid var(--line);
   border-radius: 6px;
   font: inherit;
   font-size: 11px;
@@ -140,7 +229,7 @@ input {
 
 button {
   padding: 0 7px;
-  background: rgba(36, 43, 51, 0.9);
+  background: rgba(38, 44, 52, 0.8);
   color: #f8fafc;
   cursor: pointer;
 }
@@ -162,7 +251,7 @@ button.active {
 
 input {
   padding: 0 7px;
-  background: rgba(8, 10, 13, 0.54);
+  background: rgba(8, 10, 13, 0.5);
   color: #f7f8fa;
 }
 
@@ -195,6 +284,17 @@ input::placeholder {
 }
 
 @media (max-height: 390px), (max-width: 300px) {
+  .progress-bubble {
+    left: 12px;
+    top: 14px;
+    width: min(220px, calc(100vw - 24px));
+    padding: 9px 11px 10px;
+  }
+
+  .progress-bubble span {
+    font-size: 12px;
+  }
+
   .hud {
     left: 8px;
     right: 8px;
@@ -209,5 +309,17 @@ input::placeholder {
   input {
     height: 26px;
     font-size: 10px;
+  }
+}
+
+@keyframes bubble-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
   }
 }

@@ -61,7 +61,8 @@ const fallbackConfig = {
     sources: [{ type: "local-http" }]
   },
   ui: {
-    hudVisible: true
+    hudVisible: false,
+    bubbleVisible: true
   },
   specialSegments: {
     review: { from: 2.6, to: 4.35, loop: true },

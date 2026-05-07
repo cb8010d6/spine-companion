@@ -20,7 +20,7 @@
 
 ## 2. 最简单的 Windows Release 启动
 
-1. 下载 `spine-companion-0.1.1-windows-x64-portable.exe`。
+1. 下载 `spine-companion-0.1.2-windows-x64-portable.exe`。
 2. 在 exe 同目录创建 `companion.local.json`。
 3. 写入并修改路径：
 

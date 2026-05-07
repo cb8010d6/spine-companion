@@ -30,6 +30,10 @@
       }
     ]
   },
+  "ui": {
+    "hudVisible": false,
+    "bubbleVisible": true
+  },
   "specialSegments": {
     "review": {
       "from": 2.6,

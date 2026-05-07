@@ -9,6 +9,9 @@ const stateDot = document.getElementById("state-dot");
 const stateLabel = document.getElementById("state-label");
 const sourceLabel = document.getElementById("source-label");
 const stateControls = document.getElementById("state-controls");
+const progressBubble = document.getElementById("progress-bubble");
+const bubbleTitle = document.getElementById("bubble-title");
+const bubbleMessage = document.getElementById("bubble-message");
 const reminderForm = document.getElementById("reminder-form");
 const reminderText = document.getElementById("reminder-text");
 const reminderDelay = document.getElementById("reminder-delay");
@@ -18,11 +21,14 @@ let provider = null;
 let player = null;
 let drag = null;
 let currentState = { state: "idle", source: "system" };
-let lastDragRunAt = 0;
+let currentUiSettings = { hudVisible: true, bubbleVisible: true };
 
 function applyUiSettings(settings = {}) {
-  document.body.classList.toggle("hud-hidden", settings.hudVisible === false);
-  player?.setHudVisible(settings.hudVisible !== false);
+  currentUiSettings = { ...currentUiSettings, ...settings };
+  document.body.classList.toggle("hud-hidden", currentUiSettings.hudVisible === false);
+  document.body.classList.toggle("bubble-hidden", currentUiSettings.bubbleVisible === false);
+  player?.setHudVisible(currentUiSettings.hudVisible !== false);
+  updateBubble(currentState);
 }
 
 function renderStateControls(sendState) {
@@ -48,6 +54,17 @@ function updateHud(state) {
   }
 }
 
+function updateBubble(state) {
+  const id = state?.state || "idle";
+  const message = String(state?.message || "").trim();
+  const shouldShow = currentUiSettings.bubbleVisible !== false && message && id !== "idle";
+  progressBubble.hidden = !shouldShow;
+  if (!shouldShow) return;
+  bubbleTitle.textContent = state?.source === "codex-mcp" ? "Codex" : id[0].toUpperCase() + id.slice(1);
+  bubbleMessage.textContent = message;
+  progressBubble.dataset.state = id;
+}
+
 function wireDragging() {
   shell.addEventListener("pointerdown", (event) => {
     if (event.button !== 0 || event.target.closest(".hud")) return;
@@ -56,6 +73,7 @@ function wireDragging() {
       x: event.screenX,
       y: event.screenY,
       lastX: event.screenX,
+      lastDirection: "",
       returnTo: currentState.state || "idle"
     };
     window.companion?.dragStart({ screenX: event.screenX, screenY: event.screenY });
@@ -67,13 +85,23 @@ function wireDragging() {
     const distance = Math.abs(event.screenX - drag.x) + Math.abs(event.screenY - drag.y);
     if (distance > 3) drag.moved = true;
     const dx = event.screenX - drag.lastX;
-    const now = performance.now();
-    if (drag.moved && Math.abs(dx) >= 2 && provider && now - lastDragRunAt > 140) {
-      lastDragRunAt = now;
-      provider.setState({
+    if (drag.moved && Math.abs(dx) >= 6 && player) {
+      const direction = dx < 0 ? "left" : "right";
+      if (direction !== drag.lastDirection) {
+        drag.lastDirection = direction;
+        player.applyState({
+          state: "running",
+          direction,
+          source: "drag"
+        });
+      } else {
+        player.setDirection(direction);
+      }
+      updateHud({
         state: "running",
-        direction: dx < 0 ? "left" : "right",
-        source: "drag"
+        direction,
+        source: "drag",
+        message: "Moving"
       });
     }
     drag.lastX = event.screenX;
@@ -122,6 +150,7 @@ async function boot() {
 
   await provider.start((state) => {
     updateHud(state);
+    updateBubble(state);
     player?.applyState(state);
   });
 

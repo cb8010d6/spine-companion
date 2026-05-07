@@ -10,6 +10,7 @@ export class SpinePlayer {
     this.model = null;
     this.spine = null;
     this.currentKey = "";
+    this.currentMotionKey = "";
     this.baseScale = 1;
     this.userScale = 1;
     this.direction = "right";
@@ -91,6 +92,11 @@ export class SpinePlayer {
     this.layout();
   }
 
+  setDirection(direction) {
+    this.direction = direction === "left" ? "left" : "right";
+    this.layout();
+  }
+
   applyState(state, force = false) {
     if (!this.spine) return;
 
@@ -98,11 +104,18 @@ export class SpinePlayer {
     const segment = motion.segment ? this.config.specialSegments?.[motion.segment] : null;
     const nextDirection = motion.state === "running" ? (state.direction || "right") : "right";
     const segmentKey = segment ? `${segment.from || 0}-${segment.to || "end"}` : "full";
-    const key = `${motion.animation}:${segmentKey}:${segment?.loop ?? motion.loop ?? true}:${nextDirection}`;
+    const motionKey = `${motion.animation}:${segmentKey}:${segment?.loop ?? motion.loop ?? true}`;
+    const key = `${motionKey}:${nextDirection}`;
 
     this.direction = nextDirection;
     if (!force && key === this.currentKey) return;
+    if (!force && motionKey === this.currentMotionKey) {
+      this.currentKey = key;
+      this.layout();
+      return;
+    }
     this.currentKey = key;
+    this.currentMotionKey = motionKey;
 
     window.clearTimeout(this.returnTimer);
     const entry = this.spine.state.setAnimation(0, motion.animation, segment?.loop ?? motion.loop ?? true);

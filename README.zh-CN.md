@@ -4,7 +4,7 @@
 
 开源桌面 Spine 3.8 陪伴应用 MVP。它使用 Electron、`pixi.js@6.5.10`
 和 `pixi-spine@3.1.2` 直接渲染 `.skel/.atlas/.png`，支持透明窗口、
-置顶、拖动、缩放、点击互动、状态切换、本地 API、MCP 桥接、托盘控制和提醒。
+置顶、拖动、缩放、点击互动、状态切换、本地 API、MCP 桥接、工程进展气泡、托盘控制和提醒。
 
 ## 素材策略
 
@@ -17,7 +17,7 @@
 
 ### 使用 Release
 
-1. 从 GitHub Release 下载 `spine-companion-0.1.1-windows-x64-portable.exe`。
+1. 从 GitHub Release 下载 `spine-companion-0.1.2-windows-x64-portable.exe`。
 2. 在 exe 同目录创建 `companion.local.json`：
 
 ```json
@@ -107,7 +107,7 @@ npm run ai:configure -- --target all
 
 ## 桌面控制
 
-Windows 托盘菜单可以显示/隐藏状态面板、切换置顶、缩放、重置大小、切状态和退出。
+Windows 托盘菜单可以显示/隐藏状态面板、显示/隐藏工程进展气泡、切换置顶、缩放、重置大小、切状态和退出。
 拖动透明舞台会移动窗口；横向拖动时会临时进入 `running`，并按左右方向镜像模型。
 
 ## 开源注意事项

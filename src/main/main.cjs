@@ -4,12 +4,14 @@ const { loadConfig, getPublicConfig } = require("./config.cjs");
 const { createCompanionServer } = require("./state-server.cjs");
 
 const isDev = !app.isPackaged;
+const trayPngBase64 =
+  "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAACWSURBVFhH7dKxDYAwDERRRqGizEIMwXqUjMAuDBDkAsmJrnCcGCPk4lcxulcwzUvKngUgAP8DbOdRhG54wwD18BO65XUD0CgPfcPrAqDBa1+L0Hc8NQCNU68A0DBFb+YANEw97y4AdCetCTB6nBIDLMYpNQDdaBIB6nF3ALrR9n2A5TgVgCYAeu9N9BNaFoAABMAZkPINmrttQ5C/BxgAAAAASUVORK5CYII=";
 let mainWindow = null;
 let serverRuntime = null;
 let publicConfigCache = null;
 let dragState = null;
 let tray = null;
-let uiSettings = { hudVisible: true };
+let uiSettings = { hudVisible: true, bubbleVisible: true };
 let alwaysOnTop = true;
 let isQuitting = false;
 
@@ -26,6 +28,15 @@ function sendToRenderer(channel, payload) {
 
 function setHudVisible(visible) {
   uiSettings = { ...uiSettings, hudVisible: Boolean(visible) };
+  updateUiSettings();
+}
+
+function setBubbleVisible(visible) {
+  uiSettings = { ...uiSettings, bubbleVisible: Boolean(visible) };
+  updateUiSettings();
+}
+
+function updateUiSettings() {
   if (publicConfigCache) {
     publicConfigCache = {
       ...publicConfigCache,
@@ -51,14 +62,8 @@ function focusWindow() {
 }
 
 function createTrayIcon() {
-  const svg = encodeURIComponent(`
-    <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
-      <rect width="32" height="32" rx="7" fill="#20262e"/>
-      <path d="M9 22c2-7 5-12 11-15 1 5-1 11-6 17" fill="none" stroke="#6fd0c0" stroke-width="3" stroke-linecap="round"/>
-      <circle cx="21" cy="10" r="2.3" fill="#f3b85b"/>
-    </svg>
-  `);
-  return nativeImage.createFromDataURL(`data:image/svg+xml;charset=utf-8,${svg}`);
+  const icon = nativeImage.createFromBuffer(Buffer.from(trayPngBase64, "base64"));
+  return icon.resize({ width: 16, height: 16 });
 }
 
 function quickStateMenuItems() {
@@ -90,6 +95,12 @@ function buildTrayMenu() {
       click: (item) => setHudVisible(item.checked)
     },
     {
+      label: "Show Progress Bubble",
+      type: "checkbox",
+      checked: uiSettings.bubbleVisible !== false,
+      click: (item) => setBubbleVisible(item.checked)
+    },
+    {
       label: "Always On Top",
       type: "checkbox",
       checked: alwaysOnTop,
@@ -116,6 +127,7 @@ function createTray() {
   tray = new Tray(createTrayIcon());
   tray.setToolTip("Spine Companion");
   tray.on("click", focusWindow);
+  tray.on("double-click", focusWindow);
   updateTrayMenu();
 }
 
@@ -198,16 +210,20 @@ function registerIpc(config) {
 
 async function boot() {
   const config = loadConfig();
-  uiSettings = { hudVisible: config.ui?.hudVisible !== false };
+  uiSettings = {
+    hudVisible: config.ui?.hudVisible !== false,
+    bubbleVisible: config.ui?.bubbleVisible !== false
+  };
   const origin = `http://${config.server.host}:${config.server.port}`;
   publicConfigCache = getPublicConfig(config, origin);
   serverRuntime = createCompanionServer(config, () => publicConfigCache);
   await serverRuntime.listen();
   registerIpc(config);
-  await createWindow(config);
   createTray();
+  await createWindow(config);
 }
 
+app.setAppUserModelId("dev.spine-companion.desktop");
 app.whenReady().then(boot);
 
 app.on("window-all-closed", () => {
