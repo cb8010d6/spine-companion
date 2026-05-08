@@ -2,6 +2,7 @@ node_modules/
 dist/
 release/
 out/
+src-tauri/target/
 *.log
 
 # Local runtime configuration and proprietary test assets.

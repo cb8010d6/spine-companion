@@ -1,4 +1,5 @@
 import "./styles.css";
+import { initTauriBridge, isTauri } from "./tauri-bridge.js";
 import { createStateProvider, loadRuntimeConfig } from "./providers.js";
 import { SpinePlayer } from "./spine-player.js";
 import { stateLabels } from "./state.js";
@@ -271,6 +272,8 @@ function wireMousePassthrough() {
 }
 
 async function boot() {
+  // Initialize Tauri bridge if running under Tauri (no-op under Electron)
+  if (isTauri()) await initTauriBridge();
   const config = await loadRuntimeConfig();
   applyUiSettings(config.ui);
   provider = createStateProvider(config);
