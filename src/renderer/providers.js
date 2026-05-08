@@ -27,17 +27,28 @@ class HttpStateProvider {
     this.baseUrl = baseUrl.replace(/\/$/, "");
     this.pollMs = pollMs;
     this.timer = null;
+    this.onError = null;
+    this.consecutiveErrors = 0;
   }
 
   async start(onState) {
     const poll = async () => {
-      const response = await fetch(`${this.baseUrl}/state`, { cache: "no-store" });
-      if (response.ok) onState(await response.json());
+      try {
+        const response = await fetch(`${this.baseUrl}/state`, { cache: "no-store" });
+        if (response.ok) {
+          this.consecutiveErrors = 0;
+          onState(await response.json());
+        } else {
+          this.consecutiveErrors++;
+          this.onError?.(new Error(`HTTP ${response.status}`));
+        }
+      } catch (error) {
+        this.consecutiveErrors++;
+        this.onError?.(error);
+      }
     };
     await poll();
-    this.timer = setInterval(() => {
-      poll().catch(() => {});
-    }, this.pollMs);
+    this.timer = setInterval(() => poll(), this.pollMs);
   }
 
   stop() {
@@ -90,17 +101,47 @@ class WebSocketStateProvider {
   constructor(url) {
     this.url = url;
     this.socket = null;
+    this.onState = null;
+    this.reconnectTimer = null;
+    this.reconnectAttempt = 0;
+    this.maxReconnectDelay = 30000;
+    this.destroyed = false;
   }
 
   start(onState) {
+    this.onState = onState;
+    this.connect();
+  }
+
+  connect() {
+    if (this.destroyed) return;
     this.socket = new WebSocket(this.url);
+    this.socket.addEventListener("open", () => {
+      this.reconnectAttempt = 0;
+    });
     this.socket.addEventListener("message", (event) => {
       const parsed = JSON.parse(event.data);
-      onState(parsed.payload || parsed);
+      this.onState?.(parsed.payload || parsed);
+    });
+    this.socket.addEventListener("close", () => {
+      if (this.destroyed) return;
+      this.scheduleReconnect();
+    });
+    this.socket.addEventListener("error", () => {
+      // Error is followed by close, reconnect handled there
     });
   }
 
+  scheduleReconnect() {
+    clearTimeout(this.reconnectTimer);
+    const delay = Math.min(1000 * Math.pow(1.5, this.reconnectAttempt), this.maxReconnectDelay);
+    this.reconnectAttempt++;
+    this.reconnectTimer = setTimeout(() => this.connect(), delay);
+  }
+
   stop() {
+    this.destroyed = true;
+    clearTimeout(this.reconnectTimer);
     if (this.socket) this.socket.close();
   }
 
