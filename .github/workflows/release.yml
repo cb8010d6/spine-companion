@@ -124,4 +124,9 @@ jobs:
               gh release create "$TAG" --title "$TAG" --notes "Automated release."
             fi
           fi
-          gh release upload "$TAG" release-artifacts/* --clobber
+          mapfile -d '' files < <(find release-artifacts -type f -print0)
+          if [[ "${#files[@]}" -eq 0 ]]; then
+            echo "No release artifacts found." >&2
+            exit 1
+          fi
+          gh release upload "$TAG" "${files[@]}" --clobber
