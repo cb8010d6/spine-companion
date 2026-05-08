@@ -30,14 +30,7 @@ export async function initTauriBridge() {
     getConfig: () => _tauriInvoke("get_config"),
     getState: () => _tauriInvoke("get_state"),
     setState: (state) => _tauriInvoke("set_companion_state", { input: state }),
-    createReminder: (reminder) => {
-      // Reminders are handled via the HTTP API for now
-      return fetch("http://127.0.0.1:17388/reminders", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(reminder)
-      }).then((r) => r.json());
-    },
+    createReminder: (reminder) => _tauriInvoke("create_reminder_cmd", { input: reminder }),
     onState: (callback) => {
       // Listen for state updates from the Rust backend
       let unlisten = null;

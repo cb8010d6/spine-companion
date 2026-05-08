@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, RwLock};
 
 /// Canonical list of allowed companion states.
@@ -130,6 +131,7 @@ pub struct CreateReminderInput {
 
 pub type StateStore = Arc<RwLock<CompanionState>>;
 pub type StateBroadcast = broadcast::Sender<CompanionState>;
+pub type ReminderStore = Arc<RwLock<Vec<Reminder>>>;
 
 pub fn create_state_store(initial: &str) -> (StateStore, StateBroadcast) {
     let state = CompanionState {
@@ -142,7 +144,21 @@ pub fn create_state_store(initial: &str) -> (StateStore, StateBroadcast) {
     (store, tx)
 }
 
+pub fn create_reminder_store() -> ReminderStore {
+    Arc::new(RwLock::new(Vec::new()))
+}
+
 pub async fn set_state(
+    store: &StateStore,
+    tx: &StateBroadcast,
+    input: SetStateInput,
+) -> CompanionState {
+    let snapshot = apply_state(store, tx, input.clone()).await;
+    schedule_auto_return(store, tx, &input, &snapshot);
+    snapshot
+}
+
+async fn apply_state(
     store: &StateStore,
     tx: &StateBroadcast,
     input: SetStateInput,
@@ -187,7 +203,191 @@ pub async fn set_state(
     snapshot
 }
 
-pub fn snapshot_sync(store: &StateStore) -> CompanionState {
-    // For Tauri commands that need a quick sync snapshot
-    store.blocking_read().clone()
+fn schedule_auto_return(
+    store: &StateStore,
+    tx: &StateBroadcast,
+    input: &SetStateInput,
+    snapshot: &CompanionState,
+) {
+    if let Some(ms) = input.auto_return_ms {
+        if ms > 0 {
+            let store_for_return = store.clone();
+            let tx_for_return = tx.clone();
+            let return_to = input.return_to.clone();
+            let previous_state = snapshot.state.clone();
+            let updated_at = snapshot.updated_at.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+                if store_for_return.read().await.updated_at != updated_at {
+                    return;
+                }
+                let _ = apply_state(
+                    &store_for_return,
+                    &tx_for_return,
+                    SetStateInput {
+                        state: Some(return_to.unwrap_or(previous_state)),
+                        source: Some("auto-return".to_string()),
+                        message: Some(String::new()),
+                        ..Default::default()
+                    },
+                )
+                .await;
+            });
+        }
+    }
+}
+
+fn now_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
+fn due_at_ms(input: &CreateReminderInput) -> i64 {
+    let now = chrono::Utc::now();
+    if let Some(value) = input.due_at.as_deref().or(input.at.as_deref()) {
+        if let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(value) {
+            return parsed.timestamp_millis();
+        }
+    }
+    if let Some(seconds) = input.in_seconds {
+        return now.timestamp_millis() + (seconds * 1000.0).round() as i64;
+    }
+    if let Some(delay) = input.delay_ms {
+        return now.timestamp_millis() + delay as i64;
+    }
+    now.timestamp_millis() + 10_000
+}
+
+pub async fn list_reminders(reminders: &ReminderStore) -> Vec<Reminder> {
+    reminders.read().await.clone()
+}
+
+pub async fn create_reminder(
+    store: &StateStore,
+    tx: &StateBroadcast,
+    reminders: &ReminderStore,
+    input: CreateReminderInput,
+) -> Reminder {
+    let now = chrono::Utc::now();
+    let due_ms = due_at_ms(&input);
+    let id = input
+        .id
+        .clone()
+        .unwrap_or_else(|| format!("rem_{}", now_ms()));
+    let text = input
+        .text
+        .clone()
+        .or(input.message.clone())
+        .unwrap_or_else(|| "Reminder".to_string());
+    let reminder = Reminder {
+        id: id.clone(),
+        text: text.clone(),
+        due_at: chrono::DateTime::<chrono::Utc>::from_timestamp_millis(due_ms)
+            .unwrap_or(now)
+            .to_rfc3339(),
+        created_at: now.to_rfc3339(),
+        fired: false,
+        fired_at: None,
+    };
+
+    reminders.write().await.push(reminder.clone());
+
+    let store_for_fire = store.clone();
+    let tx_for_fire = tx.clone();
+    let reminders_for_fire = reminders.clone();
+    let duration_ms = input.duration_ms.unwrap_or(5000);
+    let return_to = input.return_to.unwrap_or_else(|| "idle".to_string());
+    tokio::spawn(async move {
+        let delay = (due_ms - chrono::Utc::now().timestamp_millis()).max(0) as u64;
+        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+        {
+            let mut list = reminders_for_fire.write().await;
+            if let Some(item) = list.iter_mut().find(|item| item.id == id) {
+                item.fired = true;
+                item.fired_at = Some(chrono::Utc::now().to_rfc3339());
+            }
+        }
+        let fired = apply_state(
+            &store_for_fire,
+            &tx_for_fire,
+            SetStateInput {
+                state: Some("reminder".to_string()),
+                source: Some("reminder".to_string()),
+                message: Some(text),
+                reminder_id: Some(id),
+                auto_return_ms: Some(duration_ms),
+                return_to: Some(return_to),
+                ..Default::default()
+            },
+        )
+        .await;
+        schedule_auto_return(
+            &store_for_fire,
+            &tx_for_fire,
+            &SetStateInput {
+                auto_return_ms: fired.auto_return_ms,
+                return_to: fired.return_to.clone(),
+                ..Default::default()
+            },
+            &fired,
+        );
+    });
+
+    reminder
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalizes_aliases() {
+        assert_eq!(normalize_state_id("move"), "running");
+        assert_eq!(normalize_state_id("review"), "reviewing");
+        assert_eq!(normalize_state_id("unknown"), "idle");
+    }
+
+    #[tokio::test]
+    async fn set_state_updates_and_auto_returns() {
+        let (store, tx) = create_state_store("idle");
+        let state = set_state(
+            &store,
+            &tx,
+            SetStateInput {
+                state: Some("reminder".to_string()),
+                auto_return_ms: Some(20),
+                return_to: Some("working".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(state.state, "reminder");
+        tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+        assert_eq!(store.read().await.state, "working");
+    }
+
+    #[tokio::test]
+    async fn creates_lists_and_fires_reminders() {
+        let (store, tx) = create_state_store("idle");
+        let reminders = create_reminder_store();
+        let reminder = create_reminder(
+            &store,
+            &tx,
+            &reminders,
+            CreateReminderInput {
+                text: Some("Check".to_string()),
+                delay_ms: Some(10),
+                duration_ms: Some(20),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(reminder.text, "Check");
+        assert_eq!(list_reminders(&reminders).await.len(), 1);
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        assert_eq!(store.read().await.state, "reminder");
+        assert!(list_reminders(&reminders).await[0].fired);
+    }
 }

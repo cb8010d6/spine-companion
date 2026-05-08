@@ -1,9 +1,9 @@
 use axum::{
     extract::{Path, State as AxumState},
-    http::{Method, StatusCode},
+    http::{header, HeaderMap, Method, StatusCode},
     response::{
         sse::{Event, KeepAlive, Sse},
-        IntoResponse, Json,
+        IntoResponse, Json, Response,
     },
     routing::{get, post},
     Router,
@@ -11,18 +11,22 @@ use axum::{
 use serde_json::json;
 use std::convert::Infallible;
 use std::net::SocketAddr;
+use std::path::{Path as FsPath, PathBuf};
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::state::{
-    set_state, CreateReminderInput, SetStateInput, StateBroadcast, StateStore,
+    create_reminder, list_reminders, CreateReminderInput, ReminderStore, SetStateInput,
+    StateBroadcast, StateStore, set_state,
 };
 
 #[derive(Clone)]
 pub struct AppState {
     pub store: StateStore,
     pub tx: StateBroadcast,
+    pub reminders: ReminderStore,
+    pub asset_root: Option<PathBuf>,
 }
 
 fn localhost_cors() -> CorsLayer {
@@ -66,15 +70,16 @@ async fn post_state_by_id(
     Json(result)
 }
 
-async fn get_reminders() -> impl IntoResponse {
-    // Simplified — reminders will be managed via Tauri commands
-    Json(json!({ "reminders": [] }))
+async fn get_reminders(AxumState(app): AxumState<AppState>) -> impl IntoResponse {
+    Json(json!({ "reminders": list_reminders(&app.reminders).await }))
 }
 
 async fn post_reminder(
-    Json(_input): Json<CreateReminderInput>,
+    AxumState(app): AxumState<AppState>,
+    Json(input): Json<CreateReminderInput>,
 ) -> impl IntoResponse {
-    (StatusCode::CREATED, Json(json!({ "id": "todo", "text": "todo" })))
+    let reminder = create_reminder(&app.store, &app.tx, &app.reminders, input).await;
+    (StatusCode::CREATED, Json(reminder))
 }
 
 async fn events(AxumState(app): AxumState<AppState>) -> impl IntoResponse {
@@ -99,15 +104,66 @@ async fn events(AxumState(app): AxumState<AppState>) -> impl IntoResponse {
     Sse::new(initial_event.chain(stream)).keep_alive(KeepAlive::default())
 }
 
+fn file_content_type(file: &FsPath) -> &'static str {
+    match file
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "png" => "image/png",
+        "atlas" => "text/plain; charset=utf-8",
+        "json" => "application/json; charset=utf-8",
+        "skel" => "application/octet-stream",
+        _ => "application/octet-stream",
+    }
+}
+
+fn is_inside(root: &FsPath, file: &FsPath) -> bool {
+    file.strip_prefix(root).is_ok()
+}
+
+async fn get_spine_asset(
+    AxumState(app): AxumState<AppState>,
+    Path(relative): Path<String>,
+) -> Response {
+    let Some(root) = app.asset_root.as_ref() else {
+        return (StatusCode::NOT_FOUND, "No Spine assetDir is configured.").into_response();
+    };
+    let file = root.join(relative);
+    let Ok(file) = file.canonicalize() else {
+        return (StatusCode::NOT_FOUND, "Asset not found").into_response();
+    };
+    if !is_inside(root, &file) || !file.is_file() {
+        return (StatusCode::FORBIDDEN, "Forbidden").into_response();
+    }
+    match tokio::fs::read(&file).await {
+        Ok(bytes) => {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                header::CONTENT_TYPE,
+                header::HeaderValue::from_static(file_content_type(&file)),
+            );
+            (StatusCode::OK, headers, bytes).into_response()
+        }
+        Err(_) => (StatusCode::NOT_FOUND, "Asset not found").into_response(),
+    }
+}
+
 pub async fn start_api_server(
     store: StateStore,
     tx: StateBroadcast,
+    reminders: ReminderStore,
+    asset_root: Option<PathBuf>,
     host: &str,
     port: u16,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let app_state = AppState {
         store,
         tx,
+        reminders,
+        asset_root: asset_root.and_then(|path| path.canonicalize().ok()),
     };
 
     let app = Router::new()
@@ -116,6 +172,7 @@ pub async fn start_api_server(
         .route("/state/{id}", post(post_state_by_id))
         .route("/reminders", get(get_reminders).post(post_reminder))
         .route("/events", get(events))
+        .route("/assets/spine/{*path}", get(get_spine_asset))
         .layer(localhost_cors())
         .with_state(app_state);
 
@@ -128,4 +185,36 @@ pub async fn start_api_server(
     });
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::{create_reminder_store, create_state_store};
+
+    #[tokio::test]
+    async fn file_type_matches_spine_assets() {
+        assert_eq!(file_content_type(FsPath::new("a.png")), "image/png");
+        assert_eq!(file_content_type(FsPath::new("a.atlas")), "text/plain; charset=utf-8");
+        assert_eq!(file_content_type(FsPath::new("a.skel")), "application/octet-stream");
+    }
+
+    #[tokio::test]
+    async fn app_state_can_store_reminders() {
+        let (store, tx) = create_state_store("idle");
+        let reminders = create_reminder_store();
+        let reminder = create_reminder(
+            &store,
+            &tx,
+            &reminders,
+            CreateReminderInput {
+                text: Some("API".to_string()),
+                delay_ms: Some(1000),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(reminder.text, "API");
+        assert_eq!(list_reminders(&reminders).await.len(), 1);
+    }
 }
