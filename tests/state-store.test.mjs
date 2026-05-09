@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 // Use dynamic require so vitest can handle CJS modules
 const { createStateStore, createStateMachine } = require("../src/shared/state-store.cjs");
@@ -246,6 +246,31 @@ describe("createStateStore", () => {
       store.setState({ state: "working", source: "user" });
       await new Promise((r) => setTimeout(r, 100));
       expect(store.snapshot().state).toBe("working");
+    });
+
+    it("clears superseded auto-return timers", () => {
+      vi.useFakeTimers();
+      try {
+        store.setState({ state: "reminder", autoReturnMs: 1000, returnTo: "idle" });
+        expect(vi.getTimerCount()).toBe(1);
+        store.setState({ state: "working", source: "user" });
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("removes auto-return timers after they fire", async () => {
+      vi.useFakeTimers();
+      try {
+        store.setState({ state: "reminder", autoReturnMs: 1000, returnTo: "idle" });
+        expect(vi.getTimerCount()).toBe(1);
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(store.snapshot().state).toBe("idle");
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 

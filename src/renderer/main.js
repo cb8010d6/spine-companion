@@ -39,6 +39,8 @@ let heldBubble = null;
 let bubbleHoldTimer = null;
 let completionToastTimer = null;
 let mousePassthrough = false;
+let pendingMousePassthroughEvent = null;
+let mousePassthroughFrame = 0;
 
 function applyUiSettings(settings = {}) {
   currentUiSettings = { ...currentUiSettings, ...settings };
@@ -102,6 +104,17 @@ function setMousePassthrough(enabled) {
   if (!window.companion?.setMousePassthrough || mousePassthrough === enabled) return;
   mousePassthrough = enabled;
   window.companion.setMousePassthrough(enabled);
+}
+
+function scheduleMousePassthroughUpdate(event) {
+  pendingMousePassthroughEvent = event;
+  if (mousePassthroughFrame) return;
+  mousePassthroughFrame = window.requestAnimationFrame(() => {
+    mousePassthroughFrame = 0;
+    const nextEvent = pendingMousePassthroughEvent;
+    pendingMousePassthroughEvent = null;
+    if (nextEvent) updateMousePassthrough(nextEvent);
+  });
 }
 
 function updateMousePassthrough(event) {
@@ -266,8 +279,8 @@ function wireDragging() {
 }
 
 function wireMousePassthrough() {
-  window.addEventListener("mousemove", updateMousePassthrough);
-  window.addEventListener("mouseenter", updateMousePassthrough);
+  window.addEventListener("mousemove", scheduleMousePassthroughUpdate);
+  window.addEventListener("mouseenter", scheduleMousePassthroughUpdate);
   window.addEventListener("mouseleave", () => setMousePassthrough(true));
 }
 

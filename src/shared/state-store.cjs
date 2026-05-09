@@ -21,7 +21,7 @@ function createStateStore(config, stateMachineConfig) {
   const { normalizeStateId } = createStateMachine(stateMachineConfig);
   const emitter = new EventEmitter();
   const reminders = new Map();
-  const autoReturnTimers = [];
+  const autoReturnTimers = new Set();
   let current = {
     state: normalizeStateId(config.state?.initial || "idle"),
     message: "",
@@ -34,7 +34,13 @@ function createStateStore(config, stateMachineConfig) {
     return { ...current };
   }
 
+  function clearAutoReturnTimers() {
+    for (const timer of autoReturnTimers) clearTimeout(timer);
+    autoReturnTimers.clear();
+  }
+
   function setState(input = {}) {
+    clearAutoReturnTimers();
     const previous = current;
     const requested = input.state || input.id || input.status;
     const nextState = requested ? normalizeStateId(requested) : previous.state;
@@ -58,6 +64,7 @@ function createStateStore(config, stateMachineConfig) {
     if (autoReturnMs > 0) {
       const stateAtSchedule = current.updatedAt;
       const timer = setTimeout(() => {
+        autoReturnTimers.delete(timer);
         if (current.updatedAt !== stateAtSchedule) return;
         setState({
           state: input.returnTo || previous.state || "idle",
@@ -65,7 +72,7 @@ function createStateStore(config, stateMachineConfig) {
           message: ""
         });
       }, autoReturnMs);
-      autoReturnTimers.push(timer);
+      autoReturnTimers.add(timer);
     }
 
     return snapshot();
@@ -111,8 +118,7 @@ function createStateStore(config, stateMachineConfig) {
   }
 
   function destroy() {
-    for (const timer of autoReturnTimers) clearTimeout(timer);
-    autoReturnTimers.length = 0;
+    clearAutoReturnTimers();
     for (const { timeout } of reminders.values()) clearTimeout(timeout);
     reminders.clear();
     emitter.removeAllListeners();
