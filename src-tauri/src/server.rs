@@ -172,7 +172,7 @@ pub async fn start_api_server(
         .route("/state/{id}", post(post_state_by_id))
         .route("/reminders", get(get_reminders).post(post_reminder))
         .route("/events", get(events))
-        .route("/assets/spine/{*path}", get(get_spine_asset))
+        .route("/assets/spine/*path", get(get_spine_asset))
         .layer(localhost_cors())
         .with_state(app_state);
 

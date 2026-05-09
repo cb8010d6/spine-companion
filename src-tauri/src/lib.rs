@@ -286,8 +286,7 @@ pub fn run() {
         })
         .setup(move |app| {
             // Start the local API server on a background task
-            let rt = tokio::runtime::Handle::current();
-            rt.spawn(async move {
+            tauri::async_runtime::spawn(async move {
                 if let Err(e) =
                     server::start_api_server(
                         store_for_server,
@@ -305,7 +304,7 @@ pub fn run() {
 
             let app_handle = app.handle().clone();
             let mut rx = tx.subscribe();
-            rt.spawn(async move {
+            tauri::async_runtime::spawn(async move {
                 while let Ok(state) = rx.recv().await {
                     let _ = app_handle.emit("companion:state", state);
                 }
