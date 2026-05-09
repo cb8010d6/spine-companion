@@ -33,7 +33,12 @@ fn localhost_cors() -> CorsLayer {
     CorsLayer::new()
         .allow_origin(AllowOrigin::predicate(|origin, _| {
             if let Ok(s) = origin.to_str() {
-                s.starts_with("http://127.0.0.1") || s.starts_with("http://localhost")
+                s.starts_with("http://127.0.0.1")
+                    || s.starts_with("http://localhost")
+                    || s.starts_with("http://tauri.localhost")
+                    || s.starts_with("https://tauri.localhost")
+                    || s.starts_with("tauri://localhost")
+                    || s == "null"
             } else {
                 false
             }
