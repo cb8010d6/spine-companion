@@ -131,6 +131,7 @@ async fn get_spine_asset(
     let Some(root) = app.asset_root.as_ref() else {
         return (StatusCode::NOT_FOUND, "No Spine assetDir is configured.").into_response();
     };
+    let relative = relative.trim_start_matches(['/', '\\']);
     let file = root.join(relative);
     let Ok(file) = file.canonicalize() else {
         return (StatusCode::NOT_FOUND, "Asset not found").into_response();
@@ -216,5 +217,11 @@ mod tests {
         .await;
         assert_eq!(reminder.text, "API");
         assert_eq!(list_reminders(&reminders).await.len(), 1);
+    }
+
+    #[test]
+    fn strips_route_wildcard_leading_slash_for_asset_paths() {
+        let relative = "/amiya.skel".trim_start_matches(['/', '\\']);
+        assert_eq!(relative, "amiya.skel");
     }
 }
