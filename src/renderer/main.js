@@ -308,6 +308,7 @@ async function boot() {
     emptyState.hidden = false;
     emptyState.querySelector("span").textContent = error.message;
   }
+  await window.companion?.rendererReady?.();
 
   await provider.start((state) => {
     updateHud(state);
@@ -345,4 +346,5 @@ boot().catch((error) => {
   emptyState.hidden = false;
   emptyState.querySelector("strong").textContent = "Startup failed";
   emptyState.querySelector("span").textContent = error.message;
+  window.companion?.rendererReady?.();
 });

@@ -56,6 +56,8 @@ export async function initTauriBridge() {
     dragStart: () => _tauriInvoke("start_drag"),
     dragMove: () => { /* Tauri handles drag natively */ },
     dragEnd: () => { /* Tauri handles drag natively */ },
+    revealWindow: () => _tauriInvoke("reveal_window"),
+    rendererReady: () => _tauriInvoke("reveal_window"),
     setMousePassthrough: (enabled) => _tauriInvoke("set_mouse_passthrough", { enabled: Boolean(enabled) })
   };
 }

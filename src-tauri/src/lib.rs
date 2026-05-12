@@ -10,7 +10,7 @@ use tauri::{
     Emitter,
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager, State,
+    Manager, State, WebviewWindow,
 };
 
 struct AppData {
@@ -264,6 +264,20 @@ async fn set_mouse_passthrough(window: tauri::Window, enabled: bool) -> Result<(
         .map_err(|e| e.to_string())
 }
 
+fn show_companion_window(win: &WebviewWindow) {
+    let _ = win.set_ignore_cursor_events(false);
+    let _ = win.unminimize();
+    let _ = win.show();
+    let _ = win.set_always_on_top(true);
+    let _ = win.set_focus();
+}
+
+#[tauri::command]
+async fn reveal_window(window: WebviewWindow) -> Result<(), String> {
+    show_companion_window(&window);
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let runtime_config = load_runtime_config();
@@ -285,22 +299,20 @@ pub fn run() {
             public_config: runtime_config.public.clone(),
         })
         .setup(move |app| {
-            // Start the local API server on a background task
-            tauri::async_runtime::spawn(async move {
-                if let Err(e) =
-                    server::start_api_server(
-                        store_for_server,
-                        tx_for_server,
-                        reminders_for_server,
-                        asset_root_for_server,
-                        &host_for_server,
-                        port_for_server,
-                    )
-                        .await
-                {
-                    eprintln!("Failed to start API server: {}", e);
-                }
-            });
+            // Bind the local API server before the hidden window is revealed.
+            // The renderer loads Spine assets from this server on startup, so
+            // racing the first PIXI load against server startup can leave the
+            // transparent window visible with no model.
+            if let Err(e) = tauri::async_runtime::block_on(server::start_api_server(
+                store_for_server,
+                tx_for_server,
+                reminders_for_server,
+                asset_root_for_server,
+                &host_for_server,
+                port_for_server,
+            )) {
+                eprintln!("Failed to start API server: {}", e);
+            }
 
             let app_handle = app.handle().clone();
             let mut rx = tx.subscribe();
@@ -322,8 +334,7 @@ pub fn run() {
                 .on_menu_event(move |app, event| match event.id.as_ref() {
                     "show" => {
                         if let Some(win) = app.get_webview_window("main") {
-                            let _ = win.show();
-                            let _ = win.set_focus();
+                            show_companion_window(&win);
                         }
                     }
                     "quit" => app.exit(0),
@@ -338,17 +349,11 @@ pub fn run() {
                     {
                         let app = tray.app_handle();
                         if let Some(win) = app.get_webview_window("main") {
-                            let _ = win.show();
-                            let _ = win.set_focus();
+                            show_companion_window(&win);
                         }
                     }
                 })
                 .build(app)?;
-
-            // Show main window after setup
-            if let Some(win) = app.get_webview_window("main") {
-                let _ = win.show();
-            }
 
             Ok(())
         })
@@ -359,6 +364,7 @@ pub fn run() {
             create_reminder_cmd,
             start_drag,
             set_mouse_passthrough,
+            reveal_window,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
