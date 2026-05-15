@@ -31,6 +31,9 @@ export async function initTauriBridge() {
     getState: () => _tauriInvoke("get_state"),
     setState: (state) => _tauriInvoke("set_companion_state", { input: state }),
     createReminder: (reminder) => _tauriInvoke("create_reminder_cmd", { input: reminder }),
+    setUiSettings: (settings) => _tauriInvoke("set_ui_settings", { input: settings }),
+    emitScale: (payload) => _tauriInvoke("emit_scale_event", { input: payload }),
+    importModel: (input) => _tauriInvoke("import_model", { input }),
     onState: (callback) => {
       // Listen for state updates from the Rust backend
       let unlisten = null;

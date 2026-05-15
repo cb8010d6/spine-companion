@@ -1,6 +1,6 @@
 {
   "name": "spine-companion",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Open-source desktop companion shell for local Spine 3.8 models.",
   "license": "MIT",
   "packageManager": "bun@1.3.13",
@@ -31,7 +31,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "tauri:portable:assets": "bun scripts/package-tauri-portable.cjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

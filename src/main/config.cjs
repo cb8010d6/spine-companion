@@ -20,14 +20,14 @@ function localConfigCandidates() {
   const candidates = [
     localConfigPath,
     path.join(process.cwd(), "companion.local.json"),
+    path.join(userConfigDir(), "companion.local.json"),
     process.env.PORTABLE_EXECUTABLE_FILE
       ? path.join(path.dirname(process.env.PORTABLE_EXECUTABLE_FILE), "companion.local.json")
       : "",
     process.env.PORTABLE_EXECUTABLE_DIR
       ? path.join(process.env.PORTABLE_EXECUTABLE_DIR, "companion.local.json")
       : "",
-    path.join(path.dirname(process.execPath), "companion.local.json"),
-    path.join(userConfigDir(), "companion.local.json")
+    path.join(path.dirname(process.execPath), "companion.local.json")
   ].filter(Boolean);
   return [...new Set(candidates.map((file) => path.normalize(file)))];
 }
@@ -69,6 +69,32 @@ const fallbackConfig = {
     bubbleHoldMs: 8000,
     dragMode: "compatible"
   },
+  models: {
+    catalog: [
+      {
+        id: "ark-1001-amiya2-sale-16",
+        name: "Amiya Guard Skin #16",
+        source: "Ark-Models",
+        licenseNote: "Downloaded from isHarryh/Ark-Models for local use only. Do not commit or redistribute the asset files in this repository.",
+        repositoryUrl: "https://github.com/isHarryh/Ark-Models/tree/main/models/1001_amiya2_sale%2316",
+        skel: "build_char_1001_amiya2_sale#16.skel",
+        files: [
+          {
+            name: "build_char_1001_amiya2_sale#16.atlas",
+            url: "https://raw.githubusercontent.com/isHarryh/Ark-Models/main/models/1001_amiya2_sale%2316/build_char_1001_amiya2_sale%2316.atlas"
+          },
+          {
+            name: "build_char_1001_amiya2_sale#16.png",
+            url: "https://raw.githubusercontent.com/isHarryh/Ark-Models/main/models/1001_amiya2_sale%2316/build_char_1001_amiya2_sale%2316.png"
+          },
+          {
+            name: "build_char_1001_amiya2_sale#16.skel",
+            url: "https://raw.githubusercontent.com/isHarryh/Ark-Models/main/models/1001_amiya2_sale%2316/build_char_1001_amiya2_sale%2316.skel"
+          }
+        ]
+      }
+    ]
+  },
   specialSegments: {
     review: { from: 2.6, to: 4.35, loop: true },
     success: { from: 4.4, to: 7.2, loop: false },
@@ -107,10 +133,12 @@ function resolveMaybeRelative(value) {
 function loadConfig() {
   let config = mergeDeep(fallbackConfig, readJsonIfExists(committedConfigPath));
   let resolvedLocalConfigPath = "";
+  let assetBaseDir = rootDir;
   for (const candidate of localConfigCandidates()) {
     if (!fs.existsSync(candidate)) continue;
     config = mergeDeep(config, readJsonIfExists(candidate));
     resolvedLocalConfigPath = candidate;
+    assetBaseDir = path.dirname(candidate);
   }
 
   if (process.env.SPINE_ASSET_DIR) {
@@ -125,7 +153,9 @@ function loadConfig() {
 
   config.rootDir = rootDir;
   config.localConfigPath = resolvedLocalConfigPath || localConfigCandidates()[0];
-  config.spine.assetDir = resolveMaybeRelative(config.spine.assetDir);
+  config.spine.assetDir = config.spine.assetDir
+    ? path.resolve(assetBaseDir, config.spine.assetDir)
+    : "";
   config.hasLocalConfig = Boolean(resolvedLocalConfigPath);
   return config;
 }
@@ -154,6 +184,12 @@ function getPublicConfig(config, serverOrigin) {
       fitStates: config.spine.fitStates
     },
     ui: config.ui,
+    models: config.models,
+    paths: {
+      configDir: userConfigDir(),
+      localConfigPath: config.localConfigPath,
+      hasLocalConfig: config.hasLocalConfig
+    },
     state: config.state,
     specialSegments: config.specialSegments
   };

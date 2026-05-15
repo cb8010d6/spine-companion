@@ -6,7 +6,14 @@ use tokio::sync::{broadcast, RwLock};
 
 /// Canonical list of allowed companion states.
 const STATES: &[&str] = &[
-    "idle", "working", "reviewing", "running", "success", "failed", "waiting", "sleeping",
+    "idle",
+    "working",
+    "reviewing",
+    "running",
+    "success",
+    "failed",
+    "waiting",
+    "sleeping",
     "reminder",
 ];
 
@@ -48,9 +55,17 @@ pub struct CompanionState {
     pub direction: String,
     #[serde(default, rename = "updatedAt")]
     pub updated_at: String,
-    #[serde(default, rename = "reminderId", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "reminderId",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub reminder_id: Option<String>,
-    #[serde(default, rename = "autoReturnMs", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "autoReturnMs",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub auto_return_ms: Option<u64>,
     #[serde(default, rename = "returnTo", skip_serializing_if = "Option::is_none")]
     pub return_to: Option<String>,

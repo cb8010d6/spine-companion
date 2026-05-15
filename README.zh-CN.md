@@ -17,8 +17,14 @@
 
 ### 使用 Release
 
-1. 从 GitHub Release 下载 `spine-companion-0.1.2-windows-x64-portable.exe`。
-2. 在 exe 同目录创建 `companion.local.json`：
+1. 从 GitHub Release 下载最新 Windows 安装包或便携包。
+2. 推荐把 `companion.local.json` 放到用户配置目录：
+
+```text
+%APPDATA%\spine-companion\companion.local.json
+```
+
+也可以放在 exe 同目录：
 
 ```json
 {
@@ -29,7 +35,7 @@
 }
 ```
 
-3. 双击 exe 启动。
+3. 双击启动。右下角托盘菜单可以打开配置目录、显示状态面板、缩放、切换状态和退出。
 
 ### 从源码运行
 
@@ -37,6 +43,12 @@
 bun install
 bun run setup:assets -- "C:\path\to\amiya_spine"
 bun run dev
+```
+
+Tauri 版候选运行：
+
+```bash
+bun run tauri:dev
 ```
 
 详细部署、启动、MCP 和排错见 [docs/deployment.zh-CN.md](docs/deployment.zh-CN.md)。
@@ -88,6 +100,18 @@ bun run ai:configure -- --target all
 
 其他 MCP 工具可以参考 [docs/ai-tools.zh-CN.md](docs/ai-tools.zh-CN.md)。
 
+## Codex 插件一键安装
+
+仓库内提供了 repo-local Codex 插件：
+
+```text
+plugins/spine-companion-status
+```
+
+在支持插件市场文件的 Codex 环境中，可通过 `.agents/plugins/marketplace.json`
+安装 `Spine Companion Status`。插件会提供同名 skill 和 `spine_companion` MCP
+桥接配置，默认使用 Bun 启动本地桥接服务。
+
 ## 状态与动画
 
 | 状态 | Spine 动画 |
@@ -109,6 +133,8 @@ bun run ai:configure -- --target all
 
 Windows 托盘菜单可以显示/隐藏状态面板、显示/隐藏工程进展气泡、切换置顶、缩放、重置大小、切状态和退出。
 拖动透明舞台会移动窗口；横向拖动时会临时进入 `running`，并按左右方向镜像模型。
+
+设置面板提供模型选择和下载导入。内置 Ark-Models 示例只会下载到本地配置目录；仓库和公开 release 不包含素材本体。
 
 ## 开源注意事项
 

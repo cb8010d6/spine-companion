@@ -19,8 +19,8 @@
 
 ## 2. 最简单的 Windows Release 启动
 
-1. 下载 `spine-companion-0.1.2-windows-x64-portable.exe`。
-2. 在 exe 同目录创建 `companion.local.json`。
+1. 下载最新 Windows 安装包或便携包。
+2. 打开右下角托盘菜单，选择 `Open Config Folder`，在打开的目录里创建 `companion.local.json`。
 3. 写入并修改路径：
 
 ```json
@@ -32,13 +32,15 @@
 }
 ```
 
-4. 双击 exe。
+4. 双击启动。如果没有显示模型，托盘菜单再次选择 `Open Config Folder` 检查配置文件位置。
 
 Release 版也会读取：
 
 ```text
 %APPDATA%\spine-companion\companion.local.json
 ```
+
+安装目录同级的 `companion.local.json` 也会读取，但用户配置目录更稳定，覆盖安装不会影响。
 
 ## 3. 从源码运行
 
@@ -49,6 +51,18 @@ bun install
 bun run setup:assets -- "C:\path\to\spine_model_folder"
 bun run dev
 ```
+
+Tauri 版候选运行：
+
+```bash
+bun run tauri:dev
+```
+
+Tauri 版托盘菜单提供：显示窗口、显示/隐藏状态面板、显示/隐藏进度气泡、切换气泡阴影和背景、拖动模式、缩放、切换状态、打开本地 API、打开配置目录和退出。
+
+内置设置面板也提供模型选择。选择 `Amiya Guard Skin #16` 后点击
+`Download and use`，应用会从 `isHarryh/Ark-Models` 下载素材到本机配置目录，并写入
+`companion.local.json`。下载完成后会直接切换加载；素材只保存在本机，不会提交到仓库。
 
 浏览器预览：
 
@@ -117,7 +131,24 @@ bun run skill:install
 bun run ai:configure -- --target all
 ```
 
-## 6. 构建与发布
+## 6. Codex 插件一键安装
+
+仓库包含 repo-local 插件：
+
+```text
+plugins/spine-companion-status
+```
+
+支持 `.agents/plugins/marketplace.json` 的 Codex 环境会看到 `Spine Companion Status`。
+安装后它会提供：
+
+- `spine-companion-status` skill。
+- `spine_companion` MCP server 配置。
+- 默认使用 `bun` 启动 `plugins/spine-companion-status/scripts/mcp-companion-server.mjs`。
+
+插件仍然需要桌面应用或 `bun run dev:api` 正在运行，否则 MCP 工具无法连接本地 API。
+
+## 7. 构建与发布
 
 检查：
 
@@ -135,7 +166,22 @@ bun run release:win
 
 macOS/Linux release 由 GitHub Actions 在对应 runner 上构建。
 
-## 7. 排错
+本地自用 Tauri portable-with-assets 文件夹：
+
+```bash
+bun run tauri:portable:assets
+```
+
+输出目录：
+
+```text
+release/Spine Companion Portable/
+release/Spine Companion Portable.zip
+```
+
+这个脚本会下载 Ark-Models 测试素材到 portable 文件夹的 `models/` 目录。它只适合本地自用或你确认授权后的分发；公开开源 release 不应内置这些素材。
+
+## 8. 排错
 
 - 模型缺失：重新运行 `bun run setup:assets -- "C:\path\to\spine_model_folder"`。
 - 端口冲突：设置 `COMPANION_PORT`，并同步更新 MCP 的 `COMPANION_API`。

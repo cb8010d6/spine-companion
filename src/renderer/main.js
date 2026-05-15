@@ -16,10 +16,25 @@ const bubbleMessage = document.getElementById("bubble-message");
 const completionToast = document.getElementById("completion-toast");
 const completionTitle = document.getElementById("completion-title");
 const completionMessage = document.getElementById("completion-message");
+const settingsToggle = document.getElementById("settings-toggle");
+const settingsPanel = document.getElementById("settings-panel");
+const settingHud = document.getElementById("setting-hud");
+const settingBubble = document.getElementById("setting-bubble");
+const settingShadow = document.getElementById("setting-shadow");
+const settingBubbleBackground = document.getElementById("setting-bubble-background");
+const settingDragMode = document.getElementById("setting-drag-mode");
+const settingZoomIn = document.getElementById("setting-zoom-in");
+const settingZoomOut = document.getElementById("setting-zoom-out");
+const settingZoomReset = document.getElementById("setting-zoom-reset");
+const modelSelect = document.getElementById("model-select");
+const modelImport = document.getElementById("model-import");
+const modelStatus = document.getElementById("model-status");
 const reminderForm = document.getElementById("reminder-form");
 const reminderText = document.getElementById("reminder-text");
 const reminderDelay = document.getElementById("reminder-delay");
 const emptyState = document.getElementById("empty-state");
+const emptyStatePath = document.getElementById("empty-state-path");
+const emptyImport = document.getElementById("empty-import");
 
 let provider = null;
 let player = null;
@@ -41,6 +56,7 @@ let completionToastTimer = null;
 let mousePassthrough = false;
 let pendingMousePassthroughEvent = null;
 let mousePassthroughFrame = 0;
+let runtimeConfig = null;
 
 function applyUiSettings(settings = {}) {
   currentUiSettings = { ...currentUiSettings, ...settings };
@@ -51,7 +67,28 @@ function applyUiSettings(settings = {}) {
   document.body.dataset.bubbleBackground = currentUiSettings.bubbleBackground || "solid";
   player?.setHudVisible(currentUiSettings.hudVisible !== false);
   player?.setDragMode(currentUiSettings.dragMode || "compatible");
+  syncSettingsPanel();
   updateBubble(currentState);
+}
+
+function syncSettingsPanel() {
+  if (!settingHud) return;
+  settingHud.checked = currentUiSettings.hudVisible !== false;
+  settingBubble.checked = currentUiSettings.bubbleVisible !== false;
+  settingShadow.checked = currentUiSettings.bubbleShadow !== false;
+  settingBubbleBackground.value = currentUiSettings.bubbleBackground || "solid";
+  settingDragMode.value = currentUiSettings.dragMode || "compatible";
+}
+
+async function updateUiSettings(patch) {
+  const next = { ...currentUiSettings, ...patch };
+  applyUiSettings(next);
+  try {
+    const confirmed = await window.companion?.setUiSettings?.(patch);
+    if (confirmed) applyUiSettings(confirmed);
+  } catch (error) {
+    console.warn("Unable to update UI settings", error);
+  }
 }
 
 function applyBubbleAnchor(anchor = currentBubbleAnchor) {
@@ -207,6 +244,81 @@ function updateCompletionToast(state) {
   }, 10000);
 }
 
+function renderModelCatalog(config) {
+  const catalog = config.models?.catalog || [];
+  modelSelect.innerHTML = "";
+  for (const model of catalog) {
+    const option = document.createElement("option");
+    option.value = model.id;
+    option.textContent = model.name || model.id;
+    modelSelect.appendChild(option);
+  }
+  const hasModels = catalog.length > 0 && window.companion?.importModel;
+  modelSelect.disabled = !hasModels;
+  modelImport.disabled = !hasModels;
+  emptyImport.hidden = !hasModels;
+}
+
+async function importSelectedModel(source = "settings") {
+  const id = modelSelect.value || runtimeConfig?.models?.catalog?.[0]?.id;
+  if (!id || !window.companion?.importModel) return;
+  modelStatus.textContent = "Downloading model...";
+  modelImport.disabled = true;
+  emptyImport.disabled = true;
+  try {
+    const result = await window.companion.importModel({ id });
+    runtimeConfig = {
+      ...runtimeConfig,
+      spine: {
+        ...runtimeConfig.spine,
+        skel: result.skel,
+        assetUrl: `${result.assetUrl}?t=${Date.now()}`,
+        assetDirConfigured: true
+      }
+    };
+    await loadPlayer(runtimeConfig);
+    modelStatus.textContent = `Imported and loaded from ${result.assetDir}.`;
+    if (!emptyState.hidden) {
+      emptyState.querySelector("span").textContent = "Model imported and loaded.";
+      emptyStatePath.textContent = result.localConfigPath;
+    }
+    if (source === "empty") settingsPanel.hidden = false;
+  } catch (error) {
+    modelStatus.textContent = error.message;
+    if (!emptyState.hidden) emptyState.querySelector("span").textContent = error.message;
+  } finally {
+    modelImport.disabled = false;
+    emptyImport.disabled = false;
+  }
+}
+
+function showEmptyState(error, config) {
+  emptyState.hidden = false;
+  emptyState.querySelector("span").textContent = error.message;
+  const localPath = config?.paths?.localConfigPath;
+  emptyStatePath.textContent = localPath
+    ? `Put companion.local.json here: ${localPath}`
+    : "";
+}
+
+async function loadPlayer(config) {
+  player?.destroy();
+  stage.innerHTML = "";
+  player = new SpinePlayer(stage, config);
+  await player.init();
+  player.onAutoReturn = (state) => provider.setState({ state, source: "renderer" });
+  player.onAnchorChange = (anchor) => {
+    applyBubbleAnchor(anchor);
+    updateBubble(currentState);
+  };
+  player.setHudVisible(currentUiSettings.hudVisible !== false);
+  player.setDragMode(currentUiSettings.dragMode || "compatible");
+  applyBubbleAnchor(player.getAnchor());
+  player.applyState(currentState, true);
+  emptyState.hidden = true;
+  setMousePassthrough(true);
+}
+
 function wireDragging() {
   shell.addEventListener("pointerdown", (event) => {
     if (event.button !== 0 || event.target.closest(".hud")) return;
@@ -288,25 +400,18 @@ async function boot() {
   // Initialize Tauri bridge if running under Tauri (no-op under Electron)
   if (isTauri()) await initTauriBridge();
   const config = await loadRuntimeConfig();
+  runtimeConfig = config;
   applyUiSettings(config.ui);
   provider = createStateProvider(config);
   renderStateControls((state) => provider.setState(state));
+  renderModelCatalog(config);
   wireDragging();
   wireMousePassthrough();
 
   try {
-    player = new SpinePlayer(stage, config);
-    await player.init();
-    player.onAutoReturn = (state) => provider.setState({ state, source: "renderer" });
-    player.onAnchorChange = (anchor) => {
-      applyBubbleAnchor(anchor);
-      updateBubble(currentState);
-    };
-    applyBubbleAnchor(player.getAnchor());
-    setMousePassthrough(true);
+    await loadPlayer(config);
   } catch (error) {
-    emptyState.hidden = false;
-    emptyState.querySelector("span").textContent = error.message;
+    showEmptyState(error, config);
   }
   await window.companion?.rendererReady?.();
 
@@ -325,6 +430,20 @@ async function boot() {
     }
     player?.adjustUserScale(Number(payload?.delta || 0));
   });
+
+  settingsToggle.addEventListener("click", () => {
+    settingsPanel.hidden = !settingsPanel.hidden;
+  });
+  settingHud.addEventListener("change", () => updateUiSettings({ hudVisible: settingHud.checked }));
+  settingBubble.addEventListener("change", () => updateUiSettings({ bubbleVisible: settingBubble.checked }));
+  settingShadow.addEventListener("change", () => updateUiSettings({ bubbleShadow: settingShadow.checked }));
+  settingBubbleBackground.addEventListener("change", () => updateUiSettings({ bubbleBackground: settingBubbleBackground.value }));
+  settingDragMode.addEventListener("change", () => updateUiSettings({ dragMode: settingDragMode.value }));
+  settingZoomIn.addEventListener("click", () => window.companion?.emitScale?.({ delta: 0.08 }));
+  settingZoomOut.addEventListener("click", () => window.companion?.emitScale?.({ delta: -0.08 }));
+  settingZoomReset.addEventListener("click", () => window.companion?.emitScale?.({ action: "reset" }));
+  modelImport.addEventListener("click", () => importSelectedModel("settings"));
+  emptyImport.addEventListener("click", () => importSelectedModel("empty"));
 
   reminderForm.addEventListener("submit", async (event) => {
     event.preventDefault();

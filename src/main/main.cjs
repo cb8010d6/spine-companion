@@ -1,4 +1,5 @@
 const path = require("node:path");
+const fs = require("node:fs");
 const { app, BrowserWindow, ipcMain, Menu, Tray, nativeImage, shell } = require("electron");
 const { loadConfig, getPublicConfig } = require("./config.cjs");
 const { createCompanionServer } = require("./state-server.cjs");
@@ -60,6 +61,73 @@ function setBubbleBackground(background) {
 function setDragMode(mode) {
   uiSettings = { ...uiSettings, dragMode: mode };
   updateUiSettings();
+}
+
+function applyUiSettingsPatch(patch = {}) {
+  const next = { ...uiSettings };
+  if (typeof patch.hudVisible === "boolean") next.hudVisible = patch.hudVisible;
+  if (typeof patch.bubbleVisible === "boolean") next.bubbleVisible = patch.bubbleVisible;
+  if (typeof patch.bubbleShadow === "boolean") next.bubbleShadow = patch.bubbleShadow;
+  if (patch.bubbleBackground) {
+    const allowed = new Set(["solid", "soft", "clear", "light"]);
+    next.bubbleBackground = allowed.has(patch.bubbleBackground) ? patch.bubbleBackground : "solid";
+  }
+  if (patch.dragMode) next.dragMode = patch.dragMode === "smooth" ? "smooth" : "compatible";
+  if (Number.isFinite(Number(patch.bubbleHoldMs))) {
+    next.bubbleHoldMs = Math.min(60000, Math.max(1500, Number(patch.bubbleHoldMs)));
+  }
+  uiSettings = next;
+  updateUiSettings();
+  return uiSettings;
+}
+
+function mergeDeepMutable(base, patch) {
+  for (const [key, value] of Object.entries(patch || {})) {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      if (!base[key] || typeof base[key] !== "object" || Array.isArray(base[key])) base[key] = {};
+      mergeDeepMutable(base[key], value);
+    } else {
+      base[key] = value;
+    }
+  }
+  return base;
+}
+
+async function importModel(input = {}) {
+  const model = publicConfigCache?.models?.catalog?.find((item) => item.id === input.id);
+  if (!model) throw new Error(`Unknown model id: ${input.id}`);
+  const configDir = publicConfigCache.paths?.configDir || path.join(app.getPath("appData"), "spine-companion");
+  const localConfigPath = publicConfigCache.paths?.localConfigPath || path.join(configDir, "companion.local.json");
+  const modelDir = path.join(configDir, "models", model.id);
+  fs.mkdirSync(modelDir, { recursive: true });
+  for (const file of model.files || []) {
+    const response = await fetch(file.url);
+    if (!response.ok) throw new Error(`Failed to download ${file.name}: HTTP ${response.status}`);
+    const bytes = Buffer.from(await response.arrayBuffer());
+    fs.writeFileSync(path.join(modelDir, file.name), bytes);
+  }
+  const current = fs.existsSync(localConfigPath)
+    ? JSON.parse(fs.readFileSync(localConfigPath, "utf8"))
+    : {};
+  mergeDeepMutable(current, {
+    spine: {
+      assetDir: modelDir,
+      skel: model.skel
+    }
+  });
+  fs.mkdirSync(path.dirname(localConfigPath), { recursive: true });
+  fs.writeFileSync(localConfigPath, `${JSON.stringify(current, null, 2)}\n`);
+  serverRuntime?.setAssetRoot(modelDir);
+  const origin = publicConfigCache?.server?.origin || `http://${publicConfigCache?.server?.host || "127.0.0.1"}:17388`;
+  return {
+    id: model.id,
+    name: model.name,
+    assetDir: modelDir,
+    skel: model.skel,
+    assetUrl: `${origin}/assets/spine/${encodeURIComponent(model.skel)}`,
+    localConfigPath,
+    requiresRestart: false
+  };
 }
 
 function updateUiSettings() {
@@ -192,6 +260,7 @@ function buildTrayMenu() {
     { label: "State", submenu: quickStateMenuItems() },
     { type: "separator" },
     { label: "Open Local API", click: () => shell.openExternal(publicConfigCache?.server?.origin || "http://127.0.0.1:17388") },
+    { label: "Open Config Folder", click: () => shell.openPath(publicConfigCache?.paths?.configDir || app.getPath("userData")) },
     { label: "Quit", click: () => app.quit() }
   ]);
 }
@@ -252,6 +321,12 @@ function registerIpc(config) {
   ipcMain.handle("companion:get-state", () => serverRuntime.store.snapshot());
   ipcMain.handle("companion:set-state", (_event, state) => serverRuntime.store.setState(state));
   ipcMain.handle("companion:create-reminder", (_event, reminder) => serverRuntime.store.createReminder(reminder));
+  ipcMain.handle("companion:set-ui-settings", (_event, settings) => applyUiSettingsPatch(settings));
+  ipcMain.handle("companion:emit-scale", (_event, payload) => {
+    sendToRenderer("companion:scale", payload);
+    return true;
+  });
+  ipcMain.handle("companion:import-model", (_event, input) => importModel(input));
 
   serverRuntime.store.emitter.on("state", (state) => {
     if (mainWindow && !mainWindow.isDestroyed()) {

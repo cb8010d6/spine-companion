@@ -90,7 +90,9 @@ function isInside(root, file) {
 function createCompanionServer(config, publicConfig) {
   const store = createStateStore(config, stateMachine);
   const sseClients = new Set();
-  const assetRoot = config.spine.assetDir ? path.resolve(config.spine.assetDir) : "";
+  const assetRootState = {
+    current: config.spine.assetDir ? path.resolve(config.spine.assetDir) : ""
+  };
 
   function broadcastSse(event, value) {
     const payload = `event: ${event}\ndata: ${JSON.stringify(value)}\n\n`;
@@ -156,6 +158,7 @@ function createCompanionServer(config, publicConfig) {
       }
 
       if (req.method === "GET" && url.pathname.startsWith("/assets/spine/")) {
+        const assetRoot = assetRootState.current;
         if (!assetRoot) {
           sendText(res, 404, "No Spine assetDir is configured.", req);
           return;
@@ -230,6 +233,9 @@ function createCompanionServer(config, publicConfig) {
     close() {
       for (const client of wss.clients) client.close();
       server.close();
+    },
+    setAssetRoot(nextAssetRoot) {
+      assetRootState.current = nextAssetRoot ? path.resolve(nextAssetRoot) : "";
     }
   };
 }

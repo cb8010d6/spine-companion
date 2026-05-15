@@ -5,6 +5,9 @@ contextBridge.exposeInMainWorld("companion", {
   getState: () => ipcRenderer.invoke("companion:get-state"),
   setState: (state) => ipcRenderer.invoke("companion:set-state", state),
   createReminder: (reminder) => ipcRenderer.invoke("companion:create-reminder", reminder),
+  setUiSettings: (settings) => ipcRenderer.invoke("companion:set-ui-settings", settings),
+  emitScale: (payload) => ipcRenderer.invoke("companion:emit-scale", payload),
+  importModel: (input) => ipcRenderer.invoke("companion:import-model", input),
   onState: (callback) => {
     const handler = (_event, state) => callback(state);
     ipcRenderer.on("companion:state", handler);

@@ -28,6 +28,8 @@ export class SpinePlayer {
     this.baseFitScale = null;
     this.lastLayoutSize = { width: 0, height: 0 };
     this.resizeTimer = null;
+    this.handleResize = null;
+    this.handleWheel = null;
   }
 
   async init() {
@@ -43,14 +45,16 @@ export class SpinePlayer {
     this.app.stage.addChild(this.model);
 
     await this.loadSpine();
-    window.addEventListener("resize", () => {
+    this.handleResize = () => {
       window.clearTimeout(this.resizeTimer);
       this.resizeTimer = window.setTimeout(() => this.layout({ forceFitRecalc: true }), 90);
-    });
-    this.stageElement.addEventListener("wheel", (event) => {
+    };
+    this.handleWheel = (event) => {
       event.preventDefault();
       this.adjustUserScale(event.deltaY > 0 ? -0.05 : 0.05);
-    }, { passive: false });
+    };
+    window.addEventListener("resize", this.handleResize);
+    this.stageElement.addEventListener("wheel", this.handleWheel, { passive: false });
   }
 
   async loadSpine() {
@@ -353,6 +357,9 @@ export class SpinePlayer {
 
   destroy() {
     window.clearTimeout(this.returnTimer);
+    window.clearTimeout(this.resizeTimer);
+    if (this.handleResize) window.removeEventListener("resize", this.handleResize);
+    if (this.handleWheel) this.stageElement.removeEventListener("wheel", this.handleWheel);
     if (this.app) this.app.destroy(true, { children: true, texture: false, baseTexture: false });
   }
 }

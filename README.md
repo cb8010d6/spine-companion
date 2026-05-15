@@ -20,9 +20,14 @@ Local asset config is written to `companion.local.json`, which is ignored by git
 
 ### Use A Release Build
 
-1. Download `spine-companion-0.1.2-windows-x64-portable.exe` from the latest
-   GitHub Release.
-2. Put `companion.local.json` next to the exe:
+1. Download the latest Windows installer or portable build from GitHub Release.
+2. Prefer putting `companion.local.json` in the per-user config folder:
+
+```text
+%APPDATA%\spine-companion\companion.local.json
+```
+
+You can also put it next to the exe:
 
 ```json
 {
@@ -33,7 +38,8 @@ Local asset config is written to `companion.local.json`, which is ignored by git
 }
 ```
 
-3. Double-click the exe.
+3. Double-click the app. Use the tray menu to open the config folder, show the
+   status panel, zoom, switch states, and quit.
 
 ### Run From Source
 
@@ -41,6 +47,12 @@ Local asset config is written to `companion.local.json`, which is ignored by git
 bun install
 bun run setup:assets -- "C:\path\to\amiya_spine"
 bun run dev
+```
+
+Run the Tauri candidate build from source:
+
+```bash
+bun run tauri:dev
 ```
 
 For detailed deployment, startup, MCP, and troubleshooting steps, see
@@ -109,6 +121,19 @@ Supported targets include Codex Desktop, Codex CLI, Cursor, Claude Desktop,
 Claude Code, and Claude CLI. Unsupported MCP tools can copy the JSON snippets in
 [docs/ai-tools.md](docs/ai-tools.md).
 
+## One-Click Codex Plugin
+
+The repo includes a local Codex plugin:
+
+```text
+plugins/spine-companion-status
+```
+
+Codex environments that support repo marketplace files can install
+`Spine Companion Status` from `.agents/plugins/marketplace.json`. The plugin
+provides the status-reporting skill and a `spine_companion` MCP bridge config
+that starts with Bun by default.
+
 ## States And Animations
 
 | State | Spine animation |
@@ -147,6 +172,10 @@ The Windows tray menu can show or hide the status panel, toggle always-on-top,
 show or hide the progress bubble, zoom the model, reset size, switch states, and
 quit. Dragging the transparent stage moves the window; horizontal dragging
 temporarily switches to `running` and mirrors the model left or right.
+
+The settings panel includes a model picker and download/import action. The
+bundled Ark-Models catalog entry downloads only into the local config folder;
+this repository and public releases do not include the model asset files.
 
 ## Open-Source Notes
 
