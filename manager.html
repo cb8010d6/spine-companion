@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Spine Companion - Manager</title>
+    <link rel="stylesheet" href="/src/renderer/manager.css" />
+  </head>
+  <body>
+    <div id="manager-app">
+      <aside id="sidebar">
+        <div class="sidebar-header">Spine Companion</div>
+        <nav id="manager-nav">
+          <button type="button" data-view="library" class="active">Library</button>
+          <button type="button" data-view="installed">Installed</button>
+          <button type="button" data-view="downloads">Downloads</button>
+          <button type="button" data-view="settings">Settings</button>
+          <button type="button" data-view="diagnostics">Diagnostics</button>
+        </nav>
+      </aside>
+      <div class="main-wrapper">
+        <header class="topbar">
+          <div id="topbar-status">Loading...</div>
+        </header>
+        <main id="view-container"></main>
+      </div>
+    </div>
+
+    <!-- Modal Container -->
+    <div id="modal-container" class="hidden">
+      <div class="modal">
+        <div class="modal-title" id="modal-title"></div>
+        <div class="modal-body" id="modal-body"></div>
+        <div class="modal-actions" id="modal-actions"></div>
+      </div>
+    </div>
+
+    <script type="module" src="/src/renderer/manager.js"></script>
+  </body>
+</html>

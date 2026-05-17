@@ -6,7 +6,7 @@ Open-source desktop companion MVP for Spine 3.8 models. It uses Electron,
 `pixi.js@6.5.10`, and `pixi-spine@3.1.2` to render `.skel/.atlas/.png` directly
 with transparent background, always-on-top window behavior, dragging, scaling,
 click interaction, state transitions, a local status API, MCP bridge, progress
-bubble, tray controls, and simple reminders.
+bubble, tray controls, simple reminders, and a tool-like Manager window.
 
 ## Asset Policy
 
@@ -39,7 +39,7 @@ You can also put it next to the exe:
 ```
 
 3. Double-click the app. Use the tray menu to open the config folder, show the
-   status panel, zoom, switch states, and quit.
+   status panel, open the Manager window, zoom, switch states, and quit.
 
 ### Run From Source
 

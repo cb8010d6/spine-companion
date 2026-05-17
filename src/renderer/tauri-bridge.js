@@ -32,6 +32,13 @@ export async function initTauriBridge() {
     setState: (state) => _tauriInvoke("set_companion_state", { input: state }),
     createReminder: (reminder) => _tauriInvoke("create_reminder_cmd", { input: reminder }),
     setUiSettings: (settings) => _tauriInvoke("set_ui_settings", { input: settings }),
+    saveSettings: (patch) => _tauriInvoke("save_settings", { input: { patch } }),
+    getDiagnostics: () => _tauriInvoke("get_diagnostics"),
+    getInstalledModels: () => _tauriInvoke("get_installed_models"),
+    removeModel: (id) => _tauriInvoke("remove_model", { id }),
+    openFolder: (p) => _tauriInvoke("open_folder", { p }),
+    openManager: () => _tauriInvoke("open_manager_window"),
+    quitApp: () => _tauriInvoke("quit_app"),
     emitScale: (payload) => _tauriInvoke("emit_scale_event", { input: payload }),
     importModel: (input) => _tauriInvoke("import_model", { input }),
     onState: (callback) => {
@@ -52,6 +59,27 @@ export async function initTauriBridge() {
     onScale: (callback) => {
       let unlisten = null;
       _tauriListen("companion:scale", (event) => {
+        callback(event.payload);
+      }).then((fn) => { unlisten = fn; });
+      return () => { if (unlisten) unlisten(); };
+    },
+    onModelImported: (callback) => {
+      let unlisten = null;
+      _tauriListen("companion:model-imported", (event) => {
+        callback(event.payload);
+      }).then((fn) => { unlisten = fn; });
+      return () => { if (unlisten) unlisten(); };
+    },
+    onConfigChanged: (callback) => {
+      let unlisten = null;
+      _tauriListen("companion:config-changed", (event) => {
+        callback(event.payload);
+      }).then((fn) => { unlisten = fn; });
+      return () => { if (unlisten) unlisten(); };
+    },
+    onDownloadProgress: (callback) => {
+      let unlisten = null;
+      _tauriListen("companion:download-progress", (event) => {
         callback(event.payload);
       }).then((fn) => { unlisten = fn; });
       return () => { if (unlisten) unlisten(); };

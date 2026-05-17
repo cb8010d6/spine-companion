@@ -1,0 +1,247 @@
+:root {
+  --bg: #202124;
+  --bg-panel: #292A2D;
+  --bg-hover: #3C4043;
+  --border: #3C4043;
+  --text: #E8EAED;
+  --text-muted: #9AA0A6;
+  --accent: #8AB4F8;
+  --danger: #F28B82;
+  --success: #81C995;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  user-select: none;
+}
+
+#panel-app {
+  width: 100%;
+  height: 100vh;
+  box-sizing: border-box;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  color: var(--text);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+}
+
+.panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-panel);
+  border-top-left-radius: 8px;
+  border-top-right-radius: 8px;
+  /* Make header draggable if possible, but Tauri frameless relies on custom drag region */
+  -webkit-app-region: drag;
+}
+
+.logo-area {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+.dot.working { background: var(--accent); }
+.dot.failed { background: var(--danger); }
+
+.model-section {
+  display: flex;
+  padding: 16px;
+  gap: 12px;
+  align-items: center;
+}
+
+.model-preview {
+  width: 48px;
+  height: 48px;
+  border-radius: 6px;
+  background: var(--bg-hover);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
+
+.model-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.model-name {
+  font-weight: 600;
+  font-size: 14px;
+  margin-bottom: 4px;
+}
+
+.model-skel {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.divider {
+  height: 1px;
+  background: var(--border);
+  margin: 0 16px;
+}
+
+.controls-section {
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.control-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.control-row .icon {
+  color: var(--text-muted);
+  display: flex;
+}
+
+.control-row label {
+  flex: 1;
+}
+
+.control-row input[type="range"] {
+  width: 80px;
+}
+
+.control-row select {
+  background: var(--bg-panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 11px;
+}
+
+.control-row .value {
+  width: 36px;
+  text-align: right;
+  font-family: monospace;
+  color: var(--text-muted);
+}
+
+/* Switches */
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 28px;
+  height: 16px;
+}
+.switch input { opacity: 0; width: 0; height: 0; }
+.slider {
+  position: absolute; cursor: pointer;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background-color: var(--bg-hover);
+  transition: .2s; border-radius: 16px;
+}
+.slider:before {
+  position: absolute; content: "";
+  height: 12px; width: 12px;
+  left: 2px; bottom: 2px;
+  background-color: var(--text);
+  transition: .2s; border-radius: 50%;
+}
+input:checked + .slider { background-color: var(--accent); }
+input:checked + .slider:before { transform: translateX(12px); background-color: #000; }
+
+.ai-bridge-section {
+  padding: 12px 16px;
+}
+
+.ai-title {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+  text-transform: uppercase;
+}
+
+.ai-list {
+  display: flex;
+  justify-content: space-between;
+}
+
+.ai-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+}
+
+.ai-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--text-muted);
+}
+.ai-dot.on { background: var(--success); }
+
+.actions-section {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  padding: 12px 16px;
+  gap: 8px;
+}
+
+button {
+  background: transparent;
+  border: none;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: background 0.15s;
+  width: 100%;
+}
+
+button:hover {
+  background: var(--bg-hover);
+}
+
+button.danger {
+  color: var(--danger);
+}
+
+button.danger:hover {
+  background: rgba(242, 139, 130, 0.1);
+}

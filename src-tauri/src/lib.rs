@@ -8,7 +8,7 @@ use state::{
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::{
-    menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
+    menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, State, WebviewWindow,
 };
@@ -17,7 +17,7 @@ struct AppData {
     store: StateStore,
     tx: StateBroadcast,
     reminders: ReminderStore,
-    public_config: serde_json::Value,
+    public_config: Arc<Mutex<serde_json::Value>>,
     ui_settings: Arc<Mutex<UiSettings>>,
     config_dir: PathBuf,
     local_config_path: PathBuf,
@@ -69,6 +69,12 @@ struct ImportModelResult {
     asset_url: String,
     local_config_path: String,
     requires_restart: bool,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SaveSettingsInput {
+    patch: serde_json::Value,
 }
 
 fn fallback_config() -> serde_json::Value {
@@ -297,11 +303,20 @@ fn current_ui_settings(data: &AppData) -> UiSettings {
     data.ui_settings
         .lock()
         .map(|settings| settings.clone())
-        .unwrap_or_else(|_| ui_settings_from_config(&data.public_config))
+        .unwrap_or_else(|_| {
+            data.public_config
+                .lock()
+                .map(|config| ui_settings_from_config(&config))
+                .unwrap_or_else(|_| ui_settings_from_config(&fallback_config()))
+        })
 }
 
 fn public_config_with_ui(data: &AppData) -> serde_json::Value {
-    let mut public = data.public_config.clone();
+    let mut public = data
+        .public_config
+        .lock()
+        .map(|config| config.clone())
+        .unwrap_or_else(|_| fallback_config());
     if let Ok(value) = serde_json::to_value(current_ui_settings(data)) {
         public["ui"] = value;
     }
@@ -319,10 +334,6 @@ fn update_ui_settings(app: &AppHandle, patch: UiSettingsPatch) -> Option<UiSetti
     };
     let _ = app.emit("companion:ui", next.clone());
     Some(next)
-}
-
-fn emit_scale(app: &AppHandle, payload: ScalePayload) {
-    let _ = app.emit("companion:scale", payload);
 }
 
 fn open_external(target: &str) -> std::io::Result<()> {
@@ -505,6 +516,7 @@ async fn set_ui_settings(
         settings.clone()
     };
     window
+        .app_handle()
         .emit("companion:ui", next.clone())
         .map_err(|error| error.to_string())?;
     Ok(next)
@@ -519,10 +531,16 @@ async fn emit_scale_event(window: WebviewWindow, input: ScalePayload) -> Result<
 
 #[tauri::command]
 async fn import_model(
+    app: tauri::AppHandle,
     data: State<'_, AppData>,
     input: ImportModelInput,
 ) -> Result<ImportModelResult, String> {
-    let model = model_by_id(&data.public_config, &input.id)
+    let public_config = data
+        .public_config
+        .lock()
+        .map(|config| config.clone())
+        .map_err(|_| "Config lock is poisoned".to_string())?;
+    let model = model_by_id(&public_config, &input.id)
         .ok_or_else(|| format!("Unknown model id: {}", input.id))?;
     let name = model
         .get("name")
@@ -544,7 +562,8 @@ async fn import_model(
         .map_err(|error| error.to_string())?;
     let client = reqwest::Client::new();
 
-    for file in files {
+    let total_files = files.len();
+    for (i, file) in files.iter().enumerate() {
         let file_name = file
             .get("name")
             .and_then(|value| value.as_str())
@@ -553,6 +572,15 @@ async fn import_model(
             .get("url")
             .and_then(|value| value.as_str())
             .ok_or_else(|| "Model file is missing url".to_string())?;
+
+        let _ = app.emit("companion:download-progress", serde_json::json!({
+            "id": input.id,
+            "file": file_name,
+            "current": i + 1,
+            "total": total_files,
+            "status": "downloading"
+        }));
+
         let bytes = client
             .get(url)
             .send()
@@ -572,6 +600,18 @@ async fn import_model(
     let canonical_model_dir = model_dir
         .canonicalize()
         .map_err(|error| error.to_string())?;
+    if let Ok(mut public) = data.public_config.lock() {
+        merge_json(
+            &mut public,
+            serde_json::json!({
+                "spine": {
+                    "assetDir": canonical_model_dir.to_string_lossy().to_string(),
+                    "assetDirConfigured": true,
+                    "skel": skel
+                }
+            }),
+        );
+    }
     {
         let mut asset_root = data.asset_root.write().await;
         *asset_root = Some(canonical_model_dir.clone());
@@ -583,7 +623,7 @@ async fn import_model(
         .and_then(|origin| origin.as_str())
         .unwrap_or("http://127.0.0.1:17388");
 
-    Ok(ImportModelResult {
+    let result = ImportModelResult {
         id: input.id,
         name,
         asset_dir: canonical_model_dir.to_string_lossy().to_string(),
@@ -591,7 +631,197 @@ async fn import_model(
         asset_url: format!("{}/assets/spine/{}", origin, url_encode_path_segment(&skel)),
         local_config_path: data.local_config_path.to_string_lossy().to_string(),
         requires_restart: false,
-    })
+    };
+
+    let _ = app.emit("companion:model-imported", result.clone());
+
+    Ok(result)
+}
+
+#[tauri::command]
+async fn save_settings(
+    app: tauri::AppHandle,
+    data: State<'_, AppData>,
+    input: SaveSettingsInput,
+) -> Result<(), String> {
+    let path = &data.local_config_path;
+    let patch = input.patch;
+    let mut config = read_json_if_exists(path).unwrap_or_else(|| serde_json::json!({}));
+    merge_json(&mut config, patch.clone());
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let text = serde_json::to_string_pretty(&config).map_err(|error| error.to_string())?;
+    std::fs::write(path, format!("{}\n", text)).map_err(|error| error.to_string())?;
+    if let Ok(mut public) = data.public_config.lock() {
+        merge_json(&mut public, patch.clone());
+    }
+    if let Some(ui_patch) = patch.get("ui").cloned() {
+        if let Ok(patch) = serde_json::from_value::<UiSettingsPatch>(ui_patch) {
+            let _ = update_ui_settings(&app, patch);
+        }
+    }
+    let _ = app.emit("companion:config-changed", public_config_with_ui(&data));
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_diagnostics(data: State<'_, AppData>) -> Result<serde_json::Value, String> {
+    let public = public_config_with_ui(&data);
+    let origin = public.get("server").and_then(|s| s.get("origin")).and_then(|o| o.as_str()).unwrap_or("http://127.0.0.1:17388");
+
+    let state_ok = reqwest::get(&format!("{}/state", origin)).await.is_ok();
+
+    let local_config_exists = data.local_config_path.exists();
+
+    let mut asset_dir_exists = false;
+    let mut has_skel = false;
+    let mut has_atlas = false;
+    let mut has_png = false;
+
+    if let Some(asset_root) = &*data.asset_root.read().await {
+        asset_dir_exists = asset_root.exists();
+        if let Ok(mut entries) = tokio::fs::read_dir(asset_root).await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let path = entry.path();
+                if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
+                    if ext == "skel" { has_skel = true; }
+                    if ext == "atlas" { has_atlas = true; }
+                    if ext == "png" { has_png = true; }
+                }
+            }
+        }
+    }
+
+    let mut mcp_matches = Vec::new();
+    let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or_default();
+    if !home.is_empty() {
+        let home_path = std::path::Path::new(&home);
+        let mut mcp_paths = vec![
+            ("Codex", home_path.join(".codex").join("config.toml")),
+            ("Gemini / Antigravity", home_path.join(".gemini").join("antigravity").join("mcp_config.json")),
+        ];
+        #[cfg(target_os = "windows")]
+        {
+            let roaming = std::env::var("APPDATA")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| home_path.join("AppData").join("Roaming"));
+            mcp_paths.push(("Claude", roaming.join("Claude").join("claude_desktop_config.json")));
+            mcp_paths.push(("Roo / Cline", roaming.join("Code").join("User").join("globalStorage").join("rooveterinaryinc.roo-cline").join("settings").join("cline_mcp_settings.json")));
+        }
+        #[cfg(target_os = "macos")]
+        {
+            mcp_paths.push(("Claude", home_path.join("Library").join("Application Support").join("Claude").join("claude_desktop_config.json")));
+            mcp_paths.push(("Roo / Cline", home_path.join("Library").join("Application Support").join("Code").join("User").join("globalStorage").join("rooveterinaryinc.roo-cline").join("settings").join("cline_mcp_settings.json")));
+        }
+        #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+        {
+            let config_home = std::env::var("XDG_CONFIG_HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| home_path.join(".config"));
+            mcp_paths.push(("Claude", config_home.join("Claude").join("claude_desktop_config.json")));
+            mcp_paths.push(("Roo / Cline", config_home.join("Code").join("User").join("globalStorage").join("rooveterinaryinc.roo-cline").join("settings").join("cline_mcp_settings.json")));
+        }
+
+        for (tool, p) in mcp_paths {
+            if let Ok(content) = std::fs::read_to_string(&p) {
+                let configured = content.contains("spine_companion") || content.contains("spine-companion");
+                mcp_matches.push(serde_json::json!({
+                    "tool": tool,
+                    "path": p.to_string_lossy(),
+                    "exists": true,
+                    "configured": configured
+                }));
+            }
+        }
+    }
+    let mcp_configured = mcp_matches.iter().any(|item| {
+        item.get("configured")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+    });
+
+    Ok(serde_json::json!({
+        "apiOk": state_ok,
+        "localConfigExists": local_config_exists,
+        "assetDirExists": asset_dir_exists,
+        "hasSkel": has_skel,
+        "hasAtlas": has_atlas,
+        "hasPng": has_png,
+        "mcpConfigured": mcp_configured,
+        "mcpMatches": mcp_matches
+    }))
+}
+
+#[derive(serde::Serialize)]
+struct InstalledModel {
+    id: String,
+    dir: String,
+}
+
+#[tauri::command]
+fn get_installed_models(data: State<'_, AppData>) -> Result<Vec<InstalledModel>, String> {
+    let models_dir = data.config_dir.join("models");
+    let mut models = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(models_dir) {
+        for entry in entries.flatten() {
+            if let Ok(file_type) = entry.file_type() {
+                if file_type.is_dir() {
+                    let id = entry.file_name().to_string_lossy().to_string();
+                    let dir = entry.path().to_string_lossy().to_string();
+                    models.push(InstalledModel { id, dir });
+                }
+            }
+        }
+    }
+    Ok(models)
+}
+
+#[tauri::command]
+fn remove_model(data: State<'_, AppData>, id: String) -> Result<(), String> {
+    if id.contains("..") || id.contains('/') || id.contains('\\') {
+        return Err("Invalid model ID".to_string());
+    }
+    let models_dir = data.config_dir.join("models");
+    let model_dir = models_dir.join(&id);
+    let resolved_models_dir = models_dir
+        .canonicalize()
+        .unwrap_or_else(|_| models_dir.clone());
+    let resolved_model_dir = model_dir
+        .canonicalize()
+        .unwrap_or_else(|_| model_dir.clone());
+    if !resolved_model_dir.starts_with(&resolved_models_dir) {
+        return Err("Path traversal detected".to_string());
+    }
+    let active_asset_dir = data
+        .public_config
+        .lock()
+        .ok()
+        .and_then(|config| string_at(&config, &["spine", "assetDir"]).map(str::to_string));
+    if let Some(active_asset_dir) = active_asset_dir {
+        let active = PathBuf::from(active_asset_dir)
+            .canonicalize()
+            .unwrap_or_else(|_| PathBuf::new());
+        if active == resolved_model_dir {
+            return Err("Cannot remove the active model".to_string());
+        }
+    }
+    if model_dir.exists() {
+        std::fs::remove_dir_all(model_dir).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn open_folder(app: tauri::AppHandle, p: String) -> Result<(), String> {
+    let data = app.state::<AppData>();
+    let requested = PathBuf::from(&p);
+    let allowed_root = data.config_dir.canonicalize().unwrap_or_else(|_| data.config_dir.clone());
+    let requested_canonical = requested.canonicalize().map_err(|error| error.to_string())?;
+    if !requested_canonical.starts_with(&allowed_root) {
+        return Err("Refusing to open a path outside the companion config directory".to_string());
+    }
+    open_external(&requested_canonical.to_string_lossy()).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -618,6 +848,34 @@ fn show_companion_window(win: &WebviewWindow) {
 async fn reveal_window(window: WebviewWindow) -> Result<(), String> {
     show_companion_window(&window);
     Ok(())
+}
+
+#[tauri::command]
+fn open_manager_window(app: tauri::AppHandle) {
+    if let Some(win) = app.get_webview_window("manager") {
+        let _ = win.unminimize();
+        let _ = win.show();
+        let _ = win.set_focus();
+    }
+}
+
+fn show_panel_window(app: &AppHandle) {
+    if let Some(panel) = app.get_webview_window("panel") {
+        let _ = panel.unminimize();
+        let _ = panel.show();
+        let _ = panel.set_focus();
+    }
+}
+
+fn hide_companion_window(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.hide();
+    }
+}
+
+#[tauri::command]
+fn quit_app(app: tauri::AppHandle) {
+    app.exit(0);
 }
 
 fn set_tray_state(app: &AppHandle, state: &str, direction: Option<&str>) {
@@ -735,7 +993,7 @@ pub fn run() {
             store: store.clone(),
             tx: tx.clone(),
             reminders: reminders.clone(),
-            public_config: runtime_config.public.clone(),
+            public_config: Arc::new(Mutex::new(runtime_config.public.clone())),
             ui_settings: Arc::new(Mutex::new(runtime_config.ui_settings.clone())),
             config_dir: runtime_config.config_dir.clone(),
             local_config_path: runtime_config.local_config_path.clone(),
@@ -765,94 +1023,30 @@ pub fn run() {
                 }
             });
 
-            // Build tray menu
-            let initial_ui = {
-                let data = app.state::<AppData>();
-                current_ui_settings(&data)
-            };
-            let show_item = MenuItem::with_id(app, "show", "Show Window", true, None::<&str>)?;
-            let hud_item = CheckMenuItem::with_id(
-                app,
-                "toggle_hud",
-                "Show Status Panel",
-                true,
-                initial_ui.hud_visible,
-                None::<&str>,
-            )?;
-            let bubble_item = CheckMenuItem::with_id(
-                app,
-                "toggle_bubble",
-                "Show Progress Bubble",
-                true,
-                initial_ui.bubble_visible,
-                None::<&str>,
-            )?;
-            let shadow_item = CheckMenuItem::with_id(
-                app,
-                "toggle_shadow",
-                "Bubble Shadow",
-                true,
-                initial_ui.bubble_shadow,
-                None::<&str>,
-            )?;
-            let bg_solid = MenuItem::with_id(app, "bubble_solid", "Solid", true, None::<&str>)?;
-            let bg_soft = MenuItem::with_id(app, "bubble_soft", "Soft", true, None::<&str>)?;
-            let bg_clear = MenuItem::with_id(app, "bubble_clear", "Clear", true, None::<&str>)?;
-            let bg_light = MenuItem::with_id(app, "bubble_light", "Light", true, None::<&str>)?;
-            let bg_menu = Submenu::with_id_and_items(
-                app,
-                "bubble_bg",
-                "Bubble Background",
-                true,
-                &[&bg_solid, &bg_soft, &bg_clear, &bg_light],
-            )?;
-            let drag_compatible =
-                MenuItem::with_id(app, "drag_compatible", "Compatible", true, None::<&str>)?;
-            let drag_smooth = MenuItem::with_id(app, "drag_smooth", "Smooth", true, None::<&str>)?;
-            let drag_menu = Submenu::with_id_and_items(
-                app,
-                "drag_mode",
-                "Drag Mode",
-                true,
-                &[&drag_compatible, &drag_smooth],
-            )?;
-            let zoom_in = MenuItem::with_id(app, "zoom_in", "Zoom In", true, None::<&str>)?;
-            let zoom_out = MenuItem::with_id(app, "zoom_out", "Zoom Out", true, None::<&str>)?;
-            let zoom_reset =
-                MenuItem::with_id(app, "zoom_reset", "Reset Size", true, None::<&str>)?;
+            // Build minimal tray menu
+            let show_item = MenuItem::with_id(app, "show_companion", "Show Companion", true, None::<&str>)?;
+            let hide_item = MenuItem::with_id(app, "hide_companion", "Hide Companion", true, None::<&str>)?;
+            let panel_item = MenuItem::with_id(app, "open_panel", "Open Quick Panel", true, None::<&str>)?;
+            let manager_item = MenuItem::with_id(app, "open_manager", "Open Manager", true, None::<&str>)?;
+            let bubble_item = MenuItem::with_id(app, "toggle_bubble", "Toggle Progress Bubble", true, None::<&str>)?;
+            let hud_item = MenuItem::with_id(app, "toggle_hud", "Toggle Status Panel", true, None::<&str>)?;
+            let diagnostics_item = MenuItem::with_id(app, "diagnostics", "Diagnostics", true, None::<&str>)?;
+            let config_item = MenuItem::with_id(app, "open_config_dir", "Open Config Folder", true, None::<&str>)?;
+            let api_item = MenuItem::with_id(app, "open_local_api", "Open Local API", true, None::<&str>)?;
+            let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let state_idle = MenuItem::with_id(app, "state_idle", "Idle", true, None::<&str>)?;
-            let state_working =
-                MenuItem::with_id(app, "state_working", "Working", true, None::<&str>)?;
-            let state_reviewing =
-                MenuItem::with_id(app, "state_reviewing", "Reviewing", true, None::<&str>)?;
-            let state_running_left = MenuItem::with_id(
+            let state_working = MenuItem::with_id(app, "state_working", "Working", true, None::<&str>)?;
+            let state_reviewing = MenuItem::with_id(app, "state_reviewing", "Reviewing", true, None::<&str>)?;
+            let state_running_left = MenuItem::with_id(app, "state_running_left", "Running Left", true, None::<&str>)?;
+            let state_running_right = MenuItem::with_id(app, "state_running_right", "Running Right", true, None::<&str>)?;
+            let state_success = MenuItem::with_id(app, "state_success", "Success", true, None::<&str>)?;
+            let state_failed = MenuItem::with_id(app, "state_failed", "Failed", true, None::<&str>)?;
+            let state_waiting = MenuItem::with_id(app, "state_waiting", "Waiting", true, None::<&str>)?;
+            let state_sleeping = MenuItem::with_id(app, "state_sleeping", "Sleeping", true, None::<&str>)?;
+            let state_reminder = MenuItem::with_id(app, "state_reminder", "Reminder", true, None::<&str>)?;
+            let state_menu = Submenu::with_items(
                 app,
-                "state_running_left",
-                "Running Left",
-                true,
-                None::<&str>,
-            )?;
-            let state_running_right = MenuItem::with_id(
-                app,
-                "state_running_right",
-                "Running Right",
-                true,
-                None::<&str>,
-            )?;
-            let state_success =
-                MenuItem::with_id(app, "state_success", "Success", true, None::<&str>)?;
-            let state_failed =
-                MenuItem::with_id(app, "state_failed", "Failed", true, None::<&str>)?;
-            let state_waiting =
-                MenuItem::with_id(app, "state_waiting", "Waiting", true, None::<&str>)?;
-            let state_sleeping =
-                MenuItem::with_id(app, "state_sleeping", "Sleeping", true, None::<&str>)?;
-            let state_reminder =
-                MenuItem::with_id(app, "state_reminder", "Reminder", true, None::<&str>)?;
-            let state_menu = Submenu::with_id_and_items(
-                app,
-                "state",
-                "State",
+                "Set State",
                 true,
                 &[
                     &state_idle,
@@ -867,33 +1061,27 @@ pub fn run() {
                     &state_reminder,
                 ],
             )?;
-            let open_api =
-                MenuItem::with_id(app, "open_api", "Open Local API", true, None::<&str>)?;
-            let open_config =
-                MenuItem::with_id(app, "open_config", "Open Config Folder", true, None::<&str>)?;
-            let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let sep = PredefinedMenuItem::separator(app)?;
+            let sep1 = PredefinedMenuItem::separator(app)?;
             let sep2 = PredefinedMenuItem::separator(app)?;
             let sep3 = PredefinedMenuItem::separator(app)?;
             let sep4 = PredefinedMenuItem::separator(app)?;
+
             let menu = Menu::with_items(
                 app,
                 &[
                     &show_item,
-                    &hud_item,
+                    &hide_item,
+                    &panel_item,
+                    &manager_item,
+                    &sep1,
                     &bubble_item,
-                    &shadow_item,
-                    &bg_menu,
-                    &drag_menu,
-                    &sep,
-                    &zoom_in,
-                    &zoom_out,
-                    &zoom_reset,
+                    &hud_item,
                     &sep2,
                     &state_menu,
                     &sep3,
-                    &open_api,
-                    &open_config,
+                    &diagnostics_item,
+                    &config_item,
+                    &api_item,
                     &sep4,
                     &quit_item,
                 ],
@@ -907,80 +1095,36 @@ pub fn run() {
                 .tooltip("Spine Companion")
                 .menu(&menu)
                 .on_menu_event(move |app, event| match event.id.as_ref() {
-                    "show" => {
+                    "show_companion" => {
                         if let Some(win) = app.get_webview_window("main") {
                             show_companion_window(&win);
                         }
                     }
-                    "toggle_hud" => {
-                        let current = current_ui_settings(&app.state::<AppData>());
-                        update_ui_settings(
-                            app,
-                            UiSettingsPatch {
-                                hud_visible: Some(!current.hud_visible),
-                                ..Default::default()
-                            },
-                        );
+                    "hide_companion" => hide_companion_window(app),
+                    "open_panel" => show_panel_window(app),
+                    "open_manager" => {
+                        if let Some(win) = app.get_webview_window("manager") {
+                            let _ = win.unminimize();
+                            let _ = win.show();
+                            let _ = win.set_focus();
+                        }
                     }
                     "toggle_bubble" => {
-                        let current = current_ui_settings(&app.state::<AppData>());
-                        update_ui_settings(
-                            app,
-                            UiSettingsPatch {
-                                bubble_visible: Some(!current.bubble_visible),
-                                ..Default::default()
-                            },
-                        );
+                        let data = app.state::<AppData>();
+                        let visible = current_ui_settings(&data).bubble_visible;
+                        let _ = update_ui_settings(app, UiSettingsPatch {
+                            bubble_visible: Some(!visible),
+                            ..Default::default()
+                        });
                     }
-                    "toggle_shadow" => {
-                        let current = current_ui_settings(&app.state::<AppData>());
-                        update_ui_settings(
-                            app,
-                            UiSettingsPatch {
-                                bubble_shadow: Some(!current.bubble_shadow),
-                                ..Default::default()
-                            },
-                        );
+                    "toggle_hud" => {
+                        let data = app.state::<AppData>();
+                        let visible = current_ui_settings(&data).hud_visible;
+                        let _ = update_ui_settings(app, UiSettingsPatch {
+                            hud_visible: Some(!visible),
+                            ..Default::default()
+                        });
                     }
-                    "bubble_solid" | "bubble_soft" | "bubble_clear" | "bubble_light" => {
-                        update_ui_settings(
-                            app,
-                            UiSettingsPatch {
-                                bubble_background: Some(event.id.as_ref().replace("bubble_", "")),
-                                ..Default::default()
-                            },
-                        );
-                    }
-                    "drag_compatible" | "drag_smooth" => {
-                        update_ui_settings(
-                            app,
-                            UiSettingsPatch {
-                                drag_mode: Some(event.id.as_ref().replace("drag_", "")),
-                                ..Default::default()
-                            },
-                        );
-                    }
-                    "zoom_in" => emit_scale(
-                        app,
-                        ScalePayload {
-                            delta: Some(0.08),
-                            action: None,
-                        },
-                    ),
-                    "zoom_out" => emit_scale(
-                        app,
-                        ScalePayload {
-                            delta: Some(-0.08),
-                            action: None,
-                        },
-                    ),
-                    "zoom_reset" => emit_scale(
-                        app,
-                        ScalePayload {
-                            delta: None,
-                            action: Some("reset".to_string()),
-                        },
-                    ),
                     "state_idle" => set_tray_state(app, "idle", None),
                     "state_working" => set_tray_state(app, "working", None),
                     "state_reviewing" => set_tray_state(app, "reviewing", None),
@@ -991,8 +1135,9 @@ pub fn run() {
                     "state_waiting" => set_tray_state(app, "waiting", None),
                     "state_sleeping" => set_tray_state(app, "sleeping", None),
                     "state_reminder" => set_tray_state(app, "reminder", None),
-                    "open_api" => open_local_api(app),
-                    "open_config" => open_config_dir(app),
+                    "diagnostics" => open_manager_window(app.clone()),
+                    "open_config_dir" => open_config_dir(app),
+                    "open_local_api" => open_local_api(app),
                     "quit" => app.exit(0),
                     _ => {}
                 })
@@ -1000,12 +1145,34 @@ pub fn run() {
                     if let TrayIconEvent::Click {
                         button: MouseButton::Left,
                         button_state: MouseButtonState::Up,
+                        rect,
                         ..
                     } = event
                     {
                         let app = tray.app_handle();
-                        if let Some(win) = app.get_webview_window("main") {
-                            show_companion_window(&win);
+                        if let Some(panel) = app.get_webview_window("panel") {
+                            let panel_size = panel.outer_size().unwrap_or(tauri::PhysicalSize::new(320, 480));
+
+                            // Try to calculate position slightly offset from the tray icon
+                            let (rect_x, rect_y) = match rect.position {
+                                tauri::Position::Physical(p) => (p.x, p.y),
+                                tauri::Position::Logical(p) => (p.x as i32, p.y as i32),
+                            };
+                            let (_rect_w, rect_h) = match rect.size {
+                                tauri::Size::Physical(s) => (s.width as i32, s.height as i32),
+                                tauri::Size::Logical(s) => (s.width as i32, s.height as i32),
+                            };
+
+                            let x = rect_x - (panel_size.width as i32) / 2;
+                            let mut y = rect_y - (panel_size.height as i32) - 10;
+                            if y < 0 {
+                                y = rect_y + rect_h + 10; // If taskbar is on top
+                            }
+
+                            let _ = panel.set_position(tauri::PhysicalPosition::new(x, y));
+                            let _ = panel.unminimize();
+                            let _ = panel.show();
+                            let _ = panel.set_focus();
                         }
                     }
                 })
@@ -1021,9 +1188,16 @@ pub fn run() {
             set_ui_settings,
             emit_scale_event,
             import_model,
+            save_settings,
+            get_diagnostics,
+            get_installed_models,
+            remove_model,
+            open_folder,
             start_drag,
             set_mouse_passthrough,
             reveal_window,
+            open_manager_window,
+            quit_app,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

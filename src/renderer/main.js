@@ -431,6 +431,31 @@ async function boot() {
     player?.adjustUserScale(Number(payload?.delta || 0));
   });
 
+  window.companion?.onModelImported?.(async (result) => {
+    runtimeConfig = {
+      ...runtimeConfig,
+      spine: {
+        ...runtimeConfig.spine,
+        skel: result.skel,
+        assetUrl: `${result.assetUrl}?t=${Date.now()}`,
+        assetDirConfigured: true
+      }
+    };
+    await loadPlayer(runtimeConfig);
+  });
+
+  window.companion?.onConfigChanged?.(async (config) => {
+    runtimeConfig = {
+      ...runtimeConfig,
+      ui: config.ui || runtimeConfig.ui,
+      spine: {
+        ...runtimeConfig.spine,
+        ...(config.spine || {})
+      }
+    };
+    await loadPlayer(runtimeConfig);
+  });
+
   settingsToggle.addEventListener("click", () => {
     settingsPanel.hidden = !settingsPanel.hidden;
   });

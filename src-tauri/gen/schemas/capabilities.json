@@ -1,1 +1,1 @@
-{"main":{"identifier":"main","description":"Allow the main companion window to use Tauri core IPC APIs.","local":true,"windows":["main"],"permissions":["core:default","shell:default"]}}
+{"main":{"identifier":"main","description":"Allow the main, manager and panel windows to use Tauri core IPC APIs.","local":true,"windows":["main","manager","panel"],"permissions":["core:default","shell:default"]}}

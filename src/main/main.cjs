@@ -1,13 +1,18 @@
 const path = require("node:path");
 const fs = require("node:fs");
-const { app, BrowserWindow, ipcMain, Menu, Tray, nativeImage, shell } = require("electron");
+const { Menu, Tray, nativeImage, app, shell, BrowserWindow, ipcMain } = require("electron");
+const os = require("os");
 const { loadConfig, getPublicConfig } = require("./config.cjs");
 const { createCompanionServer } = require("./state-server.cjs");
+const { applyUiSettingsPatch: applySharedUiPatch, normalizeUiSettings } = require("../shared/ui-settings.cjs");
+const { mcpConfigCandidates, detectMcpReferences } = require("../shared/diagnostics-paths.cjs");
+const { trayMenuModel } = require("../shared/tray-menu-model.cjs");
 
 const isDev = !app.isPackaged;
 const trayPngBase64 =
   "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAACWSURBVFhH7dKxDYAwDERRRqGizEIMwXqUjMAuDBDkAsmJrnCcGCPk4lcxulcwzUvKngUgAP8DbOdRhG54wwD18BO65XUD0CgPfcPrAqDBa1+L0Hc8NQCNU68A0DBFb+YANEw97y4AdCetCTB6nBIDLMYpNQDdaBIB6nF3ALrR9n2A5TgVgCYAeu9N9BNaFoAABMAZkPINmrttQ5C/BxgAAAAASUVORK5CYII=";
 let mainWindow = null;
+let managerWindow = null;
 let serverRuntime = null;
 let publicConfigCache = null;
 let dragState = null;
@@ -16,7 +21,7 @@ let dragFrame = null;
 let tray = null;
 let mousePassthrough = false;
 let uiSettings = {
-  hudVisible: true,
+  hudVisible: false,
   bubbleVisible: true,
   bubbleShadow: true,
   bubbleBackground: "solid",
@@ -25,10 +30,16 @@ let uiSettings = {
 };
 let alwaysOnTop = true;
 let isQuitting = false;
+let panelWindow = null;
 
 function rendererUrl() {
   if (isDev) return process.env.VITE_DEV_SERVER_URL || "http://127.0.0.1:17389";
   return `file://${path.join(__dirname, "..", "..", "dist", "index.html")}`;
+}
+
+function managerUrl() {
+  if (isDev) return (process.env.VITE_DEV_SERVER_URL || "http://127.0.0.1:17389") + "/manager.html";
+  return `file://${path.join(__dirname, "..", "..", "dist", "manager.html")}`;
 }
 
 function sendToRenderer(channel, payload) {
@@ -37,46 +48,8 @@ function sendToRenderer(channel, payload) {
   }
 }
 
-function setHudVisible(visible) {
-  uiSettings = { ...uiSettings, hudVisible: Boolean(visible) };
-  updateUiSettings();
-}
-
-function setBubbleVisible(visible) {
-  uiSettings = { ...uiSettings, bubbleVisible: Boolean(visible) };
-  updateUiSettings();
-}
-
-function setBubbleShadow(enabled) {
-  uiSettings = { ...uiSettings, bubbleShadow: Boolean(enabled) };
-  updateUiSettings();
-}
-
-function setBubbleBackground(background) {
-  const allowed = new Set(["solid", "soft", "clear", "light"]);
-  uiSettings = { ...uiSettings, bubbleBackground: allowed.has(background) ? background : "solid" };
-  updateUiSettings();
-}
-
-function setDragMode(mode) {
-  uiSettings = { ...uiSettings, dragMode: mode };
-  updateUiSettings();
-}
-
 function applyUiSettingsPatch(patch = {}) {
-  const next = { ...uiSettings };
-  if (typeof patch.hudVisible === "boolean") next.hudVisible = patch.hudVisible;
-  if (typeof patch.bubbleVisible === "boolean") next.bubbleVisible = patch.bubbleVisible;
-  if (typeof patch.bubbleShadow === "boolean") next.bubbleShadow = patch.bubbleShadow;
-  if (patch.bubbleBackground) {
-    const allowed = new Set(["solid", "soft", "clear", "light"]);
-    next.bubbleBackground = allowed.has(patch.bubbleBackground) ? patch.bubbleBackground : "solid";
-  }
-  if (patch.dragMode) next.dragMode = patch.dragMode === "smooth" ? "smooth" : "compatible";
-  if (Number.isFinite(Number(patch.bubbleHoldMs))) {
-    next.bubbleHoldMs = Math.min(60000, Math.max(1500, Number(patch.bubbleHoldMs)));
-  }
-  uiSettings = next;
+  uiSettings = applySharedUiPatch(uiSettings, patch);
   updateUiSettings();
   return uiSettings;
 }
@@ -100,7 +73,11 @@ async function importModel(input = {}) {
   const localConfigPath = publicConfigCache.paths?.localConfigPath || path.join(configDir, "companion.local.json");
   const modelDir = path.join(configDir, "models", model.id);
   fs.mkdirSync(modelDir, { recursive: true });
-  for (const file of model.files || []) {
+  const files = model.files || [];
+  const total = files.length;
+  for (let i = 0; i < total; i++) {
+    const file = files[i];
+    sendToRenderer("companion:download-progress", { id: model.id, file: file.name, current: i + 1, total, status: "downloading" });
     const response = await fetch(file.url);
     if (!response.ok) throw new Error(`Failed to download ${file.name}: HTTP ${response.status}`);
     const bytes = Buffer.from(await response.arrayBuffer());
@@ -119,6 +96,14 @@ async function importModel(input = {}) {
   fs.writeFileSync(localConfigPath, `${JSON.stringify(current, null, 2)}\n`);
   serverRuntime?.setAssetRoot(modelDir);
   const origin = publicConfigCache?.server?.origin || `http://${publicConfigCache?.server?.host || "127.0.0.1"}:17388`;
+  mergeDeepMutable(publicConfigCache, {
+    spine: {
+      assetDir: modelDir,
+      assetDirConfigured: true,
+      skel: model.skel,
+      assetUrl: `${origin}/assets/spine/${encodeURIComponent(model.skel)}`
+    }
+  });
   return {
     id: model.id,
     name: model.name,
@@ -128,6 +113,117 @@ async function importModel(input = {}) {
     localConfigPath,
     requiresRestart: false
   };
+}
+
+async function saveSettings(patch) {
+  const localConfigPath = publicConfigCache.paths?.localConfigPath || path.join(app.getPath("appData"), "spine-companion", "companion.local.json");
+  const current = fs.existsSync(localConfigPath)
+    ? JSON.parse(fs.readFileSync(localConfigPath, "utf8"))
+    : {};
+  mergeDeepMutable(current, patch);
+  fs.mkdirSync(path.dirname(localConfigPath), { recursive: true });
+  fs.writeFileSync(localConfigPath, `${JSON.stringify(current, null, 2)}\n`);
+
+  mergeDeepMutable(publicConfigCache, patch);
+  if (patch.ui) updateUiSettingsPatch(patch.ui);
+  sendToRenderer("companion:config-changed", publicConfigCache);
+  return true;
+}
+
+function updateUiSettingsPatch(patch) {
+  if (publicConfigCache) {
+    publicConfigCache = {
+      ...publicConfigCache,
+      ui: { ...(publicConfigCache.ui || {}), ...patch }
+    };
+  }
+  sendToRenderer("companion:ui", publicConfigCache.ui);
+  updateTrayMenu();
+}
+
+async function getDiagnostics() {
+  const origin = publicConfigCache?.server?.origin || "http://127.0.0.1:17388";
+  let apiOk = false;
+  try {
+    const res = await fetch(`${origin}/state`);
+    apiOk = res.ok;
+  } catch {}
+
+  const localConfigPath = publicConfigCache?.paths?.localConfigPath;
+  const localConfigExists = localConfigPath ? fs.existsSync(localConfigPath) : false;
+
+  let assetDirExists = false;
+  let hasSkel = false;
+  let hasAtlas = false;
+  let hasPng = false;
+
+  let rootDir = null;
+  if (serverRuntime && serverRuntime.getAssetRoot) {
+    rootDir = serverRuntime.getAssetRoot();
+  }
+
+  if (rootDir && fs.existsSync(rootDir)) {
+    assetDirExists = true;
+    const files = fs.readdirSync(rootDir);
+    hasSkel = files.some(f => f.endsWith(".skel"));
+    hasAtlas = files.some(f => f.endsWith(".atlas"));
+    hasPng = files.some(f => f.endsWith(".png"));
+  }
+
+  const home = os.homedir();
+  const mcp = detectMcpReferences(
+    (file) => fs.existsSync(file) ? fs.readFileSync(file, "utf-8") : "",
+    mcpConfigCandidates(home, process.platform, process.env)
+  );
+
+  return { apiOk, localConfigExists, assetDirExists, hasSkel, hasAtlas, hasPng, mcpConfigured: mcp.configured, mcpMatches: mcp.matches };
+}
+
+function getInstalledModels() {
+  const configDir = publicConfigCache?.paths?.configDir || path.join(app.getPath("appData"), "spine-companion");
+  const modelsDir = path.join(configDir, "models");
+  if (!fs.existsSync(modelsDir)) return [];
+  return fs.readdirSync(modelsDir).filter(name => {
+    return fs.statSync(path.join(modelsDir, name)).isDirectory();
+  }).map(id => {
+    return { id, dir: path.join(modelsDir, id) };
+  });
+}
+
+function removeModel(id) {
+  if (typeof id !== "string" || id.includes("..") || id.includes("/") || id.includes("\\")) {
+    throw new Error("Invalid model ID");
+  }
+  const configDir = publicConfigCache?.paths?.configDir || path.join(app.getPath("appData"), "spine-companion");
+  const modelsDir = path.join(configDir, "models");
+  const modelDir = path.join(modelsDir, id);
+  const resolvedModelsDir = fs.existsSync(modelsDir) ? fs.realpathSync(modelsDir) : path.resolve(modelsDir);
+  const resolvedModelDir = fs.existsSync(modelDir) ? fs.realpathSync(modelDir) : path.resolve(modelDir);
+  if (!resolvedModelDir.startsWith(resolvedModelsDir)) throw new Error("Path traversal detected");
+  const activeAssetDir = publicConfigCache?.spine?.assetDir;
+  if (activeAssetDir && fs.existsSync(activeAssetDir) && fs.realpathSync(activeAssetDir) === resolvedModelDir) {
+    throw new Error("Cannot remove the active model");
+  }
+  if (fs.existsSync(modelDir)) fs.rmSync(modelDir, { recursive: true, force: true });
+}
+
+function openLocalApi() {
+  shell.openExternal(publicConfigCache?.server?.origin || "http://127.0.0.1:17388");
+}
+
+function openConfigDir() {
+  const configDir = publicConfigCache?.paths?.configDir || path.join(app.getPath("appData"), "spine-companion");
+  shell.openPath(configDir);
+}
+
+function openCompanionFolder(targetPath) {
+  const configDir = publicConfigCache?.paths?.configDir || path.join(app.getPath("appData"), "spine-companion");
+  const resolvedConfigDir = fs.realpathSync.native?.(configDir) || fs.realpathSync(configDir);
+  const resolvedTarget = fs.realpathSync.native?.(targetPath) || fs.realpathSync(targetPath);
+  if (!resolvedTarget.startsWith(resolvedConfigDir)) {
+    throw new Error("Refusing to open a path outside the companion config directory");
+  }
+  return shell.openPath(resolvedTarget);
 }
 
 function updateUiSettings() {
@@ -155,114 +251,122 @@ function focusWindow() {
   mainWindow.focus();
 }
 
+function hideCompanionWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.hide();
+}
+
+async function openManager() {
+  if (managerWindow && !managerWindow.isDestroyed()) {
+    if (!managerWindow.isVisible()) managerWindow.show();
+    managerWindow.focus();
+    return;
+  }
+
+  managerWindow = new BrowserWindow({
+    title: "Spine Companion - Manager",
+    width: 800,
+    height: 600,
+    minWidth: 600,
+    minHeight: 400,
+    autoHideMenuBar: true,
+    webPreferences: {
+      preload: path.join(__dirname, "preload.cjs"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true
+    }
+  });
+
+  managerWindow.on("close", (event) => {
+    if (isQuitting) return;
+    event.preventDefault();
+    managerWindow.hide();
+  });
+
+  managerWindow.webContents.setWindowOpenHandler(({ url }) => {
+    shell.openExternal(url);
+    return { action: "deny" };
+  });
+
+  await managerWindow.loadURL(managerUrl());
+  managerWindow.show();
+}
+
+async function openPanel(bounds) {
+  if (!panelWindow || panelWindow.isDestroyed()) {
+    panelWindow = new BrowserWindow({
+      title: "Spine Companion - Quick Panel",
+      width: 320,
+      height: 480,
+      frame: false,
+      transparent: true,
+      hasShadow: true,
+      resizable: false,
+      alwaysOnTop: true,
+      skipTaskbar: true,
+      show: false,
+      webPreferences: {
+        preload: path.join(__dirname, "preload.cjs"),
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true
+      }
+    });
+
+    panelWindow.on("blur", () => {
+      panelWindow.hide();
+    });
+
+    const panelUrl = isDev
+      ? `${publicConfigCache.server.origin.replace("17388", "17389")}/panel.html`
+      : `file://${path.join(__dirname, "../../dist/panel.html")}`;
+    await panelWindow.loadURL(panelUrl);
+  }
+
+  // Calculate position (bottom right generally)
+  const x = Math.round(bounds.x - (320 / 2));
+  let y = Math.round(bounds.y - 480 - 10);
+  if (y < 0) y = Math.round(bounds.y + bounds.height + 10); // if taskbar on top
+
+  panelWindow.setPosition(x, y);
+  panelWindow.show();
+  panelWindow.focus();
+}
+
 function createTrayIcon() {
   const icon = nativeImage.createFromBuffer(Buffer.from(trayPngBase64, "base64"));
   return icon.resize({ width: 16, height: 16 });
 }
 
-function quickStateMenuItems() {
-  const states = [
-    ["Idle", "idle"],
-    ["Working", "working"],
-    ["Reviewing", "reviewing"],
-    ["Running Left", "running", "left"],
-    ["Running Right", "running", "right"],
-    ["Success", "success"],
-    ["Failed", "failed"],
-    ["Waiting", "waiting"],
-    ["Sleeping", "sleeping"],
-    ["Reminder", "reminder"]
-  ];
-  return states.map(([label, state, direction]) => ({
-    label,
-    click: () => serverRuntime?.store.setState({ state, direction, source: "tray" })
-  }));
-}
-
 function buildTrayMenu() {
-  return Menu.buildFromTemplate([
-    { label: "Show Window", click: focusWindow },
-    {
-      label: "Show Status Panel",
-      type: "checkbox",
-      checked: uiSettings.hudVisible !== false,
-      click: (item) => setHudVisible(item.checked)
-    },
-    {
-      label: "Show Progress Bubble",
-      type: "checkbox",
-      checked: uiSettings.bubbleVisible !== false,
-      click: (item) => setBubbleVisible(item.checked)
-    },
-    {
-      label: "Bubble Shadow",
-      type: "checkbox",
-      checked: uiSettings.bubbleShadow !== false,
-      click: (item) => setBubbleShadow(item.checked)
-    },
-    {
-      label: "Bubble Background",
-      submenu: [
-        {
-          label: "Solid",
-          type: "radio",
-          checked: (uiSettings.bubbleBackground || "solid") === "solid",
-          click: () => setBubbleBackground("solid")
-        },
-        {
-          label: "Soft",
-          type: "radio",
-          checked: uiSettings.bubbleBackground === "soft",
-          click: () => setBubbleBackground("soft")
-        },
-        {
-          label: "Clear",
-          type: "radio",
-          checked: uiSettings.bubbleBackground === "clear",
-          click: () => setBubbleBackground("clear")
-        },
-        {
-          label: "Light",
-          type: "radio",
-          checked: uiSettings.bubbleBackground === "light",
-          click: () => setBubbleBackground("light")
-        }
-      ]
-    },
-    {
-      label: "Always On Top",
-      type: "checkbox",
-      checked: alwaysOnTop,
-      click: (item) => setAlwaysOnTop(item.checked)
-    },
-    {
-      label: "Drag Mode",
-      submenu: [
-        {
-          label: "Compatible",
-          type: "radio",
-          checked: (uiSettings.dragMode || "compatible") === "compatible",
-          click: () => setDragMode("compatible")
-        },
-        {
-          label: "Smooth",
-          type: "radio",
-          checked: uiSettings.dragMode === "smooth",
-          click: () => setDragMode("smooth")
-        }
-      ]
-    },
-    { type: "separator" },
-    { label: "Zoom In", click: () => sendToRenderer("companion:scale", { delta: 0.08 }) },
-    { label: "Zoom Out", click: () => sendToRenderer("companion:scale", { delta: -0.08 }) },
-    { label: "Reset Size", click: () => sendToRenderer("companion:scale", { action: "reset" }) },
-    { type: "separator" },
-    { label: "State", submenu: quickStateMenuItems() },
-    { type: "separator" },
-    { label: "Open Local API", click: () => shell.openExternal(publicConfigCache?.server?.origin || "http://127.0.0.1:17388") },
-    { label: "Open Config Folder", click: () => shell.openPath(publicConfigCache?.paths?.configDir || app.getPath("userData")) },
-    { label: "Quit", click: () => app.quit() }
-  ]);
+  const actions = {
+    show_companion: focusWindow,
+    hide_companion: hideCompanionWindow,
+    open_panel: () => openPanel(tray?.getBounds?.() || { x: 0, y: 0, height: 0 }),
+    open_manager: openManager,
+    toggle_bubble: () => applyUiSettingsPatch({ bubbleVisible: uiSettings.bubbleVisible === false }),
+    toggle_hud: () => applyUiSettingsPatch({ hudVisible: uiSettings.hudVisible === false }),
+    toggle_click_through: () => setMousePassthrough(!mousePassthrough),
+    diagnostics: openManager,
+    open_config_dir: openConfigDir,
+    open_local_api: openLocalApi,
+    quit: () => app.quit()
+  };
+  const template = trayMenuModel(uiSettings, { mousePassthrough }).map((item) => {
+    if (item.type === "separator") return { type: "separator" };
+    if (item.submenu) {
+      return {
+        label: item.label,
+        submenu: item.submenu.map(({ label, state, direction }) => ({
+          label,
+          click: () => serverRuntime?.store.setState({ state, direction, source: "tray" })
+        }))
+      };
+    }
+    return { label: item.label, click: actions[item.id] };
+  });
+  return Menu.buildFromTemplate(template);
 }
 
 function updateTrayMenu() {
@@ -273,8 +377,7 @@ function createTray() {
   if (tray) return;
   tray = new Tray(createTrayIcon());
   tray.setToolTip("Spine Companion");
-  tray.on("click", focusWindow);
-  tray.on("double-click", focusWindow);
+  tray.on("click", (e, bounds) => openPanel(bounds));
   updateTrayMenu();
 }
 
@@ -326,7 +429,21 @@ function registerIpc(config) {
     sendToRenderer("companion:scale", payload);
     return true;
   });
-  ipcMain.handle("companion:import-model", (_event, input) => importModel(input));
+  ipcMain.handle("companion:import-model", async (_event, input) => {
+    const result = await importModel(input);
+    sendToRenderer("companion:model-imported", result);
+    return result;
+  });
+  ipcMain.handle("companion:save-settings", (_event, patch) => saveSettings(patch));
+  ipcMain.handle("companion:get-diagnostics", () => getDiagnostics());
+  ipcMain.handle("companion:get-installed-models", () => getInstalledModels());
+  ipcMain.handle("companion:remove-model", (_event, id) => removeModel(id));
+  ipcMain.handle("companion:open-folder", (_event, p) => openCompanionFolder(p));
+  ipcMain.handle("companion:open-manager", () => {
+    openManager();
+    if (panelWindow && !panelWindow.isDestroyed()) panelWindow.hide();
+  });
+  ipcMain.handle("companion:quit-app", () => app.quit());
 
   serverRuntime.store.emitter.on("state", (state) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -386,18 +503,12 @@ function setMousePassthrough(enabled, win = mainWindow) {
   if (mousePassthrough === enabled) return;
   mousePassthrough = enabled;
   win.setIgnoreMouseEvents(enabled, { forward: true });
+  updateTrayMenu();
 }
 
 async function boot() {
   const config = loadConfig();
-  uiSettings = {
-    hudVisible: config.ui?.hudVisible !== false,
-    bubbleVisible: config.ui?.bubbleVisible !== false,
-    bubbleShadow: config.ui?.bubbleShadow !== false,
-    bubbleBackground: config.ui?.bubbleBackground || "solid",
-    bubbleHoldMs: Number(config.ui?.bubbleHoldMs || 8000),
-    dragMode: config.ui?.dragMode || "compatible"
-  };
+  uiSettings = normalizeUiSettings(config.ui);
   const origin = `http://${config.server.host}:${config.server.port}`;
   publicConfigCache = getPublicConfig(config, origin);
   serverRuntime = createCompanionServer(config, () => publicConfigCache);
