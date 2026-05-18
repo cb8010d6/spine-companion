@@ -1,3 +1,5 @@
+@import "./components.css";
+
 :root {
   background: #202124;
   color: #E8EAED;
@@ -105,6 +107,14 @@ nav button.active {
   margin-top: 0;
   margin-bottom: 16px;
   color: var(--text);
+}
+
+.view-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
 }
 
 /* Modal / Toast */
@@ -234,6 +244,11 @@ button:disabled {
   border-right: 1px solid var(--border);
 }
 
+.model-preview span {
+  font-weight: 800;
+  color: rgba(255, 255, 255, 0.88);
+}
+
 .model-info {
   flex: 1;
   padding: 12px;
@@ -278,6 +293,16 @@ button:disabled {
 }
 
 .badge.downloading {
+  background: rgba(251, 191, 36, 0.1);
+  color: #FBBF24;
+}
+
+.badge-success {
+  background: rgba(94, 234, 212, 0.1);
+  color: var(--accent);
+}
+
+.badge-warning {
   background: rgba(251, 191, 36, 0.1);
   color: #FBBF24;
 }
@@ -376,4 +401,50 @@ input[type="checkbox"] {
   color: var(--text-muted);
   display: flex;
   justify-content: space-between;
+}
+
+.empty-text,
+.error-text {
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.error-text {
+  color: var(--danger);
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.form-card,
+.diag-card {
+  gap: 12px;
+}
+
+.form-card h3,
+.diag-card h3 {
+  margin: 0 0 8px;
+  color: var(--text);
+  font-size: 14px;
+}
+
+.history-list {
+  display: grid;
+  gap: 6px;
+}
+
+.history-row {
+  display: grid;
+  grid-template-columns: 92px 120px minmax(0, 1fr);
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.wide {
+  grid-column: 1 / -1;
 }

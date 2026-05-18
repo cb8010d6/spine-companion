@@ -52,6 +52,7 @@ bun run tauri:dev
 ```
 
 详细部署、启动、MCP 和排错见 [docs/deployment.zh-CN.md](docs/deployment.zh-CN.md)。
+偏图形界面操作的说明见 [docs/user-guide.zh-CN.md](docs/user-guide.zh-CN.md)。
 
 浏览器预览地址：
 
@@ -134,7 +135,23 @@ plugins/spine-companion-status
 Windows 托盘菜单可以显示/隐藏状态面板、显示/隐藏工程进展气泡、切换置顶、缩放、重置大小、切状态和退出。
 拖动透明舞台会移动窗口；横向拖动时会临时进入 `running`，并按左右方向镜像模型。
 
-设置面板提供模型选择和下载导入。内置 Ark-Models 示例只会下载到本地配置目录；仓库和公开 release 不包含素材本体。
+Manager 提供可搜索模型库、本地模型操作、下载状态、scale/offset 热更新、诊断、
+更新检查和最近状态历史。内置 Ark-Models 示例只会下载到本地配置目录；仓库和公开
+release 不包含素材本体。
+
+## FAQ
+
+**为什么显示 missing asset？**
+打开 Manager > Diagnostics，确认当前模型目录里有 `.skel`、`.atlas` 和 `.png`。
+如果模型来自 Library 下载，可以在 Installed 页面重新点击 Set Active。
+
+**为什么 Codex 一直是 idle？**
+MCP 桥接需要 Spine Companion 应用或本地 API 正在运行。执行
+`bun run mcp:install:codex`，重启 Codex，然后在 Manager > Diagnostics 检查配置路径。
+
+**应该用 Electron 还是 Tauri？**
+目前 Electron 仍是日常使用功能最完整的运行时。Tauri 构建会继续保留和迭代，但跨平台
+细节还需要更多测试。
 
 ## 开源注意事项
 

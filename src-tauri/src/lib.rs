@@ -22,6 +22,7 @@ struct AppData {
     config_dir: PathBuf,
     local_config_path: PathBuf,
     asset_root: server::AssetRootStore,
+    history: Arc<Mutex<Vec<CompanionState>>>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -309,6 +310,16 @@ fn current_ui_settings(data: &AppData) -> UiSettings {
                 .map(|config| ui_settings_from_config(&config))
                 .unwrap_or_else(|_| ui_settings_from_config(&fallback_config()))
         })
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CurrentModel {
+    id: String,
+    name: String,
+    skel: String,
+    asset_dir: String,
+    source: String,
 }
 
 fn public_config_with_ui(data: &AppData) -> serde_json::Value {
@@ -813,6 +824,137 @@ fn remove_model(data: State<'_, AppData>, id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn get_history(data: State<'_, AppData>) -> Result<Vec<CompanionState>, String> {
+    data.history
+        .lock()
+        .map(|history| history.clone())
+        .map_err(|_| "History lock is poisoned".to_string())
+}
+
+#[tauri::command]
+fn get_current_model(data: State<'_, AppData>) -> Result<CurrentModel, String> {
+    let public = public_config_with_ui(&data);
+    let skel = string_at(&public, &["spine", "skel"]).unwrap_or("").to_string();
+    let model = model_by_skel(&public, &skel);
+    Ok(CurrentModel {
+        id: model
+            .as_ref()
+            .and_then(|m| m.get("id").and_then(|v| v.as_str()))
+            .unwrap_or("")
+            .to_string(),
+        name: model
+            .as_ref()
+            .and_then(|m| m.get("name").and_then(|v| v.as_str()))
+            .unwrap_or(if skel.is_empty() { "None" } else { &skel })
+            .to_string(),
+        skel,
+        asset_dir: string_at(&public, &["spine", "assetDir"]).unwrap_or("").to_string(),
+        source: model
+            .as_ref()
+            .and_then(|m| m.get("source").and_then(|v| v.as_str()))
+            .unwrap_or("Local")
+            .to_string(),
+    })
+}
+
+#[tauri::command]
+async fn set_active_model(
+    app: tauri::AppHandle,
+    data: State<'_, AppData>,
+    id: String,
+) -> Result<ImportModelResult, String> {
+    if id.contains("..") || id.contains('/') || id.contains('\\') {
+        return Err("Invalid model ID".to_string());
+    }
+    let public = public_config_with_ui(&data);
+    let model = model_by_id(&public, &id);
+    let model_dir = data.config_dir.join("models").join(&id);
+    if !model_dir.exists() {
+        return Err(format!("Model is not installed: {}", id));
+    }
+    let skel = model
+        .as_ref()
+        .and_then(|m| m.get("skel").and_then(|v| v.as_str()))
+        .map(str::to_string)
+        .or_else(|| {
+            std::fs::read_dir(&model_dir).ok().and_then(|entries| {
+                entries.flatten().find_map(|entry| {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name.ends_with(".skel") { Some(name) } else { None }
+                })
+            })
+        })
+        .ok_or_else(|| "No .skel file found".to_string())?;
+    write_local_model_config(&data.local_config_path, &model_dir, &skel)?;
+    let canonical_model_dir = model_dir.canonicalize().map_err(|error| error.to_string())?;
+    if let Ok(mut public) = data.public_config.lock() {
+        merge_json(&mut public, serde_json::json!({
+            "spine": {
+                "assetDir": canonical_model_dir.to_string_lossy().to_string(),
+                "assetDirConfigured": true,
+                "skel": skel
+            }
+        }));
+    }
+    {
+        let mut asset_root = data.asset_root.write().await;
+        *asset_root = Some(canonical_model_dir.clone());
+    }
+    let origin = public
+        .get("server")
+        .and_then(|server| server.get("origin"))
+        .and_then(|origin| origin.as_str())
+        .unwrap_or("http://127.0.0.1:17388");
+    let result = ImportModelResult {
+        id: id.clone(),
+        name: model
+            .as_ref()
+            .and_then(|m| m.get("name").and_then(|v| v.as_str()))
+            .unwrap_or(&id)
+            .to_string(),
+        asset_dir: canonical_model_dir.to_string_lossy().to_string(),
+        skel: skel.clone(),
+        asset_url: format!("{}/assets/spine/{}", origin, url_encode_path_segment(&skel)),
+        local_config_path: data.local_config_path.to_string_lossy().to_string(),
+        requires_restart: false,
+    };
+    let _ = app.emit("companion:model-imported", result.clone());
+    Ok(result)
+}
+
+#[tauri::command]
+async fn check_updates() -> Result<serde_json::Value, String> {
+    let client = reqwest::Client::new();
+    let text = client
+        .get("https://api.github.com/repos/cb8010d6/spine-companion/releases/latest")
+        .header("User-Agent", "spine-companion")
+        .send()
+        .await
+        .map_err(|error| error.to_string())?
+        .error_for_status()
+        .map_err(|error| error.to_string())?
+        .text()
+        .await
+        .map_err(|error| error.to_string())?;
+    let response: serde_json::Value = serde_json::from_str(&text).map_err(|error| error.to_string())?;
+    Ok(serde_json::json!({
+        "currentVersion": env!("CARGO_PKG_VERSION"),
+        "latestVersion": response.get("tag_name").and_then(|v| v.as_str()).unwrap_or("").trim_start_matches('v'),
+        "url": response.get("html_url").and_then(|v| v.as_str()).unwrap_or(""),
+        "name": response.get("name").and_then(|v| v.as_str()).unwrap_or("")
+    }))
+}
+
+#[tauri::command]
+fn set_auto_launch(_enabled: bool) -> Result<serde_json::Value, String> {
+    Ok(serde_json::json!({
+        "supported": false,
+        "enabled": false,
+        "reason": "Auto launch requires a platform startup plugin and is not enabled in the portable Tauri build."
+    }))
+}
+
+#[tauri::command]
 fn open_folder(app: tauri::AppHandle, p: String) -> Result<(), String> {
     let data = app.state::<AppData>();
     let requested = PathBuf::from(&p);
@@ -934,6 +1076,19 @@ fn model_by_id(public_config: &serde_json::Value, id: &str) -> Option<serde_json
         })
 }
 
+fn model_by_skel(public_config: &serde_json::Value, skel: &str) -> Option<serde_json::Value> {
+    public_config
+        .get("models")
+        .and_then(|models| models.get("catalog"))
+        .and_then(|catalog| catalog.as_array())
+        .and_then(|catalog| {
+            catalog
+                .iter()
+                .find(|model| model.get("skel").and_then(|value| value.as_str()) == Some(skel))
+                .cloned()
+        })
+}
+
 fn write_local_model_config(path: &Path, asset_dir: &Path, skel: &str) -> Result<(), String> {
     let mut config = read_json_if_exists(path).unwrap_or_else(|| serde_json::json!({}));
     merge_json(
@@ -982,6 +1137,7 @@ pub fn run() {
             .and_then(|path| path.canonicalize().ok()),
     ));
     let asset_root_for_server = asset_root_store.clone();
+    let history_store: Arc<Mutex<Vec<CompanionState>>> = Arc::new(Mutex::new(vec![store.blocking_read().clone()]));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -998,6 +1154,7 @@ pub fn run() {
             config_dir: runtime_config.config_dir.clone(),
             local_config_path: runtime_config.local_config_path.clone(),
             asset_root: asset_root_store.clone(),
+            history: history_store.clone(),
         })
         .setup(move |app| {
             // Bind the local API server before the hidden window is revealed.
@@ -1019,6 +1176,13 @@ pub fn run() {
             let mut rx = tx.subscribe();
             tauri::async_runtime::spawn(async move {
                 while let Ok(state) = rx.recv().await {
+                    let data = app_handle.state::<AppData>();
+                    if let Ok(mut history) = data.history.lock() {
+                        history.push(state.clone());
+                        while history.len() > 50 {
+                            history.remove(0);
+                        }
+                    }
                     let _ = app_handle.emit("companion:state", state);
                 }
             });
@@ -1191,6 +1355,11 @@ pub fn run() {
             save_settings,
             get_diagnostics,
             get_installed_models,
+            get_history,
+            get_current_model,
+            set_active_model,
+            check_updates,
+            set_auto_launch,
             remove_model,
             open_folder,
             start_drag,

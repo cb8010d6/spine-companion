@@ -56,7 +56,8 @@ bun run tauri:dev
 ```
 
 For detailed deployment, startup, MCP, and troubleshooting steps, see
-[docs/deployment.md](docs/deployment.md).
+[docs/deployment.md](docs/deployment.md). For a UI-focused walkthrough, see
+[docs/user-guide.md](docs/user-guide.md).
 
 The renderer preview is available at:
 
@@ -173,9 +174,26 @@ show or hide the progress bubble, zoom the model, reset size, switch states, and
 quit. Dragging the transparent stage moves the window; horizontal dragging
 temporarily switches to `running` and mirrors the model left or right.
 
-The settings panel includes a model picker and download/import action. The
-bundled Ark-Models catalog entry downloads only into the local config folder;
-this repository and public releases do not include the model asset files.
+The Manager includes a searchable model library, installed model actions,
+download status, hot-applied scale and offset settings, diagnostics, update
+checks, and recent state history. The bundled Ark-Models catalog entry downloads
+only into the local config folder; this repository and public releases do not
+include the model asset files.
+
+## FAQ
+
+**Why does the app show missing asset?**
+Open Manager > Diagnostics and confirm the active model folder contains `.skel`,
+`.atlas`, and `.png` files. If the model was downloaded through Library, try
+setting it active again from Installed.
+
+**Why does Codex stay idle?**
+The MCP bridge only works while the companion app or local API is running. Run
+`bun run mcp:install:codex`, restart Codex, and check Manager > Diagnostics.
+
+**Which runtime should I use?**
+Electron is currently the most complete daily-use runtime. Tauri builds are
+included and improving, but some platform behavior still needs broader testing.
 
 ## Open-Source Notes
 

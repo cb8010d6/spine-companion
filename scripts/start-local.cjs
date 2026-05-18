@@ -68,7 +68,7 @@ function configureDefaultAssetIfPossible() {
 
   log("no local Spine asset is configured yet.");
   log("the app will still start, but the window will show a missing asset message.");
-  log('to configure assets later, run: npm run setup:assets -- "C:\\path\\to\\spine_model_folder"');
+    log('to configure assets later, run: bun run setup:assets -- "C:\\path\\to\\spine_model_folder"');
 }
 
 function checkPort(port) {
@@ -85,8 +85,8 @@ async function main() {
   log("starting local desktop companion");
 
   if (!hasNodeModules()) {
-    log("dependencies are missing; running npm install once");
-    run("npm", ["install"]);
+    log("dependencies are missing; running bun install once");
+    run("bun", ["install"]);
   }
 
   configureDefaultAssetIfPossible();
@@ -99,7 +99,7 @@ async function main() {
   }
 
   log("launching Electron + renderer. Keep this terminal open while the app is running.");
-  const child = spawn("npm", ["run", "dev"], {
+  const child = spawn("bun", ["run", "dev"], {
     cwd: rootDir,
     stdio: "inherit",
     shell: process.platform === "win32"

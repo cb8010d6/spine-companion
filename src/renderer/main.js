@@ -3,6 +3,8 @@ import { initTauriBridge, isTauri } from "./tauri-bridge.js";
 import { createStateProvider, loadRuntimeConfig } from "./providers.js";
 import { SpinePlayer } from "./spine-player.js";
 import { stateLabels } from "./state.js";
+import { createOnboarding, shouldShowOnboarding } from "./onboarding.js";
+import { createErrorCard } from "./error-boundary.js";
 
 const stage = document.getElementById("stage");
 const shell = document.getElementById("stage-shell");
@@ -35,6 +37,9 @@ const reminderDelay = document.getElementById("reminder-delay");
 const emptyState = document.getElementById("empty-state");
 const emptyStatePath = document.getElementById("empty-state-path");
 const emptyImport = document.getElementById("empty-import");
+const emptyRetry = document.getElementById("empty-retry");
+const onboardingRoot = document.getElementById("onboarding-root");
+const errorRoot = document.getElementById("error-root");
 
 let provider = null;
 let player = null;
@@ -114,15 +119,16 @@ function applyBubbleAnchor(anchor = currentBubbleAnchor) {
 }
 
 function renderStateControls(sendState) {
-  stateControls.innerHTML = "";
+  const fragment = document.createDocumentFragment();
   for (const item of stateLabels()) {
     const button = document.createElement("button");
     button.type = "button";
     button.dataset.state = item.id;
     button.textContent = item.label;
     button.addEventListener("click", () => sendState({ state: item.id, source: "hud" }));
-    stateControls.appendChild(button);
+    fragment.appendChild(button);
   }
+  stateControls.replaceChildren(fragment);
 }
 
 function rectContains(rect, x, y) {
@@ -246,13 +252,14 @@ function updateCompletionToast(state) {
 
 function renderModelCatalog(config) {
   const catalog = config.models?.catalog || [];
-  modelSelect.innerHTML = "";
+  const fragment = document.createDocumentFragment();
   for (const model of catalog) {
     const option = document.createElement("option");
     option.value = model.id;
     option.textContent = model.name || model.id;
-    modelSelect.appendChild(option);
+    fragment.appendChild(option);
   }
+  modelSelect.replaceChildren(fragment);
   const hasModels = catalog.length > 0 && window.companion?.importModel;
   modelSelect.disabled = !hasModels;
   modelImport.disabled = !hasModels;
@@ -301,9 +308,36 @@ function showEmptyState(error, config) {
     : "";
 }
 
+function showOnboardingIfNeeded(config) {
+  if (!shouldShowOnboarding(config)) {
+    onboardingRoot.hidden = true;
+    onboardingRoot.replaceChildren();
+    return;
+  }
+  onboardingRoot.hidden = false;
+  onboardingRoot.replaceChildren(createOnboarding({
+    onManager: () => window.companion?.openManager?.(),
+    onDownload: () => importSelectedModel("onboarding")
+  }));
+}
+
+function showErrorBoundary(error, config) {
+  errorRoot.hidden = false;
+  errorRoot.replaceChildren(createErrorCard({
+    title: "Unable to load model",
+    error,
+    config,
+    onRetry: () => loadPlayer(runtimeConfig).then(() => {
+      errorRoot.hidden = true;
+      errorRoot.replaceChildren();
+    }).catch((nextError) => showErrorBoundary(nextError, runtimeConfig)),
+    onManager: () => window.companion?.openManager?.()
+  }));
+}
+
 async function loadPlayer(config) {
   player?.destroy();
-  stage.innerHTML = "";
+  stage.replaceChildren();
   player = new SpinePlayer(stage, config);
   await player.init();
   player.onAutoReturn = (state) => provider.setState({ state, source: "renderer" });
@@ -405,6 +439,7 @@ async function boot() {
   provider = createStateProvider(config);
   renderStateControls((state) => provider.setState(state));
   renderModelCatalog(config);
+  showOnboardingIfNeeded(config);
   wireDragging();
   wireMousePassthrough();
 
@@ -412,6 +447,7 @@ async function boot() {
     await loadPlayer(config);
   } catch (error) {
     showEmptyState(error, config);
+    showErrorBoundary(error, config);
   }
   await window.companion?.rendererReady?.();
 
@@ -469,6 +505,7 @@ async function boot() {
   settingZoomReset.addEventListener("click", () => window.companion?.emitScale?.({ action: "reset" }));
   modelImport.addEventListener("click", () => importSelectedModel("settings"));
   emptyImport.addEventListener("click", () => importSelectedModel("empty"));
+  emptyRetry.addEventListener("click", () => loadPlayer(runtimeConfig).catch((error) => showErrorBoundary(error, runtimeConfig)));
 
   reminderForm.addEventListener("submit", async (event) => {
     event.preventDefault();

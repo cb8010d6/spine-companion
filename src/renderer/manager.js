@@ -1,411 +1,341 @@
 import "./manager.css";
 import { initTauriBridge, isTauri } from "./tauri-bridge.js";
+import { h, render } from "./lib/dom.js";
+import { createI18n, t } from "../shared/i18n.js";
+import { modelPreview } from "./model-preview.js";
 
 const viewContainer = document.getElementById("view-container");
 const navButtons = document.querySelectorAll("nav button");
 const topbarStatus = document.getElementById("topbar-status");
 const modalContainer = document.getElementById("modal-container");
 
-let config = null;
+let activeView = "library";
+let config = { models: { catalog: [] }, ui: {}, spine: {} };
 let installedModels = [];
 let diagnostics = null;
-
+let history = [];
+let updateStatus = null;
 const downloads = {};
-
-function escapeHtml(str) {
-  if (!str) return "";
-  return String(str)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
-}
 
 function setStatus(text) {
   topbarStatus.textContent = text;
 }
 
-function showModal(title, bodyText, actionsHTML) {
+function closeModal() {
+  modalContainer.classList.add("hidden");
+  document.getElementById("modal-actions").replaceChildren();
+}
+
+function showModal(title, bodyText, actions = []) {
   document.getElementById("modal-title").textContent = title;
   document.getElementById("modal-body").textContent = bodyText;
-  document.getElementById("modal-actions").innerHTML = actionsHTML;
+  document.getElementById("modal-actions").replaceChildren(...actions);
   modalContainer.classList.remove("hidden");
 }
 
-function hideModal() {
-  modalContainer.classList.add("hidden");
+function navTo(viewName) {
+  activeView = viewName;
+  for (const button of navButtons) button.classList.toggle("active", button.dataset.view === viewName);
+  renderView(viewName);
 }
 
-window.closeModal = hideModal;
-
-function renderNav() {
-  navButtons.forEach(btn => {
-    btn.addEventListener("click", () => {
-      navButtons.forEach(b => b.classList.remove("active"));
-      btn.classList.add("active");
-      renderView(btn.dataset.view);
-    });
-  });
+function previewNode(model) {
+  const preview = modelPreview(model);
+  return h("div", { class: "model-preview", style: preview.style, "aria-label": `Preview for ${preview.label}` },
+    h("span", {}, preview.initials)
+  );
 }
 
-async function renderView(viewName) {
-  viewContainer.innerHTML = "";
-  setStatus(`Navigating to ${viewName}...`);
-
-  if (viewName === "library") await renderLibrary();
-  else if (viewName === "installed") await renderInstalled();
-  else if (viewName === "downloads") renderDownloads();
-  else if (viewName === "settings") renderSettings();
-  else if (viewName === "diagnostics") await renderDiagnostics();
-
-  setStatus(`Viewing ${viewName}`);
+function badge(label, tone = "") {
+  return h("span", { class: `badge ${tone}`.trim() }, label);
 }
 
-async function renderLibrary() {
-  const catalog = config?.models?.catalog || [];
-  try {
-    installedModels = await window.companion?.getInstalledModels?.() || [];
-  } catch(e) { console.warn(e); }
+async function refreshConfig() {
+  config = await window.companion?.getConfig?.() || config;
+  createI18n(config);
+  document.body.dataset.theme = config.ui?.theme || "dark";
+  installedModels = await window.companion?.getInstalledModels?.() || [];
+}
 
-  let html = `<h2 class="view-title">Library</h2><div class="grid-2">`;
+function isInstalled(id) {
+  return installedModels.some((model) => model.id === id);
+}
 
-  catalog.forEach(model => {
-    const isInstalled = installedModels.some(m => m.id === model.id);
-    const download = downloads[model.id];
-    let badge = "";
-    let btnHtml = "";
-
-    if (isInstalled) {
-      badge = `<span class="badge installed">Installed</span>`;
-      btnHtml = `<button disabled>Installed</button>`;
-    } else if (download && download.status === "downloading") {
-      badge = `<span class="badge downloading">Downloading</span>`;
-      btnHtml = `<button disabled>Downloading...</button>`;
-    } else {
-      btnHtml = `<button class="primary dl-btn" data-id="${model.id}">Download</button>`;
-    }
-
-    html += `
-      <div class="model-card">
-        <div class="model-preview">NO PREVIEW</div>
-        <div class="model-info">
-          <div class="model-title" title="${escapeHtml(model.name || model.id)}">${escapeHtml(model.name || model.id)}</div>
-          <div class="model-meta">Source: ${escapeHtml(model.source || 'Unknown')}</div>
-          <div class="model-actions">
-            ${badge}
-            <div style="flex:1"></div>
-            ${btnHtml}
-          </div>
-        </div>
-      </div>
-    `;
-  });
-
-  html += `</div>`;
-  viewContainer.innerHTML = html;
-
-  viewContainer.querySelectorAll(".dl-btn").forEach(btn => {
-    btn.addEventListener("click", (e) => {
-      const id = e.target.dataset.id;
-      const model = catalog.find(m => m.id === id);
-
-      if (model.licenseNote) {
-        window.confirmDownload = () => {
-          hideModal();
-          startDownload(id);
-        };
-        showModal("License Information", model.licenseNote + "\n\nDo you want to proceed?", `
-          <button onclick="closeModal()">Cancel</button>
-          <button class="primary" onclick="confirmDownload()">Accept & Download</button>
-        `);
-      } else {
-        startDownload(id);
-      }
-    });
-  });
+function activeInstalledId() {
+  const active = String(config.spine?.assetDir || "").replace(/\\/g, "/");
+  return installedModels.find((model) => active.endsWith(`/${model.id}`) || active.endsWith(model.id))?.id || "";
 }
 
 async function startDownload(id) {
   downloads[id] = { status: "pending", current: 0, total: 1, file: "Initializing..." };
-  renderView(document.querySelector("nav button.active").dataset.view); // re-render current view
-
+  renderView(activeView);
   try {
     const result = await window.companion?.importModel?.({ id });
     downloads[id] = { status: "succeeded", current: 1, total: 1, file: "Done" };
-    // Reload config to get new active skel if it applies
-    config = await window.companion?.getConfig?.() || config;
-  } catch (err) {
-    downloads[id] = { status: "failed", error: err.message || "Download Failed" };
+    await refreshConfig();
+    setStatus(`Loaded ${result.name || id}`);
+  } catch (error) {
+    downloads[id] = { status: "failed", error: error.message || "Download failed", current: 0, total: 1 };
+    setStatus(`Download failed: ${id}`);
   }
-
-  // Re-render if we are still on library or downloads
-  const activeView = document.querySelector("nav button.active").dataset.view;
-  if (activeView === "library" || activeView === "downloads") {
-    renderView(activeView);
-  }
+  if (activeView === "library" || activeView === "downloads" || activeView === "installed") renderView(activeView);
 }
 
-async function renderInstalled() {
-  try {
-    installedModels = await window.companion?.getInstalledModels?.() || [];
-  } catch(e) { console.warn(e); }
+function libraryView() {
+  const catalog = config.models?.catalog || [];
+  const search = h("input", {
+    class: "input",
+    type: "search",
+    placeholder: "Search models",
+    "aria-label": "Search models",
+    onInput: () => renderCards(search.value)
+  });
+  const grid = h("div", { class: "grid-2" });
 
-  const activeAssetDir = config?.spine?.assetDir || "";
-
-  let html = `<h2 class="view-title">Installed Models</h2><div class="grid-2">`;
-
-  if (installedModels.length === 0) {
-    html += `<div style="color:var(--text-muted);font-size:13px;">No models installed.</div>`;
+  function renderCards(query = "") {
+    const normalized = query.trim().toLowerCase();
+    const cards = catalog
+      .filter((model) => !normalized || `${model.name} ${model.id} ${model.source}`.toLowerCase().includes(normalized))
+      .map((model) => {
+        const download = downloads[model.id];
+        const installed = isInstalled(model.id);
+        const active = activeInstalledId() === model.id;
+        const button = installed
+          ? h("button", {
+              class: "btn",
+              type: "button",
+              disabled: active,
+              onClick: () => activateModel(model.id)
+            }, active ? "Active" : t("manager.actions.setActive"))
+          : h("button", {
+              class: "btn btn-primary",
+              type: "button",
+              disabled: download?.status === "downloading",
+              onClick: () => confirmDownload(model)
+            }, download?.status === "downloading" ? "Downloading..." : t("manager.actions.download"));
+        return h("article", { class: "model-card fade-in" },
+          previewNode(model),
+          h("div", { class: "model-info" },
+            h("div", { class: "model-title", title: model.name || model.id }, model.name || model.id),
+            h("div", { class: "model-meta" }, `Source: ${model.source || "Unknown"}`),
+            h("div", { class: "model-actions" },
+              installed ? badge(t("manager.status.installed"), "badge-success") : null,
+              active ? badge(t("manager.status.active"), "badge-warning") : null,
+              h("div", { style: { flex: "1" } }),
+              button
+            )
+          )
+        );
+      });
+    grid.replaceChildren(...cards);
   }
 
-  installedModels.forEach(m => {
-    // Normalizing paths is tricky, just check if it ends with the id
-    const isActive = activeAssetDir.replace(/\\/g, '/').endsWith(m.id);
-
-    html += `
-      <div class="model-card">
-        <div class="model-preview">NO PREVIEW</div>
-        <div class="model-info">
-          <div class="model-title" title="${escapeHtml(m.id)}">${escapeHtml(m.id)}</div>
-          <div class="model-meta" title="${escapeHtml(m.dir)}" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
-            ${escapeHtml(m.dir)}
-          </div>
-          <div class="model-actions">
-            ${isActive ? `<span class="badge installed">Active</span>` : ''}
-            <div style="flex:1"></div>
-            <button class="open-btn" data-path="${escapeHtml(m.dir.replace(/\\/g, '\\\\'))}">Open Folder</button>
-            <button class="danger rm-btn" data-id="${escapeHtml(m.id)}" ${isActive ? 'disabled title="Cannot remove active model"' : ''}>Remove</button>
-          </div>
-        </div>
-      </div>
-    `;
-  });
-
-  html += `</div>`;
-  viewContainer.innerHTML = html;
-
-  viewContainer.querySelectorAll(".open-btn").forEach(btn => {
-    btn.addEventListener("click", async (e) => {
-      await window.companion?.openFolder?.(e.target.dataset.path);
-    });
-  });
-
-  viewContainer.querySelectorAll(".rm-btn").forEach(btn => {
-    btn.addEventListener("click", async (e) => {
-      const id = e.target.dataset.id;
-      window.confirmRemove = async () => {
-        hideModal();
-        setStatus(`Removing ${id}...`);
-        await window.companion?.removeModel?.(id);
-        renderView("installed");
-      };
-      showModal("Remove Model", `Are you sure you want to completely remove the model '${id}' from your disk?`, `
-        <button onclick="closeModal()">Cancel</button>
-        <button class="danger" onclick="confirmRemove()">Remove</button>
-      `);
-    });
-  });
+  renderCards();
+  return h("section", {},
+    h("div", { class: "view-header" },
+      h("h2", { class: "view-title" }, t("manager.library.title")),
+      search
+    ),
+    grid
+  );
 }
 
-function renderDownloads() {
-  let html = `<h2 class="view-title">Downloads</h2><div class="grid-2">`;
-  const dlKeys = Object.keys(downloads);
+function confirmDownload(model) {
+  const proceed = h("button", { class: "btn btn-primary", type: "button", onClick: () => {
+    closeModal();
+    startDownload(model.id);
+  } }, "Accept & Download");
+  const cancel = h("button", { class: "btn", type: "button", onClick: closeModal }, "Cancel");
+  if (model.licenseNote) showModal("License Information", `${model.licenseNote}\n\nDo you want to proceed?`, [cancel, proceed]);
+  else startDownload(model.id);
+}
 
-  if (dlKeys.length === 0) {
-    html += `<div style="color:var(--text-muted);font-size:13px;">No active downloads.</div>`;
-  }
+async function activateModel(id) {
+  setStatus(`Activating ${id}...`);
+  await window.companion?.setActiveModel?.(id);
+  await refreshConfig();
+  renderView(activeView);
+}
 
-  dlKeys.forEach(id => {
+function installedView() {
+  const active = activeInstalledId();
+  const content = installedModels.length
+    ? installedModels.map((model) => h("article", { class: "model-card fade-in" },
+        previewNode(model),
+        h("div", { class: "model-info" },
+          h("div", { class: "model-title", title: model.id }, model.id),
+          h("div", { class: "model-meta", title: model.dir }, model.dir),
+          h("div", { class: "model-actions" },
+            model.id === active ? badge("Active", "badge-warning") : null,
+            h("div", { style: { flex: "1" } }),
+            h("button", { class: "btn", type: "button", onClick: () => window.companion?.openFolder?.(model.dir) }, t("manager.actions.openFolder")),
+            h("button", { class: "btn", type: "button", disabled: model.id === active, onClick: () => activateModel(model.id) }, t("manager.actions.setActive")),
+            h("button", { class: "btn btn-danger", type: "button", disabled: model.id === active, onClick: () => confirmRemove(model.id) }, t("manager.actions.remove"))
+          )
+        )
+      ))
+    : [h("p", { class: "empty-text" }, t("manager.empty.noModels"))];
+  return h("section", {},
+    h("h2", { class: "view-title" }, t("manager.installed.title")),
+    h("div", { class: "grid-2" }, content)
+  );
+}
+
+function confirmRemove(id) {
+  showModal("Remove Model", `Remove '${id}' from disk?`, [
+    h("button", { class: "btn", type: "button", onClick: closeModal }, "Cancel"),
+    h("button", { class: "btn btn-danger", type: "button", onClick: async () => {
+      closeModal();
+      await window.companion?.removeModel?.(id);
+      await refreshConfig();
+      renderView("installed");
+    } }, "Remove")
+  ]);
+}
+
+function downloadsView() {
+  const keys = Object.keys(downloads);
+  const cards = keys.length ? keys.map((id) => {
     const dl = downloads[id];
-    let percent = 0;
-    if (dl.total > 0) percent = Math.round((dl.current / dl.total) * 100);
-
-    let statusColor = "var(--text-muted)";
-    if (dl.status === "succeeded") statusColor = "var(--accent)";
-    if (dl.status === "failed") statusColor = "var(--danger)";
-
-    html += `
-      <div class="download-card">
-        <div class="download-title">${escapeHtml(id)}</div>
-        <div class="download-meta">
-          <span style="color:${statusColor}">${escapeHtml(dl.status.toUpperCase())}</span>
-          <span>${escapeHtml(dl.file || '')}</span>
-        </div>
-        <div class="progress-bar">
-          <div class="progress-fill" style="width: ${percent}%; background: ${statusColor}"></div>
-        </div>
-        ${dl.error ? `<div style="color:var(--danger);font-size:11px;margin-top:8px;">${escapeHtml(dl.error)}</div>` : ''}
-        ${dl.status === "failed" ? `<div style="margin-top:8px;text-align:right;"><button class="retry-btn" data-id="${escapeHtml(id)}">Retry</button></div>` : ''}
-      </div>
-    `;
-  });
-
-  html += `</div>`;
-  viewContainer.innerHTML = html;
-
-  viewContainer.querySelectorAll(".retry-btn").forEach(btn => {
-    btn.addEventListener("click", (e) => {
-      startDownload(e.target.dataset.id);
-    });
-  });
+    const total = Number(dl.total || 1);
+    const percent = Math.max(0, Math.min(100, Math.round((Number(dl.current || 0) / total) * 100)));
+    return h("article", { class: "download-card fade-in" },
+      h("div", { class: "download-title" }, id),
+      h("div", { class: "download-meta" }, `${String(dl.status || "pending").toUpperCase()} ${dl.file || ""}`),
+      h("div", { class: "progress-bar" }, h("div", { class: "progress-fill", style: { width: `${percent}%` } })),
+      dl.error ? h("div", { class: "error-text" }, dl.error) : null,
+      dl.status === "failed" ? h("button", { class: "btn", type: "button", onClick: () => startDownload(id) }, t("manager.actions.retry")) : null
+    );
+  }) : [h("p", { class: "empty-text" }, t("manager.empty.noDownloads"))];
+  return h("section", {}, h("h2", { class: "view-title" }, t("manager.downloads.title")), h("div", { class: "grid-2" }, cards));
 }
 
-function renderSettings() {
+function settingsView() {
   const ui = config.ui || {};
   const spine = config.spine || {};
-
-  viewContainer.innerHTML = `
-    <h2 class="view-title">Settings</h2>
-
-    <div class="card">
-      <h3 class="modal-title">Spine Rendering</h3>
-      <div class="form-group">
-        <label>Scale</label>
-        <input type="number" id="set-scale" value="${spine.scale || 1}" step="0.05">
-      </div>
-      <div class="form-group">
-        <label>Offset X</label>
-        <input type="number" id="set-offset-x" value="${spine.offsetX || 0}">
-      </div>
-      <div class="form-group">
-        <label>Offset Y</label>
-        <input type="number" id="set-offset-y" value="${spine.offsetY || 0}">
-      </div>
-      <div style="margin-top: 8px;">
-        <button id="save-spine-settings" class="primary">Save Configuration</button>
-      </div>
-    </div>
-
-    <div class="card">
-      <h3 class="modal-title">User Interface</h3>
-      <div class="form-group">
-        <label class="checkbox-label">
-          <input type="checkbox" id="set-hud" ${ui.hudVisible !== false ? 'checked' : ''}>
-          Show Status Panel
-        </label>
-      </div>
-      <div class="form-group">
-        <label class="checkbox-label">
-          <input type="checkbox" id="set-bubble" ${ui.bubbleVisible !== false ? 'checked' : ''}>
-          Show Progress Bubble
-        </label>
-      </div>
-      <div class="form-group">
-        <label>Bubble Theme</label>
-        <select id="set-bubble-bg">
-          <option value="solid" ${ui.bubbleBackground === 'solid' ? 'selected' : ''}>Solid</option>
-          <option value="soft" ${ui.bubbleBackground === 'soft' ? 'selected' : ''}>Soft</option>
-          <option value="clear" ${ui.bubbleBackground === 'clear' ? 'selected' : ''}>Clear</option>
-          <option value="light" ${ui.bubbleBackground === 'light' ? 'selected' : ''}>Light</option>
-        </select>
-      </div>
-    </div>
-  `;
-
-  const hudCheck = document.getElementById("set-hud");
-  const bubbleCheck = document.getElementById("set-bubble");
-  const bgSelect = document.getElementById("set-bubble-bg");
-
-  hudCheck.addEventListener("change", () => window.companion?.saveSettings?.({ ui: { hudVisible: hudCheck.checked } }));
-  bubbleCheck.addEventListener("change", () => window.companion?.saveSettings?.({ ui: { bubbleVisible: bubbleCheck.checked } }));
-  bgSelect.addEventListener("change", () => window.companion?.saveSettings?.({ ui: { bubbleBackground: bgSelect.value } }));
-
-  document.getElementById("save-spine-settings").addEventListener("click", async () => {
-    const scale = parseFloat(document.getElementById("set-scale").value) || 1;
-    const offsetX = parseFloat(document.getElementById("set-offset-x").value) || 0;
-    const offsetY = parseFloat(document.getElementById("set-offset-y").value) || 0;
-    try {
-      setStatus("Saving settings...");
-      await window.companion?.saveSettings?.({ spine: { scale, offsetX, offsetY } });
-      setStatus("Settings saved and hot-reloaded.");
-    } catch (e) {
-      console.error(e);
-      setStatus("Failed to save settings.");
-    }
-  });
+  const saveSpine = async () => {
+    await window.companion?.saveSettings?.({
+      spine: {
+        scale: Number(document.getElementById("set-scale").value || 1),
+        offsetX: Number(document.getElementById("set-offset-x").value || 0),
+        offsetY: Number(document.getElementById("set-offset-y").value || 0)
+      }
+    });
+    config = await window.companion?.getConfig?.() || config;
+    setStatus("Settings saved and hot-reloaded.");
+  };
+  const saveUi = (patch) => window.companion?.saveSettings?.({ ui: patch });
+  return h("section", {},
+    h("h2", { class: "view-title" }, t("manager.settings.title")),
+    h("div", { class: "settings-grid" },
+      h("article", { class: "card form-card" },
+        h("h3", {}, "Spine Rendering"),
+        field("Scale", h("input", { class: "input", id: "set-scale", type: "number", step: "0.05", value: spine.scale || 1 })),
+        field("Offset X", h("input", { class: "input", id: "set-offset-x", type: "number", value: spine.offsetX || 0 })),
+        field("Offset Y", h("input", { class: "input", id: "set-offset-y", type: "number", value: spine.offsetY || 0 })),
+        h("button", { class: "btn btn-primary", type: "button", onClick: saveSpine }, "Save Configuration")
+      ),
+      h("article", { class: "card form-card" },
+        h("h3", {}, "Interface"),
+        check("Show Status Panel", ui.hudVisible !== false, (checked) => saveUi({ hudVisible: checked })),
+        check("Show Progress Bubble", ui.bubbleVisible !== false, (checked) => saveUi({ bubbleVisible: checked })),
+        check("Bubble shadow", ui.bubbleShadow !== false, (checked) => saveUi({ bubbleShadow: checked })),
+        field("Bubble Theme", h("select", { class: "select", value: ui.bubbleBackground || "solid", onChange: (e) => saveUi({ bubbleBackground: e.target.value }) },
+          ["solid", "soft", "clear", "light"].map((value) => h("option", { value, selected: (ui.bubbleBackground || "solid") === value }, value))
+        )),
+        field("Theme", h("select", { class: "select", value: ui.theme || "dark", onChange: (e) => saveUi({ theme: e.target.value }) },
+          h("option", { value: "dark" }, "Dark"),
+          h("option", { value: "light" }, "Light")
+        )),
+        field("Locale", h("select", { class: "select", value: ui.locale || "auto", onChange: (e) => saveUi({ locale: e.target.value }) },
+          h("option", { value: "auto" }, "Auto"),
+          h("option", { value: "en" }, "English"),
+          h("option", { value: "zh-CN" }, "中文")
+        ))
+      )
+    )
+  );
 }
 
-async function renderDiagnostics() {
-  viewContainer.innerHTML = `<h2 class="view-title">Diagnostics</h2><div style="color:var(--text-muted);font-size:13px;">Running checks...</div>`;
+function field(label, control) {
+  return h("label", { class: "form-group" }, h("span", {}, label), control);
+}
 
-  try {
-    diagnostics = await window.companion?.getDiagnostics?.() || {};
-  } catch(e) {
-    console.error(e);
-    diagnostics = { error: e.message };
-  }
+function check(label, checked, onChange) {
+  return h("label", { class: "checkbox-label" },
+    h("input", { type: "checkbox", checked, onChange: (e) => onChange(e.target.checked) }),
+    h("span", {}, label)
+  );
+}
 
-  const diag = diagnostics;
+async function diagnosticsView() {
+  diagnostics = await window.companion?.getDiagnostics?.() || {};
+  history = await window.companion?.getHistory?.() || [];
+  updateStatus = await window.companion?.checkUpdates?.().catch((error) => ({ error: error.message }));
+  const row = (label, ok, value) => h("div", { class: "status-row" },
+    h("span", { class: "status-label" }, label),
+    h("span", { class: ok ? "status-value status-ok" : "status-value status-err" }, value || (ok ? "OK" : "Needs attention"))
+  );
+  return h("section", {},
+    h("h2", { class: "view-title" }, t("manager.diagnostics.title")),
+    h("div", { class: "grid-2" },
+      h("article", { class: "card diag-card" },
+        row("Local API", diagnostics.apiOk, diagnostics.apiOk ? "ONLINE" : "UNREACHABLE"),
+        row("MCP configured", diagnostics.mcpConfigured, diagnostics.mcpConfigured ? "YES" : "NO"),
+        row("Local config", diagnostics.localConfigExists, diagnostics.localConfigExists ? "FOUND" : "MISSING"),
+        row("Spine assets", diagnostics.assetDirExists && diagnostics.hasSkel && diagnostics.hasAtlas && diagnostics.hasPng, "skel / atlas / png"),
+        h("button", { class: "btn", type: "button", onClick: () => window.companion?.openFolder?.(config.paths?.configDir) }, "Open Config Folder")
+      ),
+      h("article", { class: "card diag-card" },
+        h("h3", {}, "Updates"),
+        h("p", { class: "model-meta" }, updateStatus?.error || `Current ${updateStatus?.currentVersion || ""}, latest ${updateStatus?.latestVersion || ""}`),
+        updateStatus?.url ? h("button", { class: "btn", type: "button", onClick: () => window.open(updateStatus.url) }, "Open Release") : null
+      ),
+      h("article", { class: "card diag-card wide" },
+        h("h3", {}, "Recent State History"),
+        h("div", { class: "history-list" }, history.slice(-10).reverse().map((item) => h("div", { class: "history-row" },
+          h("span", {}, item.state),
+          h("span", {}, item.source || "local"),
+          h("span", {}, item.updatedAt || "")
+        )))
+      )
+    )
+  );
+}
 
-  const makeStatus = (cond, okText, errText) =>
-    `<span class="status-value ${cond ? 'status-ok' : 'status-err'}">${cond ? okText : errText}</span>`;
-
-  viewContainer.innerHTML = `
-    <h2 class="view-title">Diagnostics</h2>
-    <div class="card">
-      <div class="status-row">
-        <span class="status-label">Local API Health</span>
-        ${makeStatus(diag.apiOk, "ONLINE", "UNREACHABLE")}
-      </div>
-      <div class="status-row">
-        <span class="status-label">Codex MCP Configured</span>
-        ${makeStatus(diag.mcpConfigured, "YES", "NO")}
-      </div>
-      <div class="status-row">
-        <span class="status-label">Local Config (companion.local.json)</span>
-        ${makeStatus(diag.localConfigExists, "FOUND", "MISSING")}
-      </div>
-      <div class="status-row">
-        <span class="status-label">Asset Directory Validity</span>
-        ${makeStatus(diag.assetDirExists, "VALID", "INVALID OR MISSING")}
-      </div>
-      <div class="status-row">
-        <span class="status-label">Skeleton (.skel)</span>
-        ${makeStatus(diag.hasSkel, "FOUND", "MISSING")}
-      </div>
-      <div class="status-row">
-        <span class="status-label">Atlas (.atlas)</span>
-        ${makeStatus(diag.hasAtlas, "FOUND", "MISSING")}
-      </div>
-      <div class="status-row">
-        <span class="status-label">Texture (.png)</span>
-        ${makeStatus(diag.hasPng, "FOUND", "MISSING")}
-      </div>
-    </div>
-  `;
+async function renderView(viewName) {
+  viewContainer.replaceChildren(h("p", { class: "empty-text" }, "Loading..."));
+  setStatus(`Viewing ${viewName}`);
+  if (viewName === "library") render(libraryView(), viewContainer);
+  else if (viewName === "installed") render(installedView(), viewContainer);
+  else if (viewName === "downloads") render(downloadsView(), viewContainer);
+  else if (viewName === "settings") render(settingsView(), viewContainer);
+  else if (viewName === "diagnostics") render(await diagnosticsView(), viewContainer);
 }
 
 async function boot() {
-  if (isTauri()) {
-    await initTauriBridge();
-  }
-
-  try {
-    if (window.companion?.getConfig) {
-      config = await window.companion.getConfig();
-    } else {
-      config = { models: { catalog: [] } };
-    }
-  } catch (e) {
-    console.error("Failed to get config", e);
-    config = { models: { catalog: [] } };
-  }
-
-  // Listen for download progress
-  window.companion?.onDownloadProgress?.((p) => {
-    if (!downloads[p.id]) downloads[p.id] = { status: "downloading" };
-    downloads[p.id].current = p.current;
-    downloads[p.id].total = p.total;
-    downloads[p.id].file = p.file;
-    downloads[p.id].status = "downloading";
-
-    const activeView = document.querySelector("nav button.active")?.dataset.view;
-    if (activeView === "downloads") renderView("downloads");
+  if (isTauri()) await initTauriBridge();
+  await refreshConfig();
+  for (const button of navButtons) button.addEventListener("click", () => navTo(button.dataset.view));
+  modalContainer.addEventListener("click", (event) => {
+    if (event.target === modalContainer) closeModal();
   });
-
-  renderNav();
-  renderView("library");
+  window.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeModal();
+  });
+  window.companion?.onDownloadProgress?.((p) => {
+    downloads[p.id] = { ...(downloads[p.id] || {}), ...p, status: p.status || "downloading" };
+    if (activeView === "downloads" || activeView === "library") renderView(activeView);
+  });
+  window.companion?.onConfigChanged?.(async (nextConfig) => {
+    config = nextConfig || await window.companion?.getConfig?.() || config;
+    createI18n(config);
+    if (activeView === "settings" || activeView === "installed" || activeView === "library") renderView(activeView);
+  });
+  navTo("library");
 }
 
-boot().catch(console.error);
+boot().catch((error) => {
+  setStatus(error.message);
+  render(h("section", { class: "card form-card", role: "alert" }, h("strong", {}, "Manager failed"), h("p", {}, error.message)), viewContainer);
+});

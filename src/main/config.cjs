@@ -59,7 +59,9 @@ const fallbackConfig = {
   state: {
     initial: "idle",
     pollMs: 1000,
-    sources: [{ type: "local-http" }]
+    sources: [{ type: "local-http" }],
+    historyLimit: 50,
+    idleTimeoutMs: 0
   },
   ui: {
     hudVisible: false,
@@ -157,6 +159,7 @@ function loadConfig() {
     ? path.resolve(assetBaseDir, config.spine.assetDir)
     : "";
   config.hasLocalConfig = Boolean(resolvedLocalConfigPath);
+  config.state.remindersPath = config.state.remindersPath || path.join(userConfigDir(), "reminders.json");
   return config;
 }
 
@@ -200,5 +203,7 @@ module.exports = {
   getPublicConfig,
   rootDir,
   localConfigPath,
-  localConfigCandidates
+  localConfigCandidates,
+  mergeDeep,
+  userConfigDir
 };

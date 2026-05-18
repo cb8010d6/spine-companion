@@ -96,6 +96,15 @@ describe("state-server HTTP API", () => {
     });
   });
 
+  describe("GET /history", () => {
+    it("returns recent state transitions", async () => {
+      await postJson(`${baseUrl}/state`, { state: "working", source: "test" });
+      const res = await request(`${baseUrl}/history`);
+      expect(res.status).toBe(200);
+      expect(res.body.history.some((item) => item.state === "working")).toBe(true);
+    });
+  });
+
   describe("GET /reminders", () => {
     it("returns empty list initially", async () => {
       const res = await request(`${baseUrl}/reminders`);

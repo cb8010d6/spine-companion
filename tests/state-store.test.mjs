@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 // Use dynamic require so vitest can handle CJS modules
 const { createStateStore, createStateMachine } = require("../src/shared/state-store.cjs");
@@ -215,6 +218,46 @@ describe("createStateStore", () => {
       store.createReminder({ text: "A" });
       const list = store.listReminders();
       expect(list[0].timeout).toBeUndefined();
+    });
+  });
+
+  describe("history and persistence", () => {
+    it("keeps bounded state history", () => {
+      const s = createStateStore({ state: { initial: "idle", historyLimit: 3 } }, stateMachine);
+      s.setState({ state: "working", source: "test" });
+      s.setState({ state: "running", source: "test" });
+      s.setState({ state: "success", source: "test" });
+      expect(s.listHistory().map((item) => item.state)).toEqual(["working", "running", "success"]);
+      s.destroy();
+    });
+
+    it("persists reminders and restores unfired reminders", () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "spine-reminders-"));
+      const remindersPath = path.join(dir, "reminders.json");
+      const s = createStateStore({ state: { initial: "idle", remindersPath } }, stateMachine);
+      s.createReminder({ id: "persisted", text: "Persist me", delayMs: 60000 });
+      s.destroy();
+
+      const restored = createStateStore({ state: { initial: "idle", remindersPath } }, stateMachine);
+      expect(restored.listReminders()).toHaveLength(1);
+      expect(restored.listReminders()[0].id).toBe("persisted");
+      restored.destroy();
+      fs.rmSync(dir, { recursive: true, force: true });
+    });
+  });
+
+  describe("idle timeout", () => {
+    it("switches to sleeping after configured idle timeout", async () => {
+      vi.useFakeTimers();
+      try {
+        const s = createStateStore({ state: { initial: "idle", idleTimeoutMs: 100 } }, stateMachine);
+        s.setState({ state: "working" });
+        await vi.advanceTimersByTimeAsync(100);
+        expect(s.snapshot().state).toBe("sleeping");
+        s.destroy();
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 

@@ -139,6 +139,11 @@ function createCompanionServer(config, publicConfig) {
         return;
       }
 
+      if (req.method === "GET" && url.pathname === "/history") {
+        sendJson(res, 200, { history: store.listHistory() }, req);
+        return;
+      }
+
       if (req.method === "POST" && url.pathname === "/reminders") {
         sendJson(res, 201, store.createReminder(await readBody(req)), req);
         return;

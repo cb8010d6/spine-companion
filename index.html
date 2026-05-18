@@ -66,9 +66,12 @@
         <div id="empty-state" class="empty-state" hidden>
           <strong>Missing Spine asset</strong>
           <span>Run npm run setup:assets -- &lt;spine-folder&gt;</span>
+          <button id="empty-retry" type="button">Retry</button>
           <button id="empty-import" type="button">Download sample model</button>
           <small id="empty-state-path"></small>
         </div>
+        <div id="onboarding-root" class="overlay-root" hidden></div>
+        <div id="error-root" class="overlay-root" hidden></div>
       </main>
     </div>
     <script type="module" src="/src/renderer/main.js"></script>

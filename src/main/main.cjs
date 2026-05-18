@@ -1,12 +1,14 @@
 const path = require("node:path");
 const fs = require("node:fs");
-const { Menu, Tray, nativeImage, app, shell, BrowserWindow, ipcMain } = require("electron");
+const { Menu, Tray, nativeImage, app, shell, BrowserWindow, ipcMain, Notification, globalShortcut } = require("electron");
 const os = require("os");
 const { loadConfig, getPublicConfig } = require("./config.cjs");
 const { createCompanionServer } = require("./state-server.cjs");
 const { applyUiSettingsPatch: applySharedUiPatch, normalizeUiSettings } = require("../shared/ui-settings.cjs");
 const { mcpConfigCandidates, detectMcpReferences } = require("../shared/diagnostics-paths.cjs");
 const { trayMenuModel } = require("../shared/tray-menu-model.cjs");
+const { checkGitHubRelease } = require("../shared/update-checker.cjs");
+const pkg = require("../../package.json");
 
 const isDev = !app.isPackaged;
 const trayPngBase64 =
@@ -188,6 +190,54 @@ function getInstalledModels() {
   }).map(id => {
     return { id, dir: path.join(modelsDir, id) };
   });
+}
+
+function findCatalogModelBySkel(skel) {
+  return publicConfigCache?.models?.catalog?.find((model) => model.skel === skel);
+}
+
+async function setActiveModel(id) {
+  const installed = getInstalledModels().find((model) => model.id === id);
+  if (!installed) throw new Error(`Model is not installed: ${id}`);
+  const model = publicConfigCache?.models?.catalog?.find((item) => item.id === id) || {};
+  const files = fs.readdirSync(installed.dir);
+  const skel = model.skel || files.find((file) => file.endsWith(".skel"));
+  if (!skel) throw new Error(`No .skel file found for ${id}`);
+  await saveSettings({ spine: { assetDir: installed.dir, skel } });
+  serverRuntime?.setAssetRoot(installed.dir);
+  const origin = publicConfigCache?.server?.origin || "http://127.0.0.1:17388";
+  const result = {
+    id,
+    name: model.name || id,
+    assetDir: installed.dir,
+    skel,
+    assetUrl: `${origin}/assets/spine/${encodeURIComponent(skel)}`,
+    localConfigPath: publicConfigCache.paths?.localConfigPath,
+    requiresRestart: false
+  };
+  sendToRenderer("companion:model-imported", result);
+  return result;
+}
+
+function getCurrentModel() {
+  const skel = publicConfigCache?.spine?.skel || "";
+  const catalog = findCatalogModelBySkel(skel);
+  return {
+    id: catalog?.id || "",
+    name: catalog?.name || skel || "None",
+    skel,
+    assetDir: publicConfigCache?.spine?.assetDir || "",
+    source: catalog?.source || "Local"
+  };
+}
+
+function getUpdateStatus() {
+  return checkGitHubRelease({ currentVersion: pkg.version });
+}
+
+function setAutoLaunch(enabled) {
+  app.setLoginItemSettings({ openAtLogin: Boolean(enabled) });
+  return app.getLoginItemSettings();
 }
 
 function removeModel(id) {
@@ -437,6 +487,11 @@ function registerIpc(config) {
   ipcMain.handle("companion:save-settings", (_event, patch) => saveSettings(patch));
   ipcMain.handle("companion:get-diagnostics", () => getDiagnostics());
   ipcMain.handle("companion:get-installed-models", () => getInstalledModels());
+  ipcMain.handle("companion:get-history", () => serverRuntime.store.listHistory());
+  ipcMain.handle("companion:get-current-model", () => getCurrentModel());
+  ipcMain.handle("companion:set-active-model", (_event, id) => setActiveModel(id));
+  ipcMain.handle("companion:check-updates", () => getUpdateStatus());
+  ipcMain.handle("companion:set-auto-launch", (_event, enabled) => setAutoLaunch(enabled));
   ipcMain.handle("companion:remove-model", (_event, id) => removeModel(id));
   ipcMain.handle("companion:open-folder", (_event, p) => openCompanionFolder(p));
   ipcMain.handle("companion:open-manager", () => {
@@ -448,6 +503,14 @@ function registerIpc(config) {
   serverRuntime.store.emitter.on("state", (state) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send("companion:state", state);
+    }
+  });
+  serverRuntime.store.emitter.on("reminder", (reminder) => {
+    if (Notification.isSupported()) {
+      new Notification({
+        title: "Spine Companion Reminder",
+        body: reminder.text || "Reminder"
+      }).show();
     }
   });
 
@@ -514,6 +577,10 @@ async function boot() {
   serverRuntime = createCompanionServer(config, () => publicConfigCache);
   await serverRuntime.listen();
   registerIpc(config);
+  globalShortcut.register("CommandOrControl+Shift+S", () => {
+    const state = serverRuntime.store.snapshot().state === "working" ? "idle" : "working";
+    serverRuntime.store.setState({ state, source: "global-shortcut", message: state === "working" ? "Working" : "" });
+  });
   createTray();
   await createWindow(config);
 }
@@ -531,5 +598,6 @@ app.on("activate", () => {
 
 app.on("before-quit", () => {
   isQuitting = true;
+  globalShortcut.unregisterAll();
   if (serverRuntime) serverRuntime.close();
 });

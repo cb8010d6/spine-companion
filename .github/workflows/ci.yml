@@ -24,10 +24,11 @@ jobs:
         with:
           bun-version: 1.3.13
       - run: bun install --frozen-lockfile
-      - run: bun run check
+      - run: bun run lint
       - run: bun run check:mcp
       - run: bun run test
-      - run: bun run build
+      - run: bun run test:coverage
+      - run: bun run type-check
 
   tauri:
     name: Tauri check
