@@ -39,6 +39,7 @@ export async function initTauriBridge() {
     getCurrentModel: () => _tauriInvoke("get_current_model"),
     setActiveModel: (id) => _tauriInvoke("set_active_model", { id }),
     checkUpdates: () => _tauriInvoke("check_updates"),
+    openExternal: (url) => _tauriInvoke("open_url", { url }),
     setAutoLaunch: (enabled) => _tauriInvoke("set_auto_launch", { enabled: Boolean(enabled) }),
     removeModel: (id) => _tauriInvoke("remove_model", { id }),
     openFolder: (p) => _tauriInvoke("open_folder", { p }),

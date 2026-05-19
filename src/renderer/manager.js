@@ -57,6 +57,27 @@ async function refreshConfig() {
   installedModels = await window.companion?.getInstalledModels?.() || [];
 }
 
+async function refreshUpdateStatus({ silent = false } = {}) {
+  try {
+    updateStatus = await window.companion?.checkUpdates?.();
+    if (!silent) {
+      setStatus(updateStatus?.updateAvailable
+        ? `Update available: ${updateStatus.latestVersion}`
+        : `Up to date: ${updateStatus?.currentVersion || ""}`);
+    }
+  } catch (error) {
+    updateStatus = { error: error.message || "Update check failed" };
+    if (!silent) setStatus(updateStatus.error);
+  }
+  return updateStatus;
+}
+
+async function openUpdateTarget() {
+  const url = updateStatus?.downloadUrl || updateStatus?.recommendedAsset?.url || updateStatus?.url;
+  if (!url) return;
+  await window.companion?.openExternal?.(url);
+}
+
 function isInstalled(id) {
   return installedModels.some((model) => model.id === id);
 }
@@ -271,7 +292,7 @@ function check(label, checked, onChange) {
 async function diagnosticsView() {
   diagnostics = await window.companion?.getDiagnostics?.() || {};
   history = await window.companion?.getHistory?.() || [];
-  updateStatus = await window.companion?.checkUpdates?.().catch((error) => ({ error: error.message }));
+  if (!updateStatus) await refreshUpdateStatus({ silent: true });
   const row = (label, ok, value) => h("div", { class: "status-row" },
     h("span", { class: "status-label" }, label),
     h("span", { class: ok ? "status-value status-ok" : "status-value status-err" }, value || (ok ? "OK" : "Needs attention"))
@@ -289,7 +310,19 @@ async function diagnosticsView() {
       h("article", { class: "card diag-card" },
         h("h3", {}, "Updates"),
         h("p", { class: "model-meta" }, updateStatus?.error || `Current ${updateStatus?.currentVersion || ""}, latest ${updateStatus?.latestVersion || ""}`),
-        updateStatus?.url ? h("button", { class: "btn", type: "button", onClick: () => window.open(updateStatus.url) }, "Open Release") : null
+        updateStatus?.recommendedAsset
+          ? h("p", { class: "model-meta" }, `Recommended: ${updateStatus.recommendedAsset.name}`)
+          : null,
+        h("div", { class: "model-actions" },
+          h("button", { class: "btn", type: "button", onClick: async () => {
+            await refreshUpdateStatus();
+            renderView("diagnostics");
+          } }, "Check Again"),
+          updateStatus?.downloadUrl || updateStatus?.url
+            ? h("button", { class: "btn btn-primary", type: "button", onClick: openUpdateTarget },
+                updateStatus?.recommendedAsset ? "Download for this device" : "Open Release")
+            : null
+        )
       ),
       h("article", { class: "card diag-card wide" },
         h("h3", {}, "Recent State History"),
@@ -316,6 +349,12 @@ async function renderView(viewName) {
 async function boot() {
   if (isTauri()) await initTauriBridge();
   await refreshConfig();
+  refreshUpdateStatus({ silent: true }).then((status) => {
+    if (status?.updateAvailable) {
+      setStatus(`Update available: ${status.latestVersion}`);
+    }
+    if (activeView === "diagnostics") renderView("diagnostics");
+  });
   for (const button of navButtons) button.addEventListener("click", () => navTo(button.dataset.view));
   modalContainer.addEventListener("click", (event) => {
     if (event.target === modalContainer) closeModal();

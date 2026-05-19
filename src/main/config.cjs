@@ -173,6 +173,7 @@ function getPublicConfig(config, serverOrigin) {
       websocketUrl: serverOrigin.replace(/^http/, "ws") + "/ws"
     },
     spine: {
+      assetDir: config.spine.assetDir,
       skel: config.spine.skel,
       assetUrl: `${serverOrigin}/assets/spine/${encodeURIComponent(config.spine.skel)}`,
       assetDirConfigured: Boolean(config.spine.assetDir),

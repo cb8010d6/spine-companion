@@ -444,8 +444,9 @@ fn load_runtime_config() -> RuntimeConfig {
             "websocketUrl": format!("ws://{}:{}/ws", host, port)
         },
         "spine": {
+            "assetDir": asset_dir.clone(),
             "skel": skel,
-            "assetUrl": format!("{}/assets/spine/{}", origin, skel),
+            "assetUrl": format!("{}/assets/spine/{}", origin, url_encode_path_segment(skel)),
             "assetDirConfigured": !asset_dir.is_empty(),
             "scale": config["spine"]["scale"].clone(),
             "offsetX": config["spine"]["offsetX"].clone(),
@@ -584,13 +585,16 @@ async fn import_model(
             .and_then(|value| value.as_str())
             .ok_or_else(|| "Model file is missing url".to_string())?;
 
-        let _ = app.emit("companion:download-progress", serde_json::json!({
-            "id": input.id,
-            "file": file_name,
-            "current": i + 1,
-            "total": total_files,
-            "status": "downloading"
-        }));
+        let _ = app.emit(
+            "companion:download-progress",
+            serde_json::json!({
+                "id": input.id,
+                "file": file_name,
+                "current": i + 1,
+                "total": total_files,
+                "status": "downloading"
+            }),
+        );
 
         let bytes = client
             .get(url)
@@ -679,7 +683,11 @@ async fn save_settings(
 #[tauri::command]
 async fn get_diagnostics(data: State<'_, AppData>) -> Result<serde_json::Value, String> {
     let public = public_config_with_ui(&data);
-    let origin = public.get("server").and_then(|s| s.get("origin")).and_then(|o| o.as_str()).unwrap_or("http://127.0.0.1:17388");
+    let origin = public
+        .get("server")
+        .and_then(|s| s.get("origin"))
+        .and_then(|o| o.as_str())
+        .unwrap_or("http://127.0.0.1:17388");
 
     let state_ok = reqwest::get(&format!("{}/state", origin)).await.is_ok();
 
@@ -696,47 +704,106 @@ async fn get_diagnostics(data: State<'_, AppData>) -> Result<serde_json::Value, 
             while let Ok(Some(entry)) = entries.next_entry().await {
                 let path = entry.path();
                 if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
-                    if ext == "skel" { has_skel = true; }
-                    if ext == "atlas" { has_atlas = true; }
-                    if ext == "png" { has_png = true; }
+                    if ext == "skel" {
+                        has_skel = true;
+                    }
+                    if ext == "atlas" {
+                        has_atlas = true;
+                    }
+                    if ext == "png" {
+                        has_png = true;
+                    }
                 }
             }
         }
     }
 
     let mut mcp_matches = Vec::new();
-    let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or_default();
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_default();
     if !home.is_empty() {
         let home_path = std::path::Path::new(&home);
         let mut mcp_paths = vec![
             ("Codex", home_path.join(".codex").join("config.toml")),
-            ("Gemini / Antigravity", home_path.join(".gemini").join("antigravity").join("mcp_config.json")),
+            (
+                "Gemini / Antigravity",
+                home_path
+                    .join(".gemini")
+                    .join("antigravity")
+                    .join("mcp_config.json"),
+            ),
         ];
         #[cfg(target_os = "windows")]
         {
             let roaming = std::env::var("APPDATA")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| home_path.join("AppData").join("Roaming"));
-            mcp_paths.push(("Claude", roaming.join("Claude").join("claude_desktop_config.json")));
-            mcp_paths.push(("Roo / Cline", roaming.join("Code").join("User").join("globalStorage").join("rooveterinaryinc.roo-cline").join("settings").join("cline_mcp_settings.json")));
+            mcp_paths.push((
+                "Claude",
+                roaming.join("Claude").join("claude_desktop_config.json"),
+            ));
+            mcp_paths.push((
+                "Roo / Cline",
+                roaming
+                    .join("Code")
+                    .join("User")
+                    .join("globalStorage")
+                    .join("rooveterinaryinc.roo-cline")
+                    .join("settings")
+                    .join("cline_mcp_settings.json"),
+            ));
         }
         #[cfg(target_os = "macos")]
         {
-            mcp_paths.push(("Claude", home_path.join("Library").join("Application Support").join("Claude").join("claude_desktop_config.json")));
-            mcp_paths.push(("Roo / Cline", home_path.join("Library").join("Application Support").join("Code").join("User").join("globalStorage").join("rooveterinaryinc.roo-cline").join("settings").join("cline_mcp_settings.json")));
+            mcp_paths.push((
+                "Claude",
+                home_path
+                    .join("Library")
+                    .join("Application Support")
+                    .join("Claude")
+                    .join("claude_desktop_config.json"),
+            ));
+            mcp_paths.push((
+                "Roo / Cline",
+                home_path
+                    .join("Library")
+                    .join("Application Support")
+                    .join("Code")
+                    .join("User")
+                    .join("globalStorage")
+                    .join("rooveterinaryinc.roo-cline")
+                    .join("settings")
+                    .join("cline_mcp_settings.json"),
+            ));
         }
         #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
         {
             let config_home = std::env::var("XDG_CONFIG_HOME")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| home_path.join(".config"));
-            mcp_paths.push(("Claude", config_home.join("Claude").join("claude_desktop_config.json")));
-            mcp_paths.push(("Roo / Cline", config_home.join("Code").join("User").join("globalStorage").join("rooveterinaryinc.roo-cline").join("settings").join("cline_mcp_settings.json")));
+            mcp_paths.push((
+                "Claude",
+                config_home
+                    .join("Claude")
+                    .join("claude_desktop_config.json"),
+            ));
+            mcp_paths.push((
+                "Roo / Cline",
+                config_home
+                    .join("Code")
+                    .join("User")
+                    .join("globalStorage")
+                    .join("rooveterinaryinc.roo-cline")
+                    .join("settings")
+                    .join("cline_mcp_settings.json"),
+            ));
         }
 
         for (tool, p) in mcp_paths {
             if let Ok(content) = std::fs::read_to_string(&p) {
-                let configured = content.contains("spine_companion") || content.contains("spine-companion");
+                let configured =
+                    content.contains("spine_companion") || content.contains("spine-companion");
                 mcp_matches.push(serde_json::json!({
                     "tool": tool,
                     "path": p.to_string_lossy(),
@@ -834,7 +901,9 @@ fn get_history(data: State<'_, AppData>) -> Result<Vec<CompanionState>, String> 
 #[tauri::command]
 fn get_current_model(data: State<'_, AppData>) -> Result<CurrentModel, String> {
     let public = public_config_with_ui(&data);
-    let skel = string_at(&public, &["spine", "skel"]).unwrap_or("").to_string();
+    let skel = string_at(&public, &["spine", "skel"])
+        .unwrap_or("")
+        .to_string();
     let model = model_by_skel(&public, &skel);
     Ok(CurrentModel {
         id: model
@@ -848,7 +917,9 @@ fn get_current_model(data: State<'_, AppData>) -> Result<CurrentModel, String> {
             .unwrap_or(if skel.is_empty() { "None" } else { &skel })
             .to_string(),
         skel,
-        asset_dir: string_at(&public, &["spine", "assetDir"]).unwrap_or("").to_string(),
+        asset_dir: string_at(&public, &["spine", "assetDir"])
+            .unwrap_or("")
+            .to_string(),
         source: model
             .as_ref()
             .and_then(|m| m.get("source").and_then(|v| v.as_str()))
@@ -880,21 +951,30 @@ async fn set_active_model(
             std::fs::read_dir(&model_dir).ok().and_then(|entries| {
                 entries.flatten().find_map(|entry| {
                     let name = entry.file_name().to_string_lossy().to_string();
-                    if name.ends_with(".skel") { Some(name) } else { None }
+                    if name.ends_with(".skel") {
+                        Some(name)
+                    } else {
+                        None
+                    }
                 })
             })
         })
         .ok_or_else(|| "No .skel file found".to_string())?;
     write_local_model_config(&data.local_config_path, &model_dir, &skel)?;
-    let canonical_model_dir = model_dir.canonicalize().map_err(|error| error.to_string())?;
+    let canonical_model_dir = model_dir
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
     if let Ok(mut public) = data.public_config.lock() {
-        merge_json(&mut public, serde_json::json!({
-            "spine": {
-                "assetDir": canonical_model_dir.to_string_lossy().to_string(),
-                "assetDirConfigured": true,
-                "skel": skel
-            }
-        }));
+        merge_json(
+            &mut public,
+            serde_json::json!({
+                "spine": {
+                    "assetDir": canonical_model_dir.to_string_lossy().to_string(),
+                    "assetDirConfigured": true,
+                    "skel": skel
+                }
+            }),
+        );
     }
     {
         let mut asset_root = data.asset_root.write().await;
@@ -936,13 +1016,54 @@ async fn check_updates() -> Result<serde_json::Value, String> {
         .text()
         .await
         .map_err(|error| error.to_string())?;
-    let response: serde_json::Value = serde_json::from_str(&text).map_err(|error| error.to_string())?;
+    let response: serde_json::Value =
+        serde_json::from_str(&text).map_err(|error| error.to_string())?;
+    let assets = response
+        .get("assets")
+        .and_then(|value| value.as_array())
+        .map(|assets| {
+            assets
+                .iter()
+                .map(normalize_release_asset)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let recommended_asset = select_release_asset(&assets);
+    let latest_version = response
+        .get("tag_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim_start_matches('v')
+        .to_string();
+    let release_url = response
+        .get("html_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let download_url = recommended_asset
+        .as_ref()
+        .and_then(|asset| asset.get("url"))
+        .and_then(|value| value.as_str())
+        .unwrap_or(&release_url)
+        .to_string();
     Ok(serde_json::json!({
         "currentVersion": env!("CARGO_PKG_VERSION"),
-        "latestVersion": response.get("tag_name").and_then(|v| v.as_str()).unwrap_or("").trim_start_matches('v'),
-        "url": response.get("html_url").and_then(|v| v.as_str()).unwrap_or(""),
-        "name": response.get("name").and_then(|v| v.as_str()).unwrap_or("")
+        "latestVersion": latest_version,
+        "updateAvailable": compare_versions(&latest_version, env!("CARGO_PKG_VERSION")) > 0,
+        "url": release_url,
+        "name": response.get("name").and_then(|v| v.as_str()).unwrap_or(""),
+        "assets": assets,
+        "recommendedAsset": recommended_asset,
+        "downloadUrl": download_url
     }))
+}
+
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    if !url.starts_with("https://") && !url.starts_with("http://") {
+        return Err("Only http(s) URLs can be opened externally".to_string());
+    }
+    open_external(&url).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -958,8 +1079,13 @@ fn set_auto_launch(_enabled: bool) -> Result<serde_json::Value, String> {
 fn open_folder(app: tauri::AppHandle, p: String) -> Result<(), String> {
     let data = app.state::<AppData>();
     let requested = PathBuf::from(&p);
-    let allowed_root = data.config_dir.canonicalize().unwrap_or_else(|_| data.config_dir.clone());
-    let requested_canonical = requested.canonicalize().map_err(|error| error.to_string())?;
+    let allowed_root = data
+        .config_dir
+        .canonicalize()
+        .unwrap_or_else(|_| data.config_dir.clone());
+    let requested_canonical = requested
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
     if !requested_canonical.starts_with(&allowed_root) {
         return Err("Refusing to open a path outside the companion config directory".to_string());
     }
@@ -973,8 +1099,14 @@ async fn start_drag(window: tauri::Window) -> Result<(), String> {
 
 #[tauri::command]
 async fn set_mouse_passthrough(window: tauri::Window, enabled: bool) -> Result<(), String> {
+    if enabled {
+        // Tauri does not support Electron's forward:true behavior here. If we
+        // ignore cursor events, the transparent window stops receiving the
+        // mousemove/wheel events needed to recover clickability and zoom.
+        return Ok(());
+    }
     window
-        .set_ignore_cursor_events(enabled)
+        .set_ignore_cursor_events(false)
         .map_err(|e| e.to_string())
 }
 
@@ -1089,6 +1221,127 @@ fn model_by_skel(public_config: &serde_json::Value, skel: &str) -> Option<serde_
         })
 }
 
+fn compare_versions(a: &str, b: &str) -> i8 {
+    let parse = |value: &str| {
+        value
+            .trim_start_matches('v')
+            .split('.')
+            .map(|part| part.parse::<i32>().unwrap_or(0))
+            .collect::<Vec<_>>()
+    };
+    let left = parse(a);
+    let right = parse(b);
+    let len = left.len().max(right.len());
+    for i in 0..len {
+        let diff = left.get(i).copied().unwrap_or(0) - right.get(i).copied().unwrap_or(0);
+        if diff > 0 {
+            return 1;
+        }
+        if diff < 0 {
+            return -1;
+        }
+    }
+    0
+}
+
+fn normalize_release_asset(asset: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "name": asset.get("name").and_then(|value| value.as_str()).unwrap_or(""),
+        "url": asset
+            .get("browser_download_url")
+            .or_else(|| asset.get("url"))
+            .and_then(|value| value.as_str())
+            .unwrap_or(""),
+        "size": asset.get("size").and_then(|value| value.as_u64()).unwrap_or(0),
+        "digest": asset.get("digest").and_then(|value| value.as_str()).unwrap_or("")
+    })
+}
+
+fn release_asset_score(asset: &serde_json::Value) -> i32 {
+    let name = asset
+        .get("name")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let os = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+    let is_arm = arch == "aarch64" || arch == "arm64";
+    let is_x64 = arch == "x86_64" || arch == "x64" || arch == "amd64";
+
+    match os {
+        "windows" => {
+            if !name.ends_with(".exe") && !name.ends_with(".msi") {
+                return 0;
+            }
+            let mut score = if name.ends_with(".exe") { 80 } else { 60 };
+            if is_x64 && (name.contains("x64") || name.contains("amd64")) {
+                score += 30;
+            }
+            if is_arm && (name.contains("arm64") || name.contains("aarch64")) {
+                score += 30;
+            }
+            score
+        }
+        "macos" => {
+            if !name.ends_with(".dmg") && !name.ends_with(".zip") {
+                return 0;
+            }
+            let mut score = if name.ends_with(".dmg") { 80 } else { 45 };
+            if is_arm && (name.contains("arm64") || name.contains("aarch64")) {
+                score += 35;
+            }
+            if is_x64 && (name.contains("x64") || name.contains("x86_64") || name.contains("amd64"))
+            {
+                score += 35;
+            }
+            score
+        }
+        "linux" => {
+            if !name.ends_with(".appimage") && !name.ends_with(".deb") {
+                return 0;
+            }
+            let mut score = if name.ends_with(".appimage") { 80 } else { 55 };
+            if is_x64 && (name.contains("x64") || name.contains("x86_64") || name.contains("amd64"))
+            {
+                score += 30;
+            }
+            if is_arm && (name.contains("arm64") || name.contains("aarch64")) {
+                score += 30;
+            }
+            score
+        }
+        _ => 0,
+    }
+}
+
+fn select_release_asset(assets: &[serde_json::Value]) -> Option<serde_json::Value> {
+    assets
+        .iter()
+        .filter(|asset| {
+            asset
+                .get("url")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                != ""
+        })
+        .map(|asset| (release_asset_score(asset), asset))
+        .filter(|(score, _)| *score > 0)
+        .max_by(|(left_score, left), (right_score, right)| {
+            left_score.cmp(right_score).then_with(|| {
+                right
+                    .get("name")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("")
+                    .cmp(
+                        left.get("name")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or(""),
+                    )
+            })
+        })
+        .map(|(_, asset)| asset.clone())
+}
+
 fn write_local_model_config(path: &Path, asset_dir: &Path, skel: &str) -> Result<(), String> {
     let mut config = read_json_if_exists(path).unwrap_or_else(|| serde_json::json!({}));
     merge_json(
@@ -1137,7 +1390,8 @@ pub fn run() {
             .and_then(|path| path.canonicalize().ok()),
     ));
     let asset_root_for_server = asset_root_store.clone();
-    let history_store: Arc<Mutex<Vec<CompanionState>>> = Arc::new(Mutex::new(vec![store.blocking_read().clone()]));
+    let history_store: Arc<Mutex<Vec<CompanionState>>> =
+        Arc::new(Mutex::new(vec![store.blocking_read().clone()]));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -1188,26 +1442,64 @@ pub fn run() {
             });
 
             // Build minimal tray menu
-            let show_item = MenuItem::with_id(app, "show_companion", "Show Companion", true, None::<&str>)?;
-            let hide_item = MenuItem::with_id(app, "hide_companion", "Hide Companion", true, None::<&str>)?;
-            let panel_item = MenuItem::with_id(app, "open_panel", "Open Quick Panel", true, None::<&str>)?;
-            let manager_item = MenuItem::with_id(app, "open_manager", "Open Manager", true, None::<&str>)?;
-            let bubble_item = MenuItem::with_id(app, "toggle_bubble", "Toggle Progress Bubble", true, None::<&str>)?;
-            let hud_item = MenuItem::with_id(app, "toggle_hud", "Toggle Status Panel", true, None::<&str>)?;
-            let diagnostics_item = MenuItem::with_id(app, "diagnostics", "Diagnostics", true, None::<&str>)?;
-            let config_item = MenuItem::with_id(app, "open_config_dir", "Open Config Folder", true, None::<&str>)?;
-            let api_item = MenuItem::with_id(app, "open_local_api", "Open Local API", true, None::<&str>)?;
+            let show_item =
+                MenuItem::with_id(app, "show_companion", "Show Companion", true, None::<&str>)?;
+            let hide_item =
+                MenuItem::with_id(app, "hide_companion", "Hide Companion", true, None::<&str>)?;
+            let panel_item =
+                MenuItem::with_id(app, "open_panel", "Open Quick Panel", true, None::<&str>)?;
+            let manager_item =
+                MenuItem::with_id(app, "open_manager", "Open Manager", true, None::<&str>)?;
+            let bubble_item = MenuItem::with_id(
+                app,
+                "toggle_bubble",
+                "Toggle Progress Bubble",
+                true,
+                None::<&str>,
+            )?;
+            let hud_item =
+                MenuItem::with_id(app, "toggle_hud", "Toggle Status Panel", true, None::<&str>)?;
+            let diagnostics_item =
+                MenuItem::with_id(app, "diagnostics", "Diagnostics", true, None::<&str>)?;
+            let config_item = MenuItem::with_id(
+                app,
+                "open_config_dir",
+                "Open Config Folder",
+                true,
+                None::<&str>,
+            )?;
+            let api_item =
+                MenuItem::with_id(app, "open_local_api", "Open Local API", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let state_idle = MenuItem::with_id(app, "state_idle", "Idle", true, None::<&str>)?;
-            let state_working = MenuItem::with_id(app, "state_working", "Working", true, None::<&str>)?;
-            let state_reviewing = MenuItem::with_id(app, "state_reviewing", "Reviewing", true, None::<&str>)?;
-            let state_running_left = MenuItem::with_id(app, "state_running_left", "Running Left", true, None::<&str>)?;
-            let state_running_right = MenuItem::with_id(app, "state_running_right", "Running Right", true, None::<&str>)?;
-            let state_success = MenuItem::with_id(app, "state_success", "Success", true, None::<&str>)?;
-            let state_failed = MenuItem::with_id(app, "state_failed", "Failed", true, None::<&str>)?;
-            let state_waiting = MenuItem::with_id(app, "state_waiting", "Waiting", true, None::<&str>)?;
-            let state_sleeping = MenuItem::with_id(app, "state_sleeping", "Sleeping", true, None::<&str>)?;
-            let state_reminder = MenuItem::with_id(app, "state_reminder", "Reminder", true, None::<&str>)?;
+            let state_working =
+                MenuItem::with_id(app, "state_working", "Working", true, None::<&str>)?;
+            let state_reviewing =
+                MenuItem::with_id(app, "state_reviewing", "Reviewing", true, None::<&str>)?;
+            let state_running_left = MenuItem::with_id(
+                app,
+                "state_running_left",
+                "Running Left",
+                true,
+                None::<&str>,
+            )?;
+            let state_running_right = MenuItem::with_id(
+                app,
+                "state_running_right",
+                "Running Right",
+                true,
+                None::<&str>,
+            )?;
+            let state_success =
+                MenuItem::with_id(app, "state_success", "Success", true, None::<&str>)?;
+            let state_failed =
+                MenuItem::with_id(app, "state_failed", "Failed", true, None::<&str>)?;
+            let state_waiting =
+                MenuItem::with_id(app, "state_waiting", "Waiting", true, None::<&str>)?;
+            let state_sleeping =
+                MenuItem::with_id(app, "state_sleeping", "Sleeping", true, None::<&str>)?;
+            let state_reminder =
+                MenuItem::with_id(app, "state_reminder", "Reminder", true, None::<&str>)?;
             let state_menu = Submenu::with_items(
                 app,
                 "Set State",
@@ -1276,18 +1568,24 @@ pub fn run() {
                     "toggle_bubble" => {
                         let data = app.state::<AppData>();
                         let visible = current_ui_settings(&data).bubble_visible;
-                        let _ = update_ui_settings(app, UiSettingsPatch {
-                            bubble_visible: Some(!visible),
-                            ..Default::default()
-                        });
+                        let _ = update_ui_settings(
+                            app,
+                            UiSettingsPatch {
+                                bubble_visible: Some(!visible),
+                                ..Default::default()
+                            },
+                        );
                     }
                     "toggle_hud" => {
                         let data = app.state::<AppData>();
                         let visible = current_ui_settings(&data).hud_visible;
-                        let _ = update_ui_settings(app, UiSettingsPatch {
-                            hud_visible: Some(!visible),
-                            ..Default::default()
-                        });
+                        let _ = update_ui_settings(
+                            app,
+                            UiSettingsPatch {
+                                hud_visible: Some(!visible),
+                                ..Default::default()
+                            },
+                        );
                     }
                     "state_idle" => set_tray_state(app, "idle", None),
                     "state_working" => set_tray_state(app, "working", None),
@@ -1315,7 +1613,9 @@ pub fn run() {
                     {
                         let app = tray.app_handle();
                         if let Some(panel) = app.get_webview_window("panel") {
-                            let panel_size = panel.outer_size().unwrap_or(tauri::PhysicalSize::new(320, 480));
+                            let panel_size = panel
+                                .outer_size()
+                                .unwrap_or(tauri::PhysicalSize::new(320, 480));
 
                             // Try to calculate position slightly offset from the tray icon
                             let (rect_x, rect_y) = match rect.position {
@@ -1359,6 +1659,7 @@ pub fn run() {
             get_current_model,
             set_active_model,
             check_updates,
+            open_url,
             set_auto_launch,
             remove_model,
             open_folder,
@@ -1370,4 +1671,24 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encodes_spine_asset_file_names_for_urls() {
+        assert_eq!(
+            url_encode_path_segment("build_char_1001_amiya2_sale#16.skel"),
+            "build_char_1001_amiya2_sale%2316.skel"
+        );
+    }
+
+    #[test]
+    fn compares_semver_like_versions() {
+        assert_eq!(compare_versions("0.2.2", "0.2.1"), 1);
+        assert_eq!(compare_versions("v0.2.1", "0.2.1"), 0);
+        assert_eq!(compare_versions("0.1.9", "0.2.0"), -1);
+    }
 }

@@ -240,6 +240,14 @@ function setAutoLaunch(enabled) {
   return app.getLoginItemSettings();
 }
 
+function openExternalUrl(url) {
+  const parsed = new URL(String(url || ""));
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    throw new Error("Only http(s) URLs can be opened externally.");
+  }
+  return shell.openExternal(parsed.toString());
+}
+
 function removeModel(id) {
   if (typeof id !== "string" || id.includes("..") || id.includes("/") || id.includes("\\")) {
     throw new Error("Invalid model ID");
@@ -491,6 +499,7 @@ function registerIpc(config) {
   ipcMain.handle("companion:get-current-model", () => getCurrentModel());
   ipcMain.handle("companion:set-active-model", (_event, id) => setActiveModel(id));
   ipcMain.handle("companion:check-updates", () => getUpdateStatus());
+  ipcMain.handle("companion:open-external", (_event, url) => openExternalUrl(url));
   ipcMain.handle("companion:set-auto-launch", (_event, enabled) => setAutoLaunch(enabled));
   ipcMain.handle("companion:remove-model", (_event, id) => removeModel(id));
   ipcMain.handle("companion:open-folder", (_event, p) => openCompanionFolder(p));

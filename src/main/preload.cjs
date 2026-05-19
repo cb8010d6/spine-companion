@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld("companion", {
   getCurrentModel: () => ipcRenderer.invoke("companion:get-current-model"),
   setActiveModel: (id) => ipcRenderer.invoke("companion:set-active-model", id),
   checkUpdates: () => ipcRenderer.invoke("companion:check-updates"),
+  openExternal: (url) => ipcRenderer.invoke("companion:open-external", url),
   setAutoLaunch: (enabled) => ipcRenderer.invoke("companion:set-auto-launch", enabled),
   removeModel: (id) => ipcRenderer.invoke("companion:remove-model", id),
   openFolder: (p) => ipcRenderer.invoke("companion:open-folder", p),
