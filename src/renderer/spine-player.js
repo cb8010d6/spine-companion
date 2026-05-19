@@ -1,6 +1,7 @@
 import * as PIXI from "pixi.js";
 import { Spine } from "pixi-spine";
 import { animationForState, stateMachine } from "./state.js";
+import { spineAssetUrl } from "../shared/asset-url.js";
 
 export class SpinePlayer {
   constructor(stage, config) {
@@ -83,7 +84,7 @@ export class SpinePlayer {
   loadSpineResource() {
     return new Promise((resolve, reject) => {
       const loader = new PIXI.Loader();
-      loader.add("companion", this.config.spine.assetUrl);
+      loader.add("companion", spineAssetUrl(this.config));
       loader.onError.add((error) => reject(error));
       loader.load((_loader, resources) => {
         if (!resources.companion?.spineData) {

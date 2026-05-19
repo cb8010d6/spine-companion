@@ -6,6 +6,8 @@ Hotfix for the v0.2.1 Tauri package.
 
 - Fixed Tauri Spine asset URLs for filenames containing `#`, such as
   `build_char_1001_amiya2_sale#16.skel`.
+- Added renderer-side URL normalization so stale runtime config cannot send
+  unencoded `#` filenames to Pixi.
 - Kept `assetDir` in the public runtime config so Manager can reliably detect
   the active installed model.
 - Disabled automatic click-through activation in Tauri. The previous behavior
@@ -21,3 +23,4 @@ Hotfix for the v0.2.1 Tauri package.
 - `bun run test`
 - `bun run build`
 - `cargo test`
+- `bun run tauri:build`
