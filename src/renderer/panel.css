@@ -90,6 +90,25 @@ body {
   font-size: 9px;
   color: var(--text-muted);
   border: 1px solid var(--border);
+  overflow: hidden;
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.model-preview span {
+  position: relative;
+  z-index: 1;
+  font-weight: 700;
+}
+
+.model-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.model-preview.has-image span {
+  display: none;
 }
 
 .model-info {

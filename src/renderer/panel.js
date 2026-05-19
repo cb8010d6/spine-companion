@@ -5,6 +5,34 @@ import { modelPreview } from "./model-preview.js";
 let config = null;
 const quickStates = ["idle", "working", "running", "reviewing", "success", "failed"];
 
+function renderPreview(previewEl, preview) {
+  previewEl.replaceChildren();
+  previewEl.classList.toggle("has-image", Boolean(preview.imageUrl));
+  Object.assign(previewEl.style, preview.style);
+
+  const fallback = document.createElement("span");
+  fallback.textContent = preview.initials;
+  if (preview.imageUrl) {
+    const image = document.createElement("img");
+    image.alt = "";
+    image.src = preview.imageUrl;
+    image.addEventListener("error", () => {
+      image.remove();
+      previewEl.classList.remove("has-image");
+    });
+    previewEl.appendChild(image);
+  }
+  previewEl.appendChild(fallback);
+}
+
+async function closePanel() {
+  if (isTauri()) {
+    await window.companion?.closePanel?.();
+    return;
+  }
+  window.close();
+}
+
 async function updateState() {
   try {
     if (window.companion?.getConfig) {
@@ -30,10 +58,9 @@ async function updateState() {
     const activeModel = catalog.find(m => spine.skel.includes(m.skel)) || { name: spine.skel.split('/').pop() };
     document.getElementById("panel-model-name").textContent = activeModel.name;
     document.getElementById("panel-model-skel").textContent = spine.skel;
-    const preview = modelPreview(activeModel);
+    const preview = modelPreview(activeModel, config);
     const previewEl = document.getElementById("panel-model-preview");
-    previewEl.textContent = preview.initials;
-    Object.assign(previewEl.style, preview.style);
+    renderPreview(previewEl, preview);
   }
 
   if (window.companion?.getState) {
@@ -123,18 +150,21 @@ async function boot() {
   // Actions
   document.getElementById("btn-manager").addEventListener("click", () => {
     window.companion?.openManager?.();
-    window.close(); // Close panel
+    closePanel();
   });
 
   document.getElementById("btn-quit").addEventListener("click", () => {
     window.companion?.quitApp?.();
   });
 
-  // Close panel on blur
+  window.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closePanel();
+  });
+
+  // Close panel on blur so it behaves like a tray flyout.
   window.addEventListener("blur", () => {
     if (isTauri()) {
-       // Only close in production or explicitly requested, otherwise DevTools might close it
-       // window.close();
+      closePanel();
     }
   });
 }

@@ -44,6 +44,7 @@ export async function initTauriBridge() {
     removeModel: (id) => _tauriInvoke("remove_model", { id }),
     openFolder: (p) => _tauriInvoke("open_folder", { p }),
     openManager: () => _tauriInvoke("open_manager_window"),
+    closePanel: () => _tauriInvoke("hide_panel_window"),
     quitApp: () => _tauriInvoke("quit_app"),
     emitScale: (payload) => _tauriInvoke("emit_scale_event", { input: payload }),
     importModel: (input) => _tauriInvoke("import_model", { input }),

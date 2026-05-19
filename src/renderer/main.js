@@ -174,8 +174,12 @@ function updateMousePassthrough(event) {
   const y = event.clientY;
   const interactive = rectContains(player?.getInteractiveBounds?.(), x, y)
     || elementContainsPoint(document.getElementById("hud"), x, y)
+    || elementContainsPoint(settingsPanel, x, y)
+    || elementContainsPoint(progressBubble, x, y)
     || elementContainsPoint(completionToast, x, y)
-    || elementContainsPoint(emptyState, x, y);
+    || elementContainsPoint(emptyState, x, y)
+    || elementContainsPoint(errorRoot, x, y)
+    || elementContainsPoint(onboardingRoot, x, y);
   setMousePassthrough(!interactive);
 }
 
@@ -323,6 +327,7 @@ function showOnboardingIfNeeded(config) {
 
 function showErrorBoundary(error, config) {
   errorRoot.hidden = false;
+  setMousePassthrough(false);
   errorRoot.replaceChildren(createErrorCard({
     title: "Unable to load model",
     error,
@@ -350,6 +355,8 @@ async function loadPlayer(config) {
   applyBubbleAnchor(player.getAnchor());
   player.applyState(currentState, true);
   emptyState.hidden = true;
+  errorRoot.hidden = true;
+  errorRoot.replaceChildren();
   setMousePassthrough(true);
 }
 

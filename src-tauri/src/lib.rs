@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager, State, WebviewWindow,
+    AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
 
 struct AppData {
@@ -331,7 +331,26 @@ fn public_config_with_ui(data: &AppData) -> serde_json::Value {
     if let Ok(value) = serde_json::to_value(current_ui_settings(data)) {
         public["ui"] = value;
     }
+    refresh_public_asset_fields(&mut public);
     public
+}
+
+fn refresh_public_asset_fields(public: &mut serde_json::Value) {
+    let origin = string_at(public, &["server", "origin"])
+        .unwrap_or("http://127.0.0.1:17388")
+        .to_string();
+    let skel = string_at(public, &["spine", "skel"])
+        .unwrap_or("")
+        .to_string();
+    let asset_dir = string_at(public, &["spine", "assetDir"])
+        .unwrap_or("")
+        .to_string();
+    public["spine"]["assetUrl"] = serde_json::Value::String(format!(
+        "{}/assets/spine/{}",
+        origin.trim_end_matches('/'),
+        url_encode_path_segment(&skel)
+    ));
+    public["spine"]["assetDirConfigured"] = serde_json::Value::Bool(!asset_dir.is_empty());
 }
 
 fn update_ui_settings(app: &AppHandle, patch: UiSettingsPatch) -> Option<UiSettings> {
@@ -1125,12 +1144,45 @@ async fn reveal_window(window: WebviewWindow) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn open_manager_window(app: tauri::AppHandle) {
+async fn open_manager_window(app: tauri::AppHandle) -> Result<(), String> {
+    show_manager_window(&app).map(|_| ())
+}
+
+fn create_manager_window(app: &AppHandle) -> Result<WebviewWindow, String> {
+    WebviewWindowBuilder::new(app, "manager", WebviewUrl::App("manager.html".into()))
+        .title("Spine Companion - Manager")
+        .inner_size(800.0, 600.0)
+        .min_inner_size(600.0, 400.0)
+        .decorations(true)
+        .transparent(false)
+        .visible(false)
+        .build()
+        .map_err(|error| error.to_string())
+}
+
+fn show_manager_window(app: &AppHandle) -> Result<WebviewWindow, String> {
+    let win = if let Some(win) = app.get_webview_window("manager") {
+        win
+    } else {
+        create_manager_window(app)?
+    };
+    let _ = win.unminimize();
+    let _ = win.show();
+    let _ = win.set_focus();
+    Ok(win)
+}
+
+fn open_manager_from_tray(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("manager") {
         let _ = win.unminimize();
         let _ = win.show();
         let _ = win.set_focus();
+        return;
     }
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        let _ = show_manager_window(&handle);
+    });
 }
 
 fn show_panel_window(app: &AppHandle) {
@@ -1141,10 +1193,22 @@ fn show_panel_window(app: &AppHandle) {
     }
 }
 
+fn hide_panel_window_inner(app: &AppHandle) {
+    if let Some(panel) = app.get_webview_window("panel") {
+        let _ = panel.hide();
+    }
+}
+
 fn hide_companion_window(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.hide();
     }
+}
+
+#[tauri::command]
+fn hide_panel_window(app: tauri::AppHandle) -> Result<(), String> {
+    hide_panel_window_inner(&app);
+    Ok(())
 }
 
 #[tauri::command]
@@ -1558,13 +1622,7 @@ pub fn run() {
                     }
                     "hide_companion" => hide_companion_window(app),
                     "open_panel" => show_panel_window(app),
-                    "open_manager" => {
-                        if let Some(win) = app.get_webview_window("manager") {
-                            let _ = win.unminimize();
-                            let _ = win.show();
-                            let _ = win.set_focus();
-                        }
-                    }
+                    "open_manager" => open_manager_from_tray(app),
                     "toggle_bubble" => {
                         let data = app.state::<AppData>();
                         let visible = current_ui_settings(&data).bubble_visible;
@@ -1597,47 +1655,58 @@ pub fn run() {
                     "state_waiting" => set_tray_state(app, "waiting", None),
                     "state_sleeping" => set_tray_state(app, "sleeping", None),
                     "state_reminder" => set_tray_state(app, "reminder", None),
-                    "diagnostics" => open_manager_window(app.clone()),
+                    "diagnostics" => open_manager_from_tray(app),
                     "open_config_dir" => open_config_dir(app),
                     "open_local_api" => open_local_api(app),
                     "quit" => app.exit(0),
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        rect,
-                        ..
-                    } = event
-                    {
-                        let app = tray.app_handle();
-                        if let Some(panel) = app.get_webview_window("panel") {
-                            let panel_size = panel
-                                .outer_size()
-                                .unwrap_or(tauri::PhysicalSize::new(320, 480));
+                    let app = tray.app_handle();
+                    match event {
+                        TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            rect,
+                            ..
+                        } => {
+                            if let Some(panel) = app.get_webview_window("panel") {
+                                if panel.is_visible().unwrap_or(false) {
+                                    let _ = panel.hide();
+                                    return;
+                                }
+                                let panel_size = panel
+                                    .outer_size()
+                                    .unwrap_or(tauri::PhysicalSize::new(320, 480));
 
-                            // Try to calculate position slightly offset from the tray icon
-                            let (rect_x, rect_y) = match rect.position {
-                                tauri::Position::Physical(p) => (p.x, p.y),
-                                tauri::Position::Logical(p) => (p.x as i32, p.y as i32),
-                            };
-                            let (_rect_w, rect_h) = match rect.size {
-                                tauri::Size::Physical(s) => (s.width as i32, s.height as i32),
-                                tauri::Size::Logical(s) => (s.width as i32, s.height as i32),
-                            };
+                                // Try to calculate position slightly offset from the tray icon.
+                                let (rect_x, rect_y) = match rect.position {
+                                    tauri::Position::Physical(p) => (p.x, p.y),
+                                    tauri::Position::Logical(p) => (p.x as i32, p.y as i32),
+                                };
+                                let (_rect_w, rect_h) = match rect.size {
+                                    tauri::Size::Physical(s) => (s.width as i32, s.height as i32),
+                                    tauri::Size::Logical(s) => (s.width as i32, s.height as i32),
+                                };
 
-                            let x = rect_x - (panel_size.width as i32) / 2;
-                            let mut y = rect_y - (panel_size.height as i32) - 10;
-                            if y < 0 {
-                                y = rect_y + rect_h + 10; // If taskbar is on top
+                                let x = rect_x - (panel_size.width as i32) / 2;
+                                let mut y = rect_y - (panel_size.height as i32) - 10;
+                                if y < 0 {
+                                    y = rect_y + rect_h + 10;
+                                }
+
+                                let _ = panel.set_position(tauri::PhysicalPosition::new(x, y));
+                                let _ = panel.unminimize();
+                                let _ = panel.show();
+                                let _ = panel.set_focus();
                             }
-
-                            let _ = panel.set_position(tauri::PhysicalPosition::new(x, y));
-                            let _ = panel.unminimize();
-                            let _ = panel.show();
-                            let _ = panel.set_focus();
                         }
+                        TrayIconEvent::Click {
+                            button: MouseButton::Right,
+                            button_state: MouseButtonState::Down,
+                            ..
+                        } => hide_panel_window_inner(app),
+                        _ => {}
                     }
                 })
                 .build(app)?;
@@ -1667,6 +1736,7 @@ pub fn run() {
             set_mouse_passthrough,
             reveal_window,
             open_manager_window,
+            hide_panel_window,
             quit_app,
         ])
         .run(tauri::generate_context!())

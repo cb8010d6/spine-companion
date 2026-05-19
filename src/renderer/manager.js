@@ -39,10 +39,31 @@ function navTo(viewName) {
   renderView(viewName);
 }
 
+function catalogModel(id) {
+  return (config.models?.catalog || []).find((model) => model.id === id) || {};
+}
+
+function mergedModel(model) {
+  return { ...catalogModel(model.id), ...model };
+}
+
 function previewNode(model) {
-  const preview = modelPreview(model);
-  return h("div", { class: "model-preview", style: preview.style, "aria-label": `Preview for ${preview.label}` },
-    h("span", {}, preview.initials)
+  const preview = modelPreview(model, config);
+  const fallback = h("span", {}, preview.initials);
+  const children = [fallback];
+  if (preview.imageUrl) {
+    children.unshift(h("img", {
+      src: preview.imageUrl,
+      alt: "",
+      loading: "lazy",
+      onError: (event) => {
+        event.currentTarget.parentElement?.classList.remove("has-image");
+        event.currentTarget.remove();
+      }
+    }));
+  }
+  return h("div", { class: `model-preview ${preview.imageUrl ? "has-image" : ""}`, style: preview.style, "aria-label": `Preview for ${preview.label}` },
+    children
   );
 }
 
@@ -182,7 +203,7 @@ function installedView() {
   const active = activeInstalledId();
   const content = installedModels.length
     ? installedModels.map((model) => h("article", { class: "model-card fade-in" },
-        previewNode(model),
+        previewNode(mergedModel(model)),
         h("div", { class: "model-info" },
           h("div", { class: "model-title", title: model.id }, model.id),
           h("div", { class: "model-meta", title: model.dir }, model.dir),
