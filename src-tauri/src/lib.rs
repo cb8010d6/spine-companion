@@ -1154,7 +1154,6 @@ fn create_manager_window(app: &AppHandle) -> Result<WebviewWindow, String> {
         .inner_size(800.0, 600.0)
         .min_inner_size(600.0, 400.0)
         .decorations(true)
-        .transparent(false)
         .visible(false)
         .build()
         .map_err(|error| error.to_string())
