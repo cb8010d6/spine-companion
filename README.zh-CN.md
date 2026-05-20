@@ -2,29 +2,30 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-开源桌面 Spine 3.8 陪伴应用 MVP。它使用 Electron、`pixi.js@6.5.10`
-和 `pixi-spine@3.1.2` 直接渲染 `.skel/.atlas/.png`，支持透明窗口、
-置顶、拖动、缩放、点击互动、状态切换、本地 API、MCP 桥接、工程进展气泡、托盘控制和提醒。
+Spine Companion 是一个开源桌面陪伴应用 MVP，面向 Spine 3.8 模型。它基于
+Electron、`pixi.js@6.5.10` 和 `pixi-spine@3.1.2`，可以直接渲染
+`.skel/.atlas/.png`，并提供透明背景、窗口置顶、拖拽、缩放、点击互动、状态切换、
+本地状态 API、MCP 桥接、进度气泡、托盘控制、简单提醒和工具化的 Manager 窗口。
 
 ## 素材策略
 
-仓库不包含明日方舟、Ark-Models 或其他版权模型素材。你可以在本地测试自己有权使用
-的素材，但不要提交 `.skel`、`.atlas` 或贴图文件。
+本仓库不包含明日方舟、Ark-Models 或任何其他受版权保护的模型素材。只有在你有权使用
+相关素材时，才应把它们作为本地测试材料。本仓库只保留代码、示例和配置说明。
 
-本地素材路径写在 `companion.local.json`，该文件已被 git 忽略。
+本地素材配置写入 `companion.local.json`，该文件已被 git 忽略。
 
 ## 快速开始
 
-### 使用 Release
+### 使用 Release 构建
 
-1. 从 GitHub Release 下载最新 Windows 安装包或便携包。
-2. 推荐把 `companion.local.json` 放到用户配置目录：
+1. 从 GitHub Release 下载最新的 Windows 安装包或便携包。
+2. 推荐把 `companion.local.json` 放到当前用户的配置目录：
 
 ```text
 %APPDATA%\spine-companion\companion.local.json
 ```
 
-也可以放在 exe 同目录：
+也可以把它放在 exe 同目录：
 
 ```json
 {
@@ -35,7 +36,8 @@
 }
 ```
 
-3. 双击启动。右下角托盘菜单可以打开配置目录、显示状态面板、缩放、切换状态和退出。
+3. 双击启动应用。托盘菜单可以打开配置目录、显示状态面板、打开 Manager 窗口、缩放、
+   切换状态以及退出。
 
 ### 从源码运行
 
@@ -45,20 +47,30 @@ bun run setup:assets -- "C:\path\to\amiya_spine"
 bun run dev
 ```
 
-Tauri 版候选运行：
+从源码运行 Tauri 候选版本：
 
 ```bash
 bun run tauri:dev
 ```
 
-详细部署、启动、MCP 和排错见 [docs/deployment.zh-CN.md](docs/deployment.zh-CN.md)。
-偏图形界面操作的说明见 [docs/user-guide.zh-CN.md](docs/user-guide.zh-CN.md)。
+部署、启动、MCP 和排障步骤见 [docs/deployment.zh-CN.md](docs/deployment.zh-CN.md)。
+偏 UI 的使用说明见 [docs/user-guide.zh-CN.md](docs/user-guide.zh-CN.md)。
 
-浏览器预览地址：
+渲染器预览地址：
 
 ```text
 http://127.0.0.1:17389?api=http://127.0.0.1:17388
 ```
+
+如果只想在浏览器中预览 API 和渲染器，不启动 Electron：
+
+```bash
+bun run dev:renderer
+bun run dev:api
+```
+
+这里的 MVP 指最小可用纵向切片：桌面壳、实时 Spine 渲染、状态切换、本地状态 API、
+提醒和 MCP 桥接。它不是一个 spritesheet 导出工具。
 
 ## 本地状态 API
 
@@ -70,36 +82,41 @@ curl -X POST http://127.0.0.1:17388/state -H "Content-Type: application/json" -d
 curl -X POST http://127.0.0.1:17388/reminders -H "Content-Type: application/json" -d "{\"text\":\"stand up\",\"inSeconds\":30}"
 ```
 
-事件流：
+状态事件也可以通过以下方式订阅：
 
 - SSE: `GET /events`
 - WebSocket: `ws://127.0.0.1:17388/ws`
 
 ## Codex MCP 桥接
 
+MCP server 允许 Codex 通过本地 API 读取和更新 companion 状态。
+
 ```bash
 bun run mcp:install:codex
 ```
 
-这会把 `spine_companion` MCP server 写入 `~/.codex/config.toml`。安装后需要重启
-Codex 或打开新会话。
+这个命令会向 `~/.codex/config.toml` 追加一个 `spine_companion` MCP server 配置。
+安装后需要重启 Codex，或打开一个新的 session。
 
-可用工具：
+可用 MCP 工具：
 
 - `companion_get_state`
 - `companion_set_state`
 - `companion_reminder`
 - `companion_report_codex_phase`
 
-如果希望 Codex Desktop、Codex CLI、Cursor、Claude Desktop、Claude Code、Claude CLI
-自动配置状态上报：
+Codex 使用 MCP bridge 时，companion 应用或本地 API 必须保持运行。
+
+安装可复用的状态汇报 skill，并配置常见 AI 工具：
 
 ```bash
 bun run skill:install
 bun run ai:configure -- --target all
 ```
 
-其他 MCP 工具可以参考 [docs/ai-tools.zh-CN.md](docs/ai-tools.zh-CN.md)。
+支持的目标包括 Codex Desktop、Codex CLI、Cursor、Claude Desktop、Claude Code 和
+Claude CLI。不支持 MCP 工具的环境可以复制 [docs/ai-tools.zh-CN.md](docs/ai-tools.zh-CN.md)
+里的 JSON 片段。
 
 ## Codex 插件一键安装
 
@@ -124,46 +141,60 @@ plugins/spine-companion-status
 | `waiting` | `Sit` |
 | `failed` | `Sleep` |
 | `sleeping` | `Sleep` |
-| `reviewing` | `Special` 的 `review` 片段 |
-| `success` | `Special` 的 `success` 片段 |
+| `reviewing` | `Special`，可配置 `review` 片段 |
+| `success` | `Special`，可配置 `success` 片段 |
 
-动画切换使用 Spine runtime mixing，不导出 spritesheet。渲染器会在启动时采样各状态动画，
-用稳定包围盒保持不同动作的显示范围一致。
+动画切换使用 Spine runtime 的 `stateData.setMix` 和按转场配置的 `mixDuration`。渲染器在
+启动时会采样所有已映射状态动画，并使用稳定的显示帧，让 `Sit`、`Sleep`、`Move` 和
+`Special` 保持一致的尺寸范围。`Special` 片段在 `companion.config.json` 中配置。
+
+## Provider 层
+
+渲染器支持这些状态来源：
+
+- Electron IPC，桌面应用使用。
+- 本地 HTTP 轮询，浏览器预览和简单集成使用。
+- JSON 轮询，适合写入状态文件的脚本。
+- WebSocket，适合 push 风格的桥接服务。
+
+MCP bridge 的设计形态见 [docs/architecture.zh-CN.md](docs/architecture.zh-CN.md)。
 
 ## 桌面控制
 
-Windows 托盘菜单可以显示/隐藏状态面板、显示/隐藏工程进展气泡、切换置顶、缩放、重置大小、切状态和退出。
-拖动透明舞台会移动窗口；横向拖动时会临时进入 `running`，并按左右方向镜像模型。
+Windows 托盘菜单可以显示或隐藏状态面板、切换窗口置顶、显示或隐藏进度气泡、缩放模型、
+重置尺寸、切换状态以及退出。拖拽透明舞台会移动窗口；水平拖拽会临时切换到 `running`
+状态，并根据方向镜像模型。
 
-Manager 提供可搜索模型库、本地模型操作、下载状态、scale/offset 热更新、诊断、
-更新检查和最近状态历史。内置 Ark-Models 示例只会下载到本地配置目录；仓库和公开
-release 不包含素材本体。
+Manager 提供可搜索的模型库、已安装模型操作、下载状态、可热应用的缩放和偏移设置、
+诊断、更新检查和最近状态历史。内置的 Ark-Models catalog 条目只会下载到本地配置目录；
+本仓库和公开 release 都不包含模型素材文件。
 
 ## FAQ
 
-**为什么显示 missing asset？**
-打开 Manager > Diagnostics，确认当前模型目录里有 `.skel`、`.atlas` 和 `.png`。
-如果模型来自 Library 下载，可以在 Installed 页面重新点击 Set Active。
+**为什么应用显示 missing asset？**
+打开 Manager > Diagnostics，确认当前模型目录包含 `.skel`、`.atlas` 和 `.png` 文件。
+如果模型是通过 Library 下载的，可以尝试在 Installed 中重新设为 active。
 
-**为什么 Codex 一直是 idle？**
-MCP 桥接需要 Spine Companion 应用或本地 API 正在运行。执行
-`bun run mcp:install:codex`，重启 Codex，然后在 Manager > Diagnostics 检查配置路径。
+**为什么 Codex 一直停在 idle？**
+MCP bridge 只有在 companion 应用或本地 API 运行时才可用。运行
+`bun run mcp:install:codex`，重启 Codex，然后检查 Manager > Diagnostics。
 
-**应该用 Electron 还是 Tauri？**
-目前 Electron 仍是日常使用功能最完整的运行时。Tauri 构建会继续保留和迭代，但跨平台
-细节还需要更多测试。
+**应该使用哪个 runtime？**
+Electron 目前是日常使用最完整的 runtime。Tauri 构建已经包含在仓库中并持续改进，但部分
+平台行为仍需要更多测试。
 
-## 开源注意事项
+## 开源说明
 
-- 不要提交 `.skel`、`.atlas` 或贴图文件。
-- 本地模型路径放在 `companion.local.json` 或环境变量中。
-- 公共配置模板使用 `companion.config.example.json`。
+- 不要提交受版权保护模型的 `.skel`、`.atlas` 或贴图文件。
+- 本地模型路径应保存在 `companion.local.json` 或环境变量中。
+- 使用 `companion.config.example.json` 作为公开配置模板。
+- `assets/` 下的占位目录只用于说明素材放置方式。
 
 ## macOS Release 签名
 
-GitHub Actions 可以构建未签名的 macOS 包，但 Apple Silicon 用户可能会遇到
-“已损坏”或“无法打开”的 Gatekeeper 提示。正式公开发布 macOS 包时，建议在
-GitHub 仓库 secrets 中配置以下值，让 electron-builder 自动签名和公证：
+GitHub Actions 可以构建未签名的 macOS 产物，但 Apple Silicon 用户可能会遇到 Gatekeeper
+提示，例如 “damaged” 或 “cannot be opened”。如果要提供公开 macOS 下载，请配置以下仓库
+secrets，让 electron-builder 对 DMG/ZIP 产物进行签名和 notarize：
 
 - `MACOS_CERTIFICATE`
 - `MACOS_CERTIFICATE_PASSWORD`
