@@ -6,15 +6,7 @@ const { spawnSync, spawn } = require("node:child_process");
 const rootDir = path.resolve(__dirname, "..");
 const localConfigPath = path.join(rootDir, "companion.local.json");
 const defaultAssetDirs = [
-  path.join(
-    process.env.USERPROFILE || "",
-    "Documents",
-    "Codex",
-    "2026-05-05",
-    "hatch-pet-c-users-index-codex",
-    "assets",
-    "amiya_spine"
-  )
+  process.env.SPINE_COMPANION_SAMPLE_ASSET_DIR
 ].filter(Boolean);
 
 function log(message = "") {
@@ -68,7 +60,8 @@ function configureDefaultAssetIfPossible() {
 
   log("no local Spine asset is configured yet.");
   log("the app will still start, but the window will show a missing asset message.");
-    log('to configure assets later, run: bun run setup:assets -- "C:\\path\\to\\spine_model_folder"');
+  log('to configure assets later, run: bun run setup:assets -- "C:\\path\\to\\spine_model_folder"');
+  log("or set SPINE_COMPANION_SAMPLE_ASSET_DIR before running this script.");
 }
 
 function checkPort(port) {

@@ -41,7 +41,9 @@ curl -X POST http://127.0.0.1:17388/state -H "Content-Type: application/json" -d
 - `failed`：遇到阻塞或失败结束。
 - `waiting`：等待用户输入或外部进程。
 
-消息保持简短。Companion 不可用时不要中断用户任务。
+消息保持简短。如果 MCP 没有被工具发现，但本地 companion 应用正在运行，可以使用仓库内
+fallback：`bun scripts/report-status.cjs running "Running checks"`。Companion 不可用时
+不要中断用户任务。
 
 ## 工具支持
 

@@ -120,8 +120,12 @@ export class WebSocketStateProvider {
       this.reconnectAttempt = 0;
     });
     this.socket.addEventListener("message", (event) => {
-      const parsed = JSON.parse(event.data);
-      this.onState?.(parsed.payload || parsed);
+      try {
+        const parsed = JSON.parse(event.data);
+        this.onState?.(parsed.payload || parsed);
+      } catch (error) {
+        console.warn("Ignoring invalid WebSocket state message", error);
+      }
     });
     this.socket.addEventListener("close", () => {
       if (this.destroyed) return;

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { HttpStateProvider, JsonStateProvider } from "../src/renderer/providers.js";
+import { HttpStateProvider, JsonStateProvider, WebSocketStateProvider } from "../src/renderer/providers.js";
 
 describe("state providers", () => {
   afterEach(() => {
@@ -64,5 +64,29 @@ describe("state providers", () => {
 
     expect(states).toEqual([{ state: "idle" }]);
     expect(fetchMock).toHaveBeenCalledWith("/state.json", { cache: "no-store" });
+  });
+
+  it("ignores malformed WebSocket messages", () => {
+    let messageHandler = null;
+    class FakeWebSocket {
+      static OPEN = 1;
+      constructor() {
+        this.readyState = FakeWebSocket.OPEN;
+      }
+      addEventListener(type, handler) {
+        if (type === "message") messageHandler = handler;
+      }
+      close() {}
+    }
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const provider = new WebSocketStateProvider("ws://127.0.0.1:17388/ws");
+    const states = [];
+    provider.start((state) => states.push(state));
+
+    expect(() => messageHandler({ data: "{ bad json" })).not.toThrow();
+    messageHandler({ data: JSON.stringify({ payload: { state: "working" } }) });
+    provider.stop();
+
+    expect(states).toEqual([{ state: "working" }]);
   });
 });

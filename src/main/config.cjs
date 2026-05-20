@@ -120,10 +120,20 @@ function mergeDeep(base, patch) {
   return output;
 }
 
-function readJsonIfExists(file) {
+function readJsonIfExists(file, warnings = []) {
   if (!fs.existsSync(file)) return {};
-  const text = fs.readFileSync(file, "utf8");
-  return JSON.parse(text);
+  try {
+    const text = fs.readFileSync(file, "utf8");
+    return JSON.parse(text);
+  } catch (error) {
+    warnings.push({
+      type: "json-parse",
+      file,
+      message: error.message || String(error)
+    });
+    console.warn(`[spine-companion] Ignoring invalid JSON config: ${file}`, error);
+    return {};
+  }
 }
 
 function resolveMaybeRelative(value) {
@@ -133,12 +143,16 @@ function resolveMaybeRelative(value) {
 }
 
 function loadConfig() {
-  let config = mergeDeep(fallbackConfig, readJsonIfExists(committedConfigPath));
+  const warnings = [];
+  let config = mergeDeep(fallbackConfig, readJsonIfExists(committedConfigPath, warnings));
   let resolvedLocalConfigPath = "";
   let assetBaseDir = rootDir;
   for (const candidate of localConfigCandidates()) {
     if (!fs.existsSync(candidate)) continue;
-    config = mergeDeep(config, readJsonIfExists(candidate));
+    const beforeWarnings = warnings.length;
+    const localConfig = readJsonIfExists(candidate, warnings);
+    if (warnings.length !== beforeWarnings) continue;
+    config = mergeDeep(config, localConfig);
     resolvedLocalConfigPath = candidate;
     assetBaseDir = path.dirname(candidate);
   }
@@ -155,6 +169,7 @@ function loadConfig() {
 
   config.rootDir = rootDir;
   config.localConfigPath = resolvedLocalConfigPath || localConfigCandidates()[0];
+  config.configWarnings = warnings;
   config.spine.assetDir = config.spine.assetDir
     ? path.resolve(assetBaseDir, config.spine.assetDir)
     : "";
@@ -192,7 +207,8 @@ function getPublicConfig(config, serverOrigin) {
     paths: {
       configDir: userConfigDir(),
       localConfigPath: config.localConfigPath,
-      hasLocalConfig: config.hasLocalConfig
+      hasLocalConfig: config.hasLocalConfig,
+      warnings: config.configWarnings || []
     },
     state: config.state,
     specialSegments: config.specialSegments
@@ -206,5 +222,6 @@ module.exports = {
   localConfigPath,
   localConfigCandidates,
   mergeDeep,
-  userConfigDir
+  userConfigDir,
+  readJsonIfExists
 };

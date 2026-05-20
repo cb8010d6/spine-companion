@@ -21,6 +21,7 @@ const target = argValue("--target", "all");
 const api = argValue("--api", "http://127.0.0.1:17388");
 const runtime = argValue("--runtime", process.env.SPINE_COMPANION_MCP_RUNTIME || "bun");
 const mcpServer = path.join(repoRoot, "scripts", "mcp-companion-server.mjs");
+const reportScript = path.join(repoRoot, "scripts", "report-status.cjs");
 
 if (!fs.existsSync(mcpServer)) {
   throw new Error(`Spine Companion MCP server not found: ${mcpServer}`);
@@ -102,8 +103,10 @@ When the spine_companion MCP tools are available, proactively report work phases
 - failed: blocker or failed completion.
 - waiting: waiting for user input or an external process.
 
-Use companion_report_codex_phase with a short message. Continue the user task if
-the companion MCP server is unavailable.`;
+Use companion_report_codex_phase with a short message. If the MCP server is not
+available but the local companion app is running, report the same phase with:
+\`bun ${reportScript.replace(/\\/g, "/")} <phase> "<short message>"\`. Continue the user task
+if status reporting is unavailable.`;
 
 function installCodex() {
   const configPath = path.join(os.homedir(), ".codex", "config.toml");

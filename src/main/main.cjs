@@ -1,8 +1,8 @@
 const path = require("node:path");
 const fs = require("node:fs");
-const { Menu, Tray, nativeImage, app, shell, BrowserWindow, ipcMain, Notification, globalShortcut } = require("electron");
+const { Menu, Tray, nativeImage, app, shell, BrowserWindow, ipcMain, Notification, globalShortcut, dialog } = require("electron");
 const os = require("os");
-const { loadConfig, getPublicConfig } = require("./config.cjs");
+const { loadConfig, getPublicConfig, readJsonIfExists } = require("./config.cjs");
 const { createCompanionServer } = require("./state-server.cjs");
 const { applyUiSettingsPatch: applySharedUiPatch, normalizeUiSettings } = require("../shared/ui-settings.cjs");
 const { mcpConfigCandidates, detectMcpReferences } = require("../shared/diagnostics-paths.cjs");
@@ -85,9 +85,7 @@ async function importModel(input = {}) {
     const bytes = Buffer.from(await response.arrayBuffer());
     fs.writeFileSync(path.join(modelDir, file.name), bytes);
   }
-  const current = fs.existsSync(localConfigPath)
-    ? JSON.parse(fs.readFileSync(localConfigPath, "utf8"))
-    : {};
+  const current = readJsonIfExists(localConfigPath);
   mergeDeepMutable(current, {
     spine: {
       assetDir: modelDir,
@@ -117,11 +115,54 @@ async function importModel(input = {}) {
   };
 }
 
+async function importLocalModel() {
+  const result = await dialog.showOpenDialog({
+    title: "Import local Spine model",
+    properties: ["openFile"],
+    filters: [
+      { name: "Spine skeleton", extensions: ["skel"] },
+      { name: "All files", extensions: ["*"] }
+    ]
+  });
+  if (result.canceled || !result.filePaths?.[0]) return { canceled: true };
+
+  const skelPath = result.filePaths[0];
+  const assetDir = path.dirname(skelPath);
+  const skel = path.basename(skelPath);
+  const localConfigPath = publicConfigCache.paths?.localConfigPath || path.join(app.getPath("appData"), "spine-companion", "companion.local.json");
+  await saveSettings({
+    spine: {
+      assetDir,
+      skel
+    }
+  });
+  serverRuntime?.setAssetRoot(assetDir);
+  const origin = publicConfigCache?.server?.origin || `http://${publicConfigCache?.server?.host || "127.0.0.1"}:17388`;
+  mergeDeepMutable(publicConfigCache, {
+    spine: {
+      assetDir,
+      assetDirConfigured: true,
+      skel,
+      assetUrl: `${origin}/assets/spine/${encodeURIComponent(skel)}`
+    }
+  });
+  const payload = {
+    id: `local-${path.basename(assetDir)}`,
+    name: skel,
+    assetDir,
+    skel,
+    assetUrl: `${origin}/assets/spine/${encodeURIComponent(skel)}`,
+    localConfigPath,
+    requiresRestart: false
+  };
+  sendToRenderer("companion:model-imported", payload);
+  sendToRenderer("companion:config-changed", publicConfigCache);
+  return payload;
+}
+
 async function saveSettings(patch) {
   const localConfigPath = publicConfigCache.paths?.localConfigPath || path.join(app.getPath("appData"), "spine-companion", "companion.local.json");
-  const current = fs.existsSync(localConfigPath)
-    ? JSON.parse(fs.readFileSync(localConfigPath, "utf8"))
-    : {};
+  const current = readJsonIfExists(localConfigPath);
   mergeDeepMutable(current, patch);
   fs.mkdirSync(path.dirname(localConfigPath), { recursive: true });
   fs.writeFileSync(localConfigPath, `${JSON.stringify(current, null, 2)}\n`);
@@ -178,7 +219,18 @@ async function getDiagnostics() {
     mcpConfigCandidates(home, process.platform, process.env)
   );
 
-  return { apiOk, localConfigExists, assetDirExists, hasSkel, hasAtlas, hasPng, mcpConfigured: mcp.configured, mcpMatches: mcp.matches };
+  return {
+    apiOk,
+    localConfigPath,
+    localConfigExists,
+    configWarnings: publicConfigCache?.paths?.warnings || [],
+    assetDirExists,
+    hasSkel,
+    hasAtlas,
+    hasPng,
+    mcpConfigured: mcp.configured,
+    mcpMatches: mcp.matches
+  };
 }
 
 function getInstalledModels() {
@@ -248,6 +300,14 @@ function openExternalUrl(url) {
   return shell.openExternal(parsed.toString());
 }
 
+function openExternalUrlFromWindow(url) {
+  try {
+    openExternalUrl(url);
+  } catch (error) {
+    console.warn("[spine-companion] Blocked external URL", url, error);
+  }
+}
+
 function removeModel(id) {
   if (typeof id !== "string" || id.includes("..") || id.includes("/") || id.includes("\\")) {
     throw new Error("Invalid model ID");
@@ -306,7 +366,21 @@ function setAlwaysOnTop(enabled) {
 function focusWindow() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   if (!mainWindow.isVisible()) mainWindow.show();
+  if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.focus();
+}
+
+function showCompanionWindowInactive() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  if (!mainWindow.isVisible()) {
+    if (typeof mainWindow.showInactive === "function") mainWindow.showInactive();
+    else mainWindow.show();
+  }
+}
+
+function shouldRevealForState(state = {}) {
+  return state.source === "codex-mcp" && state.state && state.state !== "idle";
 }
 
 function hideCompanionWindow() {
@@ -343,7 +417,7 @@ async function openManager() {
   });
 
   managerWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    openExternalUrlFromWindow(url);
     return { action: "deny" };
   });
 
@@ -470,7 +544,7 @@ async function createWindow(config) {
     mainWindow.hide();
   });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    openExternalUrlFromWindow(url);
     return { action: "deny" };
   });
 
@@ -492,6 +566,7 @@ function registerIpc(config) {
     sendToRenderer("companion:model-imported", result);
     return result;
   });
+  ipcMain.handle("companion:import-local-model", () => importLocalModel());
   ipcMain.handle("companion:save-settings", (_event, patch) => saveSettings(patch));
   ipcMain.handle("companion:get-diagnostics", () => getDiagnostics());
   ipcMain.handle("companion:get-installed-models", () => getInstalledModels());
@@ -510,6 +585,7 @@ function registerIpc(config) {
   ipcMain.handle("companion:quit-app", () => app.quit());
 
   serverRuntime.store.emitter.on("state", (state) => {
+    if (shouldRevealForState(state)) showCompanionWindowInactive();
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send("companion:state", state);
     }
@@ -592,10 +668,44 @@ async function boot() {
   });
   createTray();
   await createWindow(config);
+  if (!config.spine.assetDir) {
+    await openManager();
+  }
+}
+
+function handleFatalStartup(error) {
+  console.error("[spine-companion] startup failed", error);
+  const message = error?.code === "EADDRINUSE"
+    ? "Spine Companion could not start because its local API port is already in use. Another instance may already be running."
+    : (error?.message || String(error));
+  if (app.isReady()) {
+    dialog.showErrorBox("Spine Companion failed to start", message);
+  }
+  app.quit();
+}
+
+function registerProcessErrorHandlers() {
+  process.on("uncaughtException", (error) => {
+    console.error("[spine-companion] uncaught exception", error);
+    if (app.isReady()) dialog.showErrorBox("Spine Companion error", error?.message || String(error));
+  });
+  process.on("unhandledRejection", (reason) => {
+    console.error("[spine-companion] unhandled rejection", reason);
+  });
 }
 
 app.setAppUserModelId("dev.spine-companion.desktop");
-app.whenReady().then(boot);
+registerProcessErrorHandlers();
+
+const singleInstanceLock = app.requestSingleInstanceLock();
+if (!singleInstanceLock) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    focusWindow();
+  });
+  app.whenReady().then(boot).catch(handleFatalStartup);
+}
 
 app.on("window-all-closed", () => {
   if (process.platform === "darwin") return;

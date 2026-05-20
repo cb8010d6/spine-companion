@@ -163,7 +163,13 @@ function createStateStore(config, stateMachineConfig) {
 
   function restoreReminders() {
     if (!remindersPath || !fs.existsSync(remindersPath)) return;
-    const parsed = JSON.parse(fs.readFileSync(remindersPath, "utf8"));
+    let parsed = [];
+    try {
+      parsed = JSON.parse(fs.readFileSync(remindersPath, "utf8"));
+    } catch (error) {
+      console.warn(`[spine-companion] Ignoring invalid reminders file: ${remindersPath}`, error);
+      return;
+    }
     for (const reminder of Array.isArray(parsed) ? parsed : []) {
       if (!reminder.fired) scheduleReminder(reminder, reminder);
       else reminders.set(reminder.id, { ...reminder, timeout: null });

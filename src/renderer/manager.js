@@ -199,6 +199,18 @@ async function activateModel(id) {
   renderView(activeView);
 }
 
+async function importLocalModel() {
+  if (!window.companion?.importLocalModel) {
+    setStatus("Local file import is not available in this runtime.");
+    return;
+  }
+  const result = await window.companion.importLocalModel();
+  if (result?.canceled) return;
+  await refreshConfig();
+  setStatus(`Loaded local model: ${result.skel || result.name}`);
+  renderView(activeView);
+}
+
 function installedView() {
   const active = activeInstalledId();
   const content = installedModels.length
@@ -272,6 +284,7 @@ function settingsView() {
     h("div", { class: "settings-grid" },
       h("article", { class: "card form-card" },
         h("h3", {}, "Spine Rendering"),
+        h("button", { class: "btn", type: "button", onClick: importLocalModel }, "Import Local .skel"),
         field("Scale", h("input", { class: "input", id: "set-scale", type: "number", step: "0.05", value: spine.scale || 1 })),
         field("Offset X", h("input", { class: "input", id: "set-offset-x", type: "number", value: spine.offsetX || 0 })),
         field("Offset Y", h("input", { class: "input", id: "set-offset-y", type: "number", value: spine.offsetY || 0 })),
@@ -325,6 +338,8 @@ async function diagnosticsView() {
         row("Local API", diagnostics.apiOk, diagnostics.apiOk ? "ONLINE" : "UNREACHABLE"),
         row("MCP configured", diagnostics.mcpConfigured, diagnostics.mcpConfigured ? "YES" : "NO"),
         row("Local config", diagnostics.localConfigExists, diagnostics.localConfigExists ? "FOUND" : "MISSING"),
+        diagnostics.localConfigPath ? h("p", { class: "model-meta", title: diagnostics.localConfigPath }, diagnostics.localConfigPath) : null,
+        ...(diagnostics.configWarnings || []).map((warning) => h("p", { class: "error-text", title: warning.file }, `Config warning: ${warning.message}`)),
         row("Spine assets", diagnostics.assetDirExists && diagnostics.hasSkel && diagnostics.hasAtlas && diagnostics.hasPng, "skel / atlas / png"),
         h("button", { class: "btn", type: "button", onClick: () => window.companion?.openFolder?.(config.paths?.configDir) }, "Open Config Folder")
       ),

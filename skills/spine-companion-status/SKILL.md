@@ -42,6 +42,8 @@ When Spine Companion MCP tools are available, proactively report work phases:
 - `waiting`: waiting for user input or an external process.
 
 Keep messages short. Do not fail the user's task just because the companion is unavailable.
+If MCP discovery fails but the local companion app is running, use the repo fallback:
+`bun scripts/report-status.cjs running "Running checks"`.
 
 ## Tool Support
 

@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld("companion", {
   quitApp: () => ipcRenderer.invoke("companion:quit-app"),
   emitScale: (payload) => ipcRenderer.invoke("companion:emit-scale", payload),
   importModel: (input) => ipcRenderer.invoke("companion:import-model", input),
+  importLocalModel: () => ipcRenderer.invoke("companion:import-local-model"),
   onState: (callback) => {
     const handler = (_event, state) => callback(state);
     ipcRenderer.on("companion:state", handler);

@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-const { mergeDeep, localConfigCandidates, userConfigDir } = require("../src/main/config.cjs");
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+const { mergeDeep, localConfigCandidates, userConfigDir, readJsonIfExists } = require("../src/main/config.cjs");
 
 describe("config helpers", () => {
   it("deep merges nested objects without replacing sibling keys", () => {
@@ -27,5 +31,20 @@ describe("config helpers", () => {
 
   it("returns a stable user config directory", () => {
     expect(userConfigDir()).toContain("spine-companion");
+  });
+
+  it("ignores invalid JSON and records a warning", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "spine-config-"));
+    const file = path.join(dir, "companion.local.json");
+    const warnings = [];
+    fs.writeFileSync(file, "{ bad json");
+    try {
+      expect(readJsonIfExists(file, warnings)).toEqual({});
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0].file).toBe(file);
+      expect(warnings[0].type).toBe("json-parse");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

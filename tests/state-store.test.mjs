@@ -244,6 +244,19 @@ describe("createStateStore", () => {
       restored.destroy();
       fs.rmSync(dir, { recursive: true, force: true });
     });
+
+    it("ignores a damaged reminders file", () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "spine-reminders-"));
+      const remindersPath = path.join(dir, "reminders.json");
+      fs.writeFileSync(remindersPath, "{ bad json");
+      try {
+        const restored = createStateStore({ state: { initial: "idle", remindersPath } }, stateMachine);
+        expect(restored.listReminders()).toEqual([]);
+        restored.destroy();
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
   });
 
   describe("idle timeout", () => {

@@ -10,5 +10,7 @@ When the spine_companion MCP tools are available, proactively report work phases
 - failed: blocker or failed completion.
 - waiting: waiting for user input or an external process.
 
-Use companion_report_codex_phase with a short message. Continue the user task if
-the companion MCP server is unavailable.
+Use companion_report_codex_phase with a short message. If the MCP server is not
+available but the local companion app is running, report the same phase with:
+`bun scripts/report-status.cjs <phase> "<short message>"`. Continue the user task
+if status reporting is unavailable.
