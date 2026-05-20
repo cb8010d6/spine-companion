@@ -22,8 +22,41 @@
             <span id="state-dot" class="state-dot"></span>
             <span id="state-label">loading</span>
             <span id="source-label">system</span>
+            <button id="settings-toggle" class="icon-button" type="button" aria-label="Settings">...</button>
           </div>
           <div id="state-controls" class="state-controls" aria-label="State controls"></div>
+          <section id="settings-panel" class="settings-panel" hidden>
+            <label><input id="setting-hud" type="checkbox" /> Status panel</label>
+            <label><input id="setting-bubble" type="checkbox" /> Progress bubble</label>
+            <label><input id="setting-shadow" type="checkbox" /> Bubble shadow</label>
+            <label>
+              Bubble style
+              <select id="setting-bubble-background">
+                <option value="solid">Solid</option>
+                <option value="soft">Soft</option>
+                <option value="clear">Clear</option>
+                <option value="light">Light</option>
+              </select>
+            </label>
+            <label>
+              Drag mode
+              <select id="setting-drag-mode">
+                <option value="compatible">Compatible</option>
+                <option value="smooth">Smooth</option>
+              </select>
+            </label>
+            <div class="settings-actions">
+              <button id="setting-zoom-out" type="button">-</button>
+              <button id="setting-zoom-reset" type="button">Reset</button>
+              <button id="setting-zoom-in" type="button">+</button>
+            </div>
+            <label>
+              Model
+              <select id="model-select"></select>
+            </label>
+            <button id="model-import" type="button">Download and use</button>
+            <small id="model-status" class="model-status"></small>
+          </section>
           <form id="reminder-form" class="reminder-form">
             <input id="reminder-text" aria-label="Reminder text" placeholder="Reminder" autocomplete="off" />
             <input id="reminder-delay" aria-label="Reminder delay seconds" type="number" min="1" value="10" />
@@ -33,7 +66,12 @@
         <div id="empty-state" class="empty-state" hidden>
           <strong>Missing Spine asset</strong>
           <span>Run npm run setup:assets -- &lt;spine-folder&gt;</span>
+          <button id="empty-retry" type="button">Retry</button>
+          <button id="empty-import" type="button">Download sample model</button>
+          <small id="empty-state-path"></small>
         </div>
+        <div id="onboarding-root" class="overlay-root" hidden></div>
+        <div id="error-root" class="overlay-root" hidden></div>
       </main>
     </div>
     <script type="module" src="/src/renderer/main.js"></script>

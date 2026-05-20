@@ -1,4 +1,4 @@
-class IpcStateProvider {
+export class IpcStateProvider {
   constructor() {
     this.unsubscribe = null;
   }
@@ -22,7 +22,7 @@ class IpcStateProvider {
   }
 }
 
-class HttpStateProvider {
+export class HttpStateProvider {
   constructor(baseUrl, pollMs = 1000) {
     this.baseUrl = baseUrl.replace(/\/$/, "");
     this.pollMs = pollMs;
@@ -74,7 +74,7 @@ class HttpStateProvider {
   }
 }
 
-class JsonStateProvider {
+export class JsonStateProvider {
   constructor(url, pollMs = 1000) {
     this.url = url;
     this.pollMs = pollMs;
@@ -97,7 +97,7 @@ class JsonStateProvider {
   }
 }
 
-class WebSocketStateProvider {
+export class WebSocketStateProvider {
   constructor(url) {
     this.url = url;
     this.socket = null;

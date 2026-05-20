@@ -1,3 +1,5 @@
+@import "./components.css";
+
 :root {
   color-scheme: dark;
   font-family: Inter, "Segoe UI", Arial, sans-serif;
@@ -266,7 +268,7 @@ body[data-bubble-background="light"] .progress-bubble span {
 
 .status-row {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 7px;
   min-width: 0;
@@ -323,13 +325,21 @@ body[data-bubble-background="light"] .progress-bubble span {
 }
 
 button,
-input {
+input,
+select {
   height: 28px;
   min-width: 0;
   border: 1px solid var(--line);
   border-radius: 6px;
   font: inherit;
   font-size: 11px;
+}
+
+.icon-button {
+  width: 28px;
+  padding: 0;
+  font-weight: 700;
+  line-height: 1;
 }
 
 button {
@@ -354,10 +364,60 @@ button.active {
   gap: 5px;
 }
 
+.settings-panel {
+  display: grid;
+  gap: 7px;
+  padding: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 7px;
+  background: rgba(8, 10, 13, 0.26);
+}
+
+.settings-panel label {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  color: #dce5ed;
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.settings-panel label:has(select) {
+  grid-template-columns: minmax(0, 1fr) 104px;
+}
+
+.model-status {
+  min-height: 14px;
+  color: #aeb8c3;
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.settings-actions {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) 36px;
+  gap: 5px;
+}
+
 input {
   padding: 0 7px;
   background: rgba(8, 10, 13, 0.5);
   color: #f7f8fa;
+}
+
+select {
+  padding: 0 7px;
+  background: rgba(8, 10, 13, 0.72);
+  color: #f7f8fa;
+}
+
+input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--accent);
 }
 
 input::placeholder {
@@ -388,6 +448,62 @@ input::placeholder {
   overflow-wrap: anywhere;
 }
 
+.empty-state small {
+  color: #94a3b8;
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.overlay-root {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  pointer-events: none;
+}
+
+.onboarding-card,
+.error-card {
+  display: grid;
+  gap: 10px;
+  width: min(330px, calc(100vw - 28px));
+  padding: 16px;
+  border: 1px solid var(--sc-border);
+  border-radius: var(--sc-radius-lg);
+  background: color-mix(in srgb, var(--sc-bg-elevated) 92%, transparent);
+  box-shadow: var(--sc-shadow-panel);
+  color: var(--sc-text);
+  pointer-events: auto;
+  backdrop-filter: blur(18px) saturate(1.08);
+}
+
+.onboarding-mark {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border-radius: var(--sc-radius-lg);
+  background: linear-gradient(135deg, #23645c, #58c8b8);
+  color: #031311;
+  font-weight: 800;
+}
+
+.onboarding-card span,
+.error-card span {
+  color: var(--sc-text-muted);
+  font-size: var(--sc-font-sm);
+  line-height: 1.45;
+}
+
+.onboarding-actions,
+.error-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 @media (max-height: 390px), (max-width: 300px) {
   .progress-bubble {
     left: 12px;
@@ -411,7 +527,8 @@ input::placeholder {
   }
 
   button,
-  input {
+  input,
+  select {
     height: 26px;
     font-size: 10px;
   }

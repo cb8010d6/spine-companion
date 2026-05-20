@@ -17,16 +17,20 @@ use tokio_stream::StreamExt;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::state::{
-    create_reminder, list_reminders, CreateReminderInput, ReminderStore, SetStateInput,
-    StateBroadcast, StateStore, set_state,
+    create_reminder, list_reminders, set_state, CreateReminderInput, ReminderStore, SetStateInput,
+    StateBroadcast, StateStore,
 };
+use std::sync::Arc;
+use tokio::sync::RwLock;
+
+pub type AssetRootStore = Arc<RwLock<Option<PathBuf>>>;
 
 #[derive(Clone)]
 pub struct AppState {
     pub store: StateStore,
     pub tx: StateBroadcast,
     pub reminders: ReminderStore,
-    pub asset_root: Option<PathBuf>,
+    pub asset_root: AssetRootStore,
 }
 
 fn localhost_cors() -> CorsLayer {
@@ -92,12 +96,7 @@ async fn events(AxumState(app): AxumState<AppState>) -> impl IntoResponse {
     let initial = app.store.read().await.clone();
 
     let initial_event = futures::stream::once(async move {
-        Ok::<_, Infallible>(
-            Event::default()
-                .event("state")
-                .json_data(initial)
-                .unwrap(),
-        )
+        Ok::<_, Infallible>(Event::default().event("state").json_data(initial).unwrap())
     });
 
     let stream = BroadcastStream::new(rx).filter_map(|result| {
@@ -125,6 +124,42 @@ fn file_content_type(file: &FsPath) -> &'static str {
     }
 }
 
+fn encode_url_path_segment(value: &str) -> String {
+    value
+        .bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (byte as char).to_string()
+            }
+            _ => format!("%{:02X}", byte),
+        })
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+fn encode_atlas_texture_line(line: &str) -> String {
+    let trimmed = line.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    let looks_like_texture = !trimmed.is_empty()
+        && !line.starts_with(char::is_whitespace)
+        && (lower.ends_with(".png")
+            || lower.ends_with(".jpg")
+            || lower.ends_with(".jpeg")
+            || lower.ends_with(".webp"));
+    if looks_like_texture {
+        encode_url_path_segment(trimmed)
+    } else {
+        line.to_string()
+    }
+}
+
+fn rewrite_atlas_texture_urls(text: &str) -> String {
+    text.lines()
+        .map(encode_atlas_texture_line)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn is_inside(root: &FsPath, file: &FsPath) -> bool {
     file.strip_prefix(root).is_ok()
 }
@@ -133,7 +168,8 @@ async fn get_spine_asset(
     AxumState(app): AxumState<AppState>,
     Path(relative): Path<String>,
 ) -> Response {
-    let Some(root) = app.asset_root.as_ref() else {
+    let root = app.asset_root.read().await.clone();
+    let Some(root) = root.as_ref() else {
         return (StatusCode::NOT_FOUND, "No Spine assetDir is configured.").into_response();
     };
     let relative = relative.trim_start_matches(['/', '\\']);
@@ -151,6 +187,15 @@ async fn get_spine_asset(
                 header::CONTENT_TYPE,
                 header::HeaderValue::from_static(file_content_type(&file)),
             );
+            if file
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| ext.eq_ignore_ascii_case("atlas"))
+                .unwrap_or(false)
+            {
+                let text = String::from_utf8_lossy(&bytes);
+                return (StatusCode::OK, headers, rewrite_atlas_texture_urls(&text)).into_response();
+            }
             (StatusCode::OK, headers, bytes).into_response()
         }
         Err(_) => (StatusCode::NOT_FOUND, "Asset not found").into_response(),
@@ -161,7 +206,7 @@ pub async fn start_api_server(
     store: StateStore,
     tx: StateBroadcast,
     reminders: ReminderStore,
-    asset_root: Option<PathBuf>,
+    asset_root: AssetRootStore,
     host: &str,
     port: u16,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -169,7 +214,7 @@ pub async fn start_api_server(
         store,
         tx,
         reminders,
-        asset_root: asset_root.and_then(|path| path.canonicalize().ok()),
+        asset_root,
     };
 
     let app = Router::new()
@@ -201,8 +246,14 @@ mod tests {
     #[tokio::test]
     async fn file_type_matches_spine_assets() {
         assert_eq!(file_content_type(FsPath::new("a.png")), "image/png");
-        assert_eq!(file_content_type(FsPath::new("a.atlas")), "text/plain; charset=utf-8");
-        assert_eq!(file_content_type(FsPath::new("a.skel")), "application/octet-stream");
+        assert_eq!(
+            file_content_type(FsPath::new("a.atlas")),
+            "text/plain; charset=utf-8"
+        );
+        assert_eq!(
+            file_content_type(FsPath::new("a.skel")),
+            "application/octet-stream"
+        );
     }
 
     #[tokio::test]
@@ -228,5 +279,13 @@ mod tests {
     fn strips_route_wildcard_leading_slash_for_asset_paths() {
         let relative = "/amiya.skel".trim_start_matches(['/', '\\']);
         assert_eq!(relative, "amiya.skel");
+    }
+
+    #[test]
+    fn rewrites_hash_texture_names_in_atlas_text() {
+        let text = "build_char_1001_amiya2_sale#16.png\nsize: 956,956\nB_HandD_FA\n  rotate: true";
+        let rewritten = rewrite_atlas_texture_urls(text);
+        assert!(rewritten.starts_with("build_char_1001_amiya2_sale%2316.png\n"));
+        assert!(rewritten.contains("\nB_HandD_FA\n"));
     }
 }

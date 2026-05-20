@@ -22,9 +22,10 @@ The app has been verified with:
 
 Use this path if you only want to run the app.
 
-1. Download `spine-companion-0.1.2-windows-x64-portable.exe` from the GitHub
+1. Download the latest Windows installer or portable build from the GitHub
    Release page.
-2. Create a file named `companion.local.json` in the same folder as the exe.
+2. Open the tray menu and choose `Open Config Folder`, then create
+   `companion.local.json` in that folder.
 3. Put this in the file and edit the two paths:
 
 ```json
@@ -36,7 +37,8 @@ Use this path if you only want to run the app.
 }
 ```
 
-4. Double-click the exe.
+4. Double-click the app. If no model appears, use `Open Config Folder` again
+   from the tray menu and confirm the config file is in the right place.
 
 The app does not ship copyrighted Spine model assets. Your `assetDir` must point
 to a local folder containing `.skel`, `.atlas`, and texture files.
@@ -46,6 +48,9 @@ The release build also checks this per-user config path:
 ```text
 %APPDATA%\spine-companion\companion.local.json
 ```
+
+The app also checks for `companion.local.json` next to the executable, but the
+per-user config folder is more reliable across reinstall or overwrite updates.
 
 ## 3. Clone And Install
 
@@ -119,6 +124,23 @@ This starts:
 
 The window is frameless, transparent, always-on-top, draggable, and supports
 wheel scaling over the model stage.
+
+Run the Tauri candidate build:
+
+```bash
+bun run tauri:dev
+```
+
+The Tauri tray menu can show the window, show or hide the status panel, show or
+hide the progress bubble, toggle bubble shadow and background, change drag mode,
+zoom, reset size, switch states, open the local API, open the config folder, and
+quit.
+
+The built-in settings panel also includes a model picker. Select
+`Amiya Guard Skin #16` and click `Download and use` to download the model from
+`isHarryh/Ark-Models` into your local config folder and write
+`companion.local.json`. The app switches to the imported model immediately. The
+asset files stay local and are not committed to this repository.
 
 ## 6. Browser Preview Mode
 
@@ -237,7 +259,26 @@ MCP tools:
 The desktop app or `bun run dev:api` must be running before the MCP tools can
 reach the companion.
 
-## 9. Build And Checks
+## 9. One-Click Codex Plugin
+
+The repo includes a local Codex plugin:
+
+```text
+plugins/spine-companion-status
+```
+
+Codex environments that read `.agents/plugins/marketplace.json` can install
+`Spine Companion Status`. It provides:
+
+- The `spine-companion-status` skill.
+- A `spine_companion` MCP server config.
+- A Bun-based bridge script at
+  `plugins/spine-companion-status/scripts/mcp-companion-server.mjs`.
+
+The desktop app or `bun run dev:api` still needs to be running before the MCP
+bridge can reach the local API.
+
+## 10. Build And Checks
 
 Run project checks:
 
@@ -262,7 +303,25 @@ The output is written to:
 release/spine-companion-0.1.2-windows-x64-portable.exe
 ```
 
-## 10. Troubleshooting
+Create a local Tauri portable-with-assets folder:
+
+```bash
+bun run tauri:portable:assets
+```
+
+Output:
+
+```text
+release/Spine Companion Portable/
+release/Spine Companion Portable.zip
+```
+
+This downloads Ark-Models test assets into the portable folder's `models/`
+directory. Use it for local testing or distribution only when you have confirmed
+you are allowed to redistribute those assets; public open-source releases should
+not bundle copyrighted model files.
+
+## 11. Troubleshooting
 
 ### The app says the Spine asset is missing
 
@@ -318,7 +377,7 @@ these values in `companion.config.json`:
 - `spine.fitStates`
 - `spine.mixDurationMs`
 
-## 11. Open-Source Safety Checklist
+## 12. Open-Source Safety Checklist
 
 Before pushing or publishing:
 

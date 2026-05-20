@@ -118,17 +118,17 @@ bun run ai:configure -- --target all
 Claude CLI。不支持 MCP 工具的环境可以复制 [docs/ai-tools.zh-CN.md](docs/ai-tools.zh-CN.md)
 里的 JSON 片段。
 
-## 一键 Codex 插件
+## Codex 插件一键安装
 
-仓库内包含一个本地 Codex 插件：
+仓库内提供了 repo-local Codex 插件：
 
 ```text
 plugins/spine-companion-status
 ```
 
-支持 repo marketplace 文件的 Codex 环境可以从 `.agents/plugins/marketplace.json` 安装
-`Spine Companion Status`。该插件提供状态汇报 skill，以及默认通过 Bun 启动的
-`spine_companion` MCP bridge 配置。
+在支持插件市场文件的 Codex 环境中，可通过 `.agents/plugins/marketplace.json`
+安装 `Spine Companion Status`。插件会提供同名 skill 和 `spine_companion` MCP
+桥接配置，默认使用 Bun 启动本地桥接服务。
 
 ## 状态与动画
 

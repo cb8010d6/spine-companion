@@ -1,0 +1,42 @@
+{
+  "name": "spine-companion-status",
+  "version": "0.1.0",
+  "description": "Configure AI coding tools to report work phases to the local Spine Companion app.",
+  "author": {
+    "name": "Spine Companion contributors",
+    "email": "spine-companion@users.noreply.github.com",
+    "url": "https://github.com/cb8010d6/spine-companion"
+  },
+  "homepage": "https://github.com/cb8010d6/spine-companion",
+  "repository": "https://github.com/cb8010d6/spine-companion",
+  "license": "MIT",
+  "keywords": [
+    "spine",
+    "companion",
+    "mcp",
+    "codex",
+    "status"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Spine Companion Status",
+    "shortDescription": "Report Codex work phases to Spine Companion",
+    "longDescription": "Installs a local MCP bridge and skill so Codex can automatically report thinking, editing, running, reviewing, success, failure, and waiting states to the Spine Companion desktop app.",
+    "developerName": "Spine Companion contributors",
+    "category": "Coding",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/cb8010d6/spine-companion",
+    "privacyPolicyURL": "https://github.com/cb8010d6/spine-companion",
+    "termsOfServiceURL": "https://github.com/cb8010d6/spine-companion/blob/main/LICENSE",
+    "defaultPrompt": [
+      "Configure Spine Companion status reporting",
+      "Check the Spine Companion MCP bridge",
+      "Report my coding progress to the companion"
+    ],
+    "brandColor": "#65D1C3"
+  }
+}

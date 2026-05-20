@@ -3,6 +3,8 @@ import { initTauriBridge, isTauri } from "./tauri-bridge.js";
 import { createStateProvider, loadRuntimeConfig } from "./providers.js";
 import { SpinePlayer } from "./spine-player.js";
 import { stateLabels } from "./state.js";
+import { createOnboarding, shouldShowOnboarding } from "./onboarding.js";
+import { createErrorCard } from "./error-boundary.js";
 
 const stage = document.getElementById("stage");
 const shell = document.getElementById("stage-shell");
@@ -16,10 +18,28 @@ const bubbleMessage = document.getElementById("bubble-message");
 const completionToast = document.getElementById("completion-toast");
 const completionTitle = document.getElementById("completion-title");
 const completionMessage = document.getElementById("completion-message");
+const settingsToggle = document.getElementById("settings-toggle");
+const settingsPanel = document.getElementById("settings-panel");
+const settingHud = document.getElementById("setting-hud");
+const settingBubble = document.getElementById("setting-bubble");
+const settingShadow = document.getElementById("setting-shadow");
+const settingBubbleBackground = document.getElementById("setting-bubble-background");
+const settingDragMode = document.getElementById("setting-drag-mode");
+const settingZoomIn = document.getElementById("setting-zoom-in");
+const settingZoomOut = document.getElementById("setting-zoom-out");
+const settingZoomReset = document.getElementById("setting-zoom-reset");
+const modelSelect = document.getElementById("model-select");
+const modelImport = document.getElementById("model-import");
+const modelStatus = document.getElementById("model-status");
 const reminderForm = document.getElementById("reminder-form");
 const reminderText = document.getElementById("reminder-text");
 const reminderDelay = document.getElementById("reminder-delay");
 const emptyState = document.getElementById("empty-state");
+const emptyStatePath = document.getElementById("empty-state-path");
+const emptyImport = document.getElementById("empty-import");
+const emptyRetry = document.getElementById("empty-retry");
+const onboardingRoot = document.getElementById("onboarding-root");
+const errorRoot = document.getElementById("error-root");
 
 let provider = null;
 let player = null;
@@ -41,6 +61,7 @@ let completionToastTimer = null;
 let mousePassthrough = false;
 let pendingMousePassthroughEvent = null;
 let mousePassthroughFrame = 0;
+let runtimeConfig = null;
 
 function applyUiSettings(settings = {}) {
   currentUiSettings = { ...currentUiSettings, ...settings };
@@ -51,7 +72,28 @@ function applyUiSettings(settings = {}) {
   document.body.dataset.bubbleBackground = currentUiSettings.bubbleBackground || "solid";
   player?.setHudVisible(currentUiSettings.hudVisible !== false);
   player?.setDragMode(currentUiSettings.dragMode || "compatible");
+  syncSettingsPanel();
   updateBubble(currentState);
+}
+
+function syncSettingsPanel() {
+  if (!settingHud) return;
+  settingHud.checked = currentUiSettings.hudVisible !== false;
+  settingBubble.checked = currentUiSettings.bubbleVisible !== false;
+  settingShadow.checked = currentUiSettings.bubbleShadow !== false;
+  settingBubbleBackground.value = currentUiSettings.bubbleBackground || "solid";
+  settingDragMode.value = currentUiSettings.dragMode || "compatible";
+}
+
+async function updateUiSettings(patch) {
+  const next = { ...currentUiSettings, ...patch };
+  applyUiSettings(next);
+  try {
+    const confirmed = await window.companion?.setUiSettings?.(patch);
+    if (confirmed) applyUiSettings(confirmed);
+  } catch (error) {
+    console.warn("Unable to update UI settings", error);
+  }
 }
 
 function applyBubbleAnchor(anchor = currentBubbleAnchor) {
@@ -77,15 +119,16 @@ function applyBubbleAnchor(anchor = currentBubbleAnchor) {
 }
 
 function renderStateControls(sendState) {
-  stateControls.innerHTML = "";
+  const fragment = document.createDocumentFragment();
   for (const item of stateLabels()) {
     const button = document.createElement("button");
     button.type = "button";
     button.dataset.state = item.id;
     button.textContent = item.label;
     button.addEventListener("click", () => sendState({ state: item.id, source: "hud" }));
-    stateControls.appendChild(button);
+    fragment.appendChild(button);
   }
+  stateControls.replaceChildren(fragment);
 }
 
 function rectContains(rect, x, y) {
@@ -131,8 +174,12 @@ function updateMousePassthrough(event) {
   const y = event.clientY;
   const interactive = rectContains(player?.getInteractiveBounds?.(), x, y)
     || elementContainsPoint(document.getElementById("hud"), x, y)
+    || elementContainsPoint(settingsPanel, x, y)
+    || elementContainsPoint(progressBubble, x, y)
     || elementContainsPoint(completionToast, x, y)
-    || elementContainsPoint(emptyState, x, y);
+    || elementContainsPoint(emptyState, x, y)
+    || elementContainsPoint(errorRoot, x, y)
+    || elementContainsPoint(onboardingRoot, x, y);
   setMousePassthrough(!interactive);
 }
 
@@ -205,6 +252,112 @@ function updateCompletionToast(state) {
     completionToast.hidden = true;
     setMousePassthrough(true);
   }, 10000);
+}
+
+function renderModelCatalog(config) {
+  const catalog = config.models?.catalog || [];
+  const fragment = document.createDocumentFragment();
+  for (const model of catalog) {
+    const option = document.createElement("option");
+    option.value = model.id;
+    option.textContent = model.name || model.id;
+    fragment.appendChild(option);
+  }
+  modelSelect.replaceChildren(fragment);
+  const hasModels = catalog.length > 0 && window.companion?.importModel;
+  modelSelect.disabled = !hasModels;
+  modelImport.disabled = !hasModels;
+  emptyImport.hidden = !hasModels;
+}
+
+async function importSelectedModel(source = "settings") {
+  const id = modelSelect.value || runtimeConfig?.models?.catalog?.[0]?.id;
+  if (!id || !window.companion?.importModel) return;
+  modelStatus.textContent = "Downloading model...";
+  modelImport.disabled = true;
+  emptyImport.disabled = true;
+  try {
+    const result = await window.companion.importModel({ id });
+    runtimeConfig = {
+      ...runtimeConfig,
+      spine: {
+        ...runtimeConfig.spine,
+        skel: result.skel,
+        assetUrl: `${result.assetUrl}?t=${Date.now()}`,
+        assetDirConfigured: true
+      }
+    };
+    await loadPlayer(runtimeConfig);
+    modelStatus.textContent = `Imported and loaded from ${result.assetDir}.`;
+    if (!emptyState.hidden) {
+      emptyState.querySelector("span").textContent = "Model imported and loaded.";
+      emptyStatePath.textContent = result.localConfigPath;
+    }
+    if (source === "empty") settingsPanel.hidden = false;
+  } catch (error) {
+    modelStatus.textContent = error.message;
+    if (!emptyState.hidden) emptyState.querySelector("span").textContent = error.message;
+  } finally {
+    modelImport.disabled = false;
+    emptyImport.disabled = false;
+  }
+}
+
+function showEmptyState(error, config) {
+  emptyState.hidden = false;
+  emptyState.querySelector("span").textContent = error.message;
+  const localPath = config?.paths?.localConfigPath;
+  emptyStatePath.textContent = localPath
+    ? `Put companion.local.json here: ${localPath}`
+    : "";
+}
+
+function showOnboardingIfNeeded(config) {
+  if (!shouldShowOnboarding(config)) {
+    onboardingRoot.hidden = true;
+    onboardingRoot.replaceChildren();
+    return;
+  }
+  onboardingRoot.hidden = false;
+  onboardingRoot.replaceChildren(createOnboarding({
+    onManager: () => window.companion?.openManager?.(),
+    onDownload: () => importSelectedModel("onboarding")
+  }));
+}
+
+function showErrorBoundary(error, config) {
+  errorRoot.hidden = false;
+  setMousePassthrough(false);
+  errorRoot.replaceChildren(createErrorCard({
+    title: "Unable to load model",
+    error,
+    config,
+    onRetry: () => loadPlayer(runtimeConfig).then(() => {
+      errorRoot.hidden = true;
+      errorRoot.replaceChildren();
+    }).catch((nextError) => showErrorBoundary(nextError, runtimeConfig)),
+    onManager: () => window.companion?.openManager?.()
+  }));
+}
+
+async function loadPlayer(config) {
+  player?.destroy();
+  stage.replaceChildren();
+  player = new SpinePlayer(stage, config);
+  await player.init();
+  player.onAutoReturn = (state) => provider.setState({ state, source: "renderer" });
+  player.onAnchorChange = (anchor) => {
+    applyBubbleAnchor(anchor);
+    updateBubble(currentState);
+  };
+  player.setHudVisible(currentUiSettings.hudVisible !== false);
+  player.setDragMode(currentUiSettings.dragMode || "compatible");
+  applyBubbleAnchor(player.getAnchor());
+  player.applyState(currentState, true);
+  emptyState.hidden = true;
+  errorRoot.hidden = true;
+  errorRoot.replaceChildren();
+  setMousePassthrough(true);
 }
 
 function wireDragging() {
@@ -288,26 +441,22 @@ async function boot() {
   // Initialize Tauri bridge if running under Tauri (no-op under Electron)
   if (isTauri()) await initTauriBridge();
   const config = await loadRuntimeConfig();
+  runtimeConfig = config;
   applyUiSettings(config.ui);
   provider = createStateProvider(config);
   renderStateControls((state) => provider.setState(state));
+  renderModelCatalog(config);
+  showOnboardingIfNeeded(config);
   wireDragging();
   wireMousePassthrough();
 
   try {
-    player = new SpinePlayer(stage, config);
-    await player.init();
-    player.onAutoReturn = (state) => provider.setState({ state, source: "renderer" });
-    player.onAnchorChange = (anchor) => {
-      applyBubbleAnchor(anchor);
-      updateBubble(currentState);
-    };
-    applyBubbleAnchor(player.getAnchor());
-    setMousePassthrough(true);
+    await loadPlayer(config);
   } catch (error) {
-    emptyState.hidden = false;
-    emptyState.querySelector("span").textContent = error.message;
+    showEmptyState(error, config);
+    showErrorBoundary(error, config);
   }
+  await window.companion?.rendererReady?.();
 
   await provider.start((state) => {
     updateHud(state);
@@ -324,6 +473,46 @@ async function boot() {
     }
     player?.adjustUserScale(Number(payload?.delta || 0));
   });
+
+  window.companion?.onModelImported?.(async (result) => {
+    runtimeConfig = {
+      ...runtimeConfig,
+      spine: {
+        ...runtimeConfig.spine,
+        skel: result.skel,
+        assetUrl: `${result.assetUrl}?t=${Date.now()}`,
+        assetDirConfigured: true
+      }
+    };
+    await loadPlayer(runtimeConfig);
+  });
+
+  window.companion?.onConfigChanged?.(async (config) => {
+    runtimeConfig = {
+      ...runtimeConfig,
+      ui: config.ui || runtimeConfig.ui,
+      spine: {
+        ...runtimeConfig.spine,
+        ...(config.spine || {})
+      }
+    };
+    await loadPlayer(runtimeConfig);
+  });
+
+  settingsToggle.addEventListener("click", () => {
+    settingsPanel.hidden = !settingsPanel.hidden;
+  });
+  settingHud.addEventListener("change", () => updateUiSettings({ hudVisible: settingHud.checked }));
+  settingBubble.addEventListener("change", () => updateUiSettings({ bubbleVisible: settingBubble.checked }));
+  settingShadow.addEventListener("change", () => updateUiSettings({ bubbleShadow: settingShadow.checked }));
+  settingBubbleBackground.addEventListener("change", () => updateUiSettings({ bubbleBackground: settingBubbleBackground.value }));
+  settingDragMode.addEventListener("change", () => updateUiSettings({ dragMode: settingDragMode.value }));
+  settingZoomIn.addEventListener("click", () => window.companion?.emitScale?.({ delta: 0.08 }));
+  settingZoomOut.addEventListener("click", () => window.companion?.emitScale?.({ delta: -0.08 }));
+  settingZoomReset.addEventListener("click", () => window.companion?.emitScale?.({ action: "reset" }));
+  modelImport.addEventListener("click", () => importSelectedModel("settings"));
+  emptyImport.addEventListener("click", () => importSelectedModel("empty"));
+  emptyRetry.addEventListener("click", () => loadPlayer(runtimeConfig).catch((error) => showErrorBoundary(error, runtimeConfig)));
 
   reminderForm.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -345,4 +534,5 @@ boot().catch((error) => {
   emptyState.hidden = false;
   emptyState.querySelector("strong").textContent = "Startup failed";
   emptyState.querySelector("span").textContent = error.message;
+  window.companion?.rendererReady?.();
 });

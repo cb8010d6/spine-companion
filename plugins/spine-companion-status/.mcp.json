@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "spine_companion": {
+      "command": "bun",
+      "args": [
+        "./scripts/mcp-companion-server.mjs"
+      ],
+      "env": {
+        "COMPANION_API": "http://127.0.0.1:17388"
+      }
+    }
+  }
+}

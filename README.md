@@ -6,7 +6,7 @@ Open-source desktop companion MVP for Spine 3.8 models. It uses Electron,
 `pixi.js@6.5.10`, and `pixi-spine@3.1.2` to render `.skel/.atlas/.png` directly
 with transparent background, always-on-top window behavior, dragging, scaling,
 click interaction, state transitions, a local status API, MCP bridge, progress
-bubble, tray controls, and simple reminders.
+bubble, tray controls, simple reminders, and a tool-like Manager window.
 
 ## Asset Policy
 
@@ -20,9 +20,14 @@ Local asset config is written to `companion.local.json`, which is ignored by git
 
 ### Use A Release Build
 
-1. Download `spine-companion-0.1.2-windows-x64-portable.exe` from the latest
-   GitHub Release.
-2. Put `companion.local.json` next to the exe:
+1. Download the latest Windows installer or portable build from GitHub Release.
+2. Prefer putting `companion.local.json` in the per-user config folder:
+
+```text
+%APPDATA%\spine-companion\companion.local.json
+```
+
+You can also put it next to the exe:
 
 ```json
 {
@@ -33,7 +38,8 @@ Local asset config is written to `companion.local.json`, which is ignored by git
 }
 ```
 
-3. Double-click the exe.
+3. Double-click the app. Use the tray menu to open the config folder, show the
+   status panel, open the Manager window, zoom, switch states, and quit.
 
 ### Run From Source
 
@@ -43,8 +49,15 @@ bun run setup:assets -- "C:\path\to\amiya_spine"
 bun run dev
 ```
 
+Run the Tauri candidate build from source:
+
+```bash
+bun run tauri:dev
+```
+
 For detailed deployment, startup, MCP, and troubleshooting steps, see
-[docs/deployment.md](docs/deployment.md).
+[docs/deployment.md](docs/deployment.md). For a UI-focused walkthrough, see
+[docs/user-guide.md](docs/user-guide.md).
 
 The renderer preview is available at:
 
@@ -109,6 +122,19 @@ Supported targets include Codex Desktop, Codex CLI, Cursor, Claude Desktop,
 Claude Code, and Claude CLI. Unsupported MCP tools can copy the JSON snippets in
 [docs/ai-tools.md](docs/ai-tools.md).
 
+## One-Click Codex Plugin
+
+The repo includes a local Codex plugin:
+
+```text
+plugins/spine-companion-status
+```
+
+Codex environments that support repo marketplace files can install
+`Spine Companion Status` from `.agents/plugins/marketplace.json`. The plugin
+provides the status-reporting skill and a `spine_companion` MCP bridge config
+that starts with Bun by default.
+
 ## States And Animations
 
 | State | Spine animation |
@@ -147,6 +173,27 @@ The Windows tray menu can show or hide the status panel, toggle always-on-top,
 show or hide the progress bubble, zoom the model, reset size, switch states, and
 quit. Dragging the transparent stage moves the window; horizontal dragging
 temporarily switches to `running` and mirrors the model left or right.
+
+The Manager includes a searchable model library, installed model actions,
+download status, hot-applied scale and offset settings, diagnostics, update
+checks, and recent state history. The bundled Ark-Models catalog entry downloads
+only into the local config folder; this repository and public releases do not
+include the model asset files.
+
+## FAQ
+
+**Why does the app show missing asset?**
+Open Manager > Diagnostics and confirm the active model folder contains `.skel`,
+`.atlas`, and `.png` files. If the model was downloaded through Library, try
+setting it active again from Installed.
+
+**Why does Codex stay idle?**
+The MCP bridge only works while the companion app or local API is running. Run
+`bun run mcp:install:codex`, restart Codex, and check Manager > Diagnostics.
+
+**Which runtime should I use?**
+Electron is currently the most complete daily-use runtime. Tauri builds are
+included and improving, but some platform behavior still needs broader testing.
 
 ## Open-Source Notes
 

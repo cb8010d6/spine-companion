@@ -1,0 +1,140 @@
+@import "./design-tokens.css";
+
+.btn {
+  min-height: 30px;
+  border: 1px solid var(--sc-border);
+  border-radius: var(--sc-radius-md);
+  background: var(--sc-bg-muted);
+  color: var(--sc-text);
+  font: inherit;
+  font-size: var(--sc-font-sm);
+  cursor: pointer;
+  transition: background var(--sc-motion-fast), border-color var(--sc-motion-fast), transform var(--sc-motion-fast);
+}
+
+.btn:hover:not(:disabled) {
+  border-color: var(--sc-border-strong);
+  background: var(--sc-bg-hover);
+}
+
+.btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.btn:focus-visible,
+.input:focus-visible,
+.select:focus-visible {
+  outline: none;
+  box-shadow: var(--sc-focus);
+}
+
+.btn-primary {
+  border-color: transparent;
+  background: var(--sc-accent);
+  color: #071311;
+  font-weight: 650;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--sc-accent-strong);
+}
+
+.btn-danger {
+  color: var(--sc-danger);
+  border-color: rgba(240, 120, 120, 0.34);
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: rgba(240, 120, 120, 0.12);
+}
+
+.btn-ghost {
+  background: transparent;
+}
+
+.card {
+  border: 1px solid var(--sc-border);
+  border-radius: var(--sc-radius-lg);
+  background: var(--sc-bg-elevated);
+  box-shadow: none;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 0 7px;
+  border: 1px solid var(--sc-border);
+  border-radius: 999px;
+  color: var(--sc-text-muted);
+  font-size: var(--sc-font-xs);
+  line-height: 1;
+}
+
+.badge-success {
+  border-color: rgba(134, 217, 130, 0.4);
+  color: var(--sc-success);
+}
+
+.badge-warning {
+  border-color: rgba(240, 189, 103, 0.4);
+  color: var(--sc-warning);
+}
+
+.badge-danger {
+  border-color: rgba(240, 120, 120, 0.4);
+  color: var(--sc-danger);
+}
+
+.input,
+.select {
+  min-height: 30px;
+  border: 1px solid var(--sc-border);
+  border-radius: var(--sc-radius-md);
+  background: var(--sc-bg);
+  color: var(--sc-text);
+  font: inherit;
+  font-size: var(--sc-font-sm);
+}
+
+.input {
+  padding: 0 9px;
+}
+
+.select {
+  padding: 0 8px;
+}
+
+.switch {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sc-space-2);
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.fade-in {
+  animation: sc-fade-in var(--sc-motion-med);
+}
+
+@keyframes sc-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

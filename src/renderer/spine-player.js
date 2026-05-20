@@ -1,6 +1,7 @@
 import * as PIXI from "pixi.js";
 import { Spine } from "pixi-spine";
 import { animationForState, stateMachine } from "./state.js";
+import { spineAssetUrl } from "../shared/asset-url.js";
 
 export class SpinePlayer {
   constructor(stage, config) {
@@ -28,6 +29,8 @@ export class SpinePlayer {
     this.baseFitScale = null;
     this.lastLayoutSize = { width: 0, height: 0 };
     this.resizeTimer = null;
+    this.handleResize = null;
+    this.handleWheel = null;
   }
 
   async init() {
@@ -43,14 +46,16 @@ export class SpinePlayer {
     this.app.stage.addChild(this.model);
 
     await this.loadSpine();
-    window.addEventListener("resize", () => {
+    this.handleResize = () => {
       window.clearTimeout(this.resizeTimer);
       this.resizeTimer = window.setTimeout(() => this.layout({ forceFitRecalc: true }), 90);
-    });
-    this.stageElement.addEventListener("wheel", (event) => {
+    };
+    this.handleWheel = (event) => {
       event.preventDefault();
       this.adjustUserScale(event.deltaY > 0 ? -0.05 : 0.05);
-    }, { passive: false });
+    };
+    window.addEventListener("resize", this.handleResize);
+    this.stageElement.addEventListener("wheel", this.handleWheel, { passive: false });
   }
 
   async loadSpine() {
@@ -58,18 +63,7 @@ export class SpinePlayer {
       throw new Error("No Spine asset directory is configured.");
     }
 
-    const resource = await new Promise((resolve, reject) => {
-      const loader = new PIXI.Loader();
-      loader.add("companion", this.config.spine.assetUrl);
-      loader.onError.add((error) => reject(error));
-      loader.load((_loader, resources) => {
-        if (!resources.companion?.spineData) {
-          reject(new Error("Spine data was not found in the loaded asset."));
-          return;
-        }
-        resolve(resources.companion);
-      });
-    });
+    const resource = await this.loadSpineResourceWithRetry();
 
     this.spine = new Spine(resource.spineData);
     this.spine.autoUpdate = true;
@@ -85,6 +79,37 @@ export class SpinePlayer {
     this.stableBounds = this.measureStableBounds(stateMachine.states);
     this.fitBounds = this.measureStableBounds(this.config.spine.fitStates || stateMachine.states);
     this.applyState({ state: "idle", source: "system" }, true);
+  }
+
+  loadSpineResource() {
+    return new Promise((resolve, reject) => {
+      const loader = new PIXI.Loader();
+      loader.add("companion", spineAssetUrl(this.config));
+      loader.onError.add((error) => reject(error));
+      loader.load((_loader, resources) => {
+        if (!resources.companion?.spineData) {
+          reject(new Error("Spine data was not found in the loaded asset."));
+          return;
+        }
+        resolve(resources.companion);
+      });
+    });
+  }
+
+  async loadSpineResourceWithRetry() {
+    const attempts = 3;
+    let lastError = null;
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        return await this.loadSpineResource();
+      } catch (error) {
+        lastError = error;
+        if (attempt < attempts) {
+          await new Promise((resolve) => window.setTimeout(resolve, attempt * 350));
+        }
+      }
+    }
+    throw lastError;
   }
 
   setUserScale(scale) {
@@ -333,6 +358,9 @@ export class SpinePlayer {
 
   destroy() {
     window.clearTimeout(this.returnTimer);
+    window.clearTimeout(this.resizeTimer);
+    if (this.handleResize) window.removeEventListener("resize", this.handleResize);
+    if (this.handleWheel) this.stageElement.removeEventListener("wheel", this.handleWheel);
     if (this.app) this.app.destroy(true, { children: true, texture: false, baseTexture: false });
   }
 }

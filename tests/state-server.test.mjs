@@ -1,7 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll } from "vitest";
+import fs from "node:fs";
 import http from "node:http";
+import os from "node:os";
+import path from "node:path";
 
-const { createCompanionServer } = require("../src/main/state-server.cjs");
+const { createCompanionServer, rewriteAtlasTextureUrls } = require("../src/main/state-server.cjs");
 
 function request(url, options = {}) {
   return new Promise((resolve, reject) => {
@@ -96,6 +99,15 @@ describe("state-server HTTP API", () => {
     });
   });
 
+  describe("GET /history", () => {
+    it("returns recent state transitions", async () => {
+      await postJson(`${baseUrl}/state`, { state: "working", source: "test" });
+      const res = await request(`${baseUrl}/history`);
+      expect(res.status).toBe(200);
+      expect(res.body.history.some((item) => item.state === "working")).toBe(true);
+    });
+  });
+
   describe("GET /reminders", () => {
     it("returns empty list initially", async () => {
       const res = await request(`${baseUrl}/reminders`);
@@ -158,5 +170,30 @@ describe("state-server HTTP API", () => {
       const res = await request(`${baseUrl}/assets/spine/test.skel`);
       expect(res.status).toBe(404);
     });
+
+    it("rewrites atlas texture names with URL-sensitive characters", async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "spine-assets-"));
+      try {
+        fs.writeFileSync(
+          path.join(dir, "build_char_1001_amiya2_sale#16.atlas"),
+          "build_char_1001_amiya2_sale#16.png\nsize: 956,956\nB_HandD_FA\n  rotate: true\n"
+        );
+        runtime.setAssetRoot(dir);
+        const res = await request(`${baseUrl}/assets/spine/build_char_1001_amiya2_sale%2316.atlas`);
+        expect(res.status).toBe(200);
+        expect(res.raw).toContain("build_char_1001_amiya2_sale%2316.png");
+        expect(res.raw).toContain("B_HandD_FA");
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
+});
+
+describe("rewriteAtlasTextureUrls", () => {
+  it("encodes only atlas page texture lines", () => {
+    const text = "texture#1.png\nsize: 1,1\nregion#name\n  rotate: false\n";
+    expect(rewriteAtlasTextureUrls(text)).toContain("texture%231.png");
+    expect(rewriteAtlasTextureUrls(text)).toContain("region#name");
   });
 });

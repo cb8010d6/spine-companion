@@ -82,6 +82,19 @@ function fileContentType(file) {
   return "application/octet-stream";
 }
 
+function encodeAtlasTextureLine(line) {
+  const trimmed = String(line || "").trim();
+  if (!/^[^\s].+\.(png|jpe?g|webp)$/i.test(trimmed)) return line;
+  return encodeURIComponent(trimmed);
+}
+
+function rewriteAtlasTextureUrls(text) {
+  return String(text || "")
+    .split(/\r?\n/)
+    .map(encodeAtlasTextureLine)
+    .join("\n");
+}
+
 function isInside(root, file) {
   const relative = path.relative(root, file);
   return relative && !relative.startsWith("..") && !path.isAbsolute(relative);
@@ -90,7 +103,9 @@ function isInside(root, file) {
 function createCompanionServer(config, publicConfig) {
   const store = createStateStore(config, stateMachine);
   const sseClients = new Set();
-  const assetRoot = config.spine.assetDir ? path.resolve(config.spine.assetDir) : "";
+  const assetRootState = {
+    current: config.spine.assetDir ? path.resolve(config.spine.assetDir) : ""
+  };
 
   function broadcastSse(event, value) {
     const payload = `event: ${event}\ndata: ${JSON.stringify(value)}\n\n`;
@@ -137,6 +152,11 @@ function createCompanionServer(config, publicConfig) {
         return;
       }
 
+      if (req.method === "GET" && url.pathname === "/history") {
+        sendJson(res, 200, { history: store.listHistory() }, req);
+        return;
+      }
+
       if (req.method === "POST" && url.pathname === "/reminders") {
         sendJson(res, 201, store.createReminder(await readBody(req)), req);
         return;
@@ -156,6 +176,7 @@ function createCompanionServer(config, publicConfig) {
       }
 
       if (req.method === "GET" && url.pathname.startsWith("/assets/spine/")) {
+        const assetRoot = assetRootState.current;
         if (!assetRoot) {
           sendText(res, 404, "No Spine assetDir is configured.", req);
           return;
@@ -174,6 +195,10 @@ function createCompanionServer(config, publicConfig) {
           "Access-Control-Allow-Origin": corsOrigin(req),
           "Content-Type": fileContentType(file)
         });
+        if (path.extname(file).toLowerCase() === ".atlas") {
+          res.end(rewriteAtlasTextureUrls(fs.readFileSync(file, "utf8")));
+          return;
+        }
         fs.createReadStream(file).pipe(res);
         return;
       }
@@ -230,11 +255,15 @@ function createCompanionServer(config, publicConfig) {
     close() {
       for (const client of wss.clients) client.close();
       server.close();
+    },
+    setAssetRoot(nextAssetRoot) {
+      assetRootState.current = nextAssetRoot ? path.resolve(nextAssetRoot) : "";
     }
   };
 }
 
 module.exports = {
   createCompanionServer,
-  normalizeStateId
+  normalizeStateId,
+  rewriteAtlasTextureUrls
 };

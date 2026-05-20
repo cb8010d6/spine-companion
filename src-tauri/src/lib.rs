@@ -6,18 +6,76 @@ use state::{
     CreateReminderInput, Reminder, ReminderStore, SetStateInput, StateBroadcast, StateStore,
 };
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use tauri::{
-    Emitter,
-    menu::{Menu, MenuItem, PredefinedMenuItem},
+    menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager, State,
+    AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
 
 struct AppData {
     store: StateStore,
     tx: StateBroadcast,
     reminders: ReminderStore,
-    public_config: serde_json::Value,
+    public_config: Arc<Mutex<serde_json::Value>>,
+    ui_settings: Arc<Mutex<UiSettings>>,
+    config_dir: PathBuf,
+    local_config_path: PathBuf,
+    asset_root: server::AssetRootStore,
+    history: Arc<Mutex<Vec<CompanionState>>>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UiSettings {
+    hud_visible: bool,
+    bubble_visible: bool,
+    bubble_shadow: bool,
+    bubble_background: String,
+    bubble_hold_ms: u64,
+    drag_mode: String,
+}
+
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UiSettingsPatch {
+    hud_visible: Option<bool>,
+    bubble_visible: Option<bool>,
+    bubble_shadow: Option<bool>,
+    bubble_background: Option<String>,
+    bubble_hold_ms: Option<u64>,
+    drag_mode: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ScalePayload {
+    delta: Option<f64>,
+    action: Option<String>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportModelInput {
+    id: String,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportModelResult {
+    id: String,
+    name: String,
+    asset_dir: String,
+    skel: String,
+    asset_url: String,
+    local_config_path: String,
+    requires_restart: bool,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SaveSettingsInput {
+    patch: serde_json::Value,
 }
 
 fn fallback_config() -> serde_json::Value {
@@ -44,6 +102,32 @@ fn fallback_config() -> serde_json::Value {
             "bubbleBackground": "solid",
             "bubbleHoldMs": 8000,
             "dragMode": "compatible"
+        },
+        "models": {
+            "catalog": [
+                {
+                    "id": "ark-1001-amiya2-sale-16",
+                    "name": "Amiya Guard Skin #16",
+                    "source": "Ark-Models",
+                    "licenseNote": "Downloaded from isHarryh/Ark-Models for local use only. Do not commit or redistribute the asset files in this repository.",
+                    "repositoryUrl": "https://github.com/isHarryh/Ark-Models/tree/main/models/1001_amiya2_sale%2316",
+                    "skel": "build_char_1001_amiya2_sale#16.skel",
+                    "files": [
+                        {
+                            "name": "build_char_1001_amiya2_sale#16.atlas",
+                            "url": "https://raw.githubusercontent.com/isHarryh/Ark-Models/main/models/1001_amiya2_sale%2316/build_char_1001_amiya2_sale%2316.atlas"
+                        },
+                        {
+                            "name": "build_char_1001_amiya2_sale#16.png",
+                            "url": "https://raw.githubusercontent.com/isHarryh/Ark-Models/main/models/1001_amiya2_sale%2316/build_char_1001_amiya2_sale%2316.png"
+                        },
+                        {
+                            "name": "build_char_1001_amiya2_sale#16.skel",
+                            "url": "https://raw.githubusercontent.com/isHarryh/Ark-Models/main/models/1001_amiya2_sale%2316/build_char_1001_amiya2_sale%2316.skel"
+                        }
+                    ]
+                }
+            ]
         },
         "state": { "initial": "idle", "pollMs": 1000, "sources": [{ "type": "local-http" }] },
         "specialSegments": {
@@ -96,13 +180,13 @@ fn local_config_candidates(root: &Path) -> Vec<PathBuf> {
     if let Ok(cwd) = std::env::current_dir() {
         candidates.push(cwd.join("companion.local.json"));
     }
+    if let Some(dir) = user_config_dir() {
+        candidates.push(dir.join("companion.local.json"));
+    }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             candidates.push(dir.join("companion.local.json"));
         }
-    }
-    if let Some(dir) = user_config_dir() {
-        candidates.push(dir.join("companion.local.json"));
     }
     candidates
 }
@@ -127,6 +211,30 @@ fn number_at(value: &serde_json::Value, path: &[&str], fallback: u16) -> u16 {
     current.as_u64().map(|n| n as u16).unwrap_or(fallback)
 }
 
+fn bool_at(value: &serde_json::Value, path: &[&str], fallback: bool) -> bool {
+    let mut current = value;
+    for key in path {
+        if let Some(next) = current.get(*key) {
+            current = next;
+        } else {
+            return fallback;
+        }
+    }
+    current.as_bool().unwrap_or(fallback)
+}
+
+fn u64_at(value: &serde_json::Value, path: &[&str], fallback: u64) -> u64 {
+    let mut current = value;
+    for key in path {
+        if let Some(next) = current.get(*key) {
+            current = next;
+        } else {
+            return fallback;
+        }
+    }
+    current.as_u64().unwrap_or(fallback)
+}
+
 fn resolve_asset_dir(root: &Path, value: &str) -> String {
     if value.is_empty() {
         return String::new();
@@ -139,6 +247,143 @@ fn resolve_asset_dir(root: &Path, value: &str) -> String {
     }
 }
 
+fn ui_settings_from_config(config: &serde_json::Value) -> UiSettings {
+    let background = string_at(config, &["ui", "bubbleBackground"])
+        .unwrap_or("solid")
+        .to_string();
+    let drag_mode = string_at(config, &["ui", "dragMode"])
+        .unwrap_or("compatible")
+        .to_string();
+    UiSettings {
+        hud_visible: bool_at(config, &["ui", "hudVisible"], false),
+        bubble_visible: bool_at(config, &["ui", "bubbleVisible"], true),
+        bubble_shadow: bool_at(config, &["ui", "bubbleShadow"], true),
+        bubble_background: normalize_bubble_background(&background),
+        bubble_hold_ms: u64_at(config, &["ui", "bubbleHoldMs"], 8000),
+        drag_mode: normalize_drag_mode(&drag_mode),
+    }
+}
+
+fn normalize_bubble_background(value: &str) -> String {
+    match value {
+        "soft" | "clear" | "light" => value.to_string(),
+        _ => "solid".to_string(),
+    }
+}
+
+fn normalize_drag_mode(value: &str) -> String {
+    if value == "smooth" {
+        "smooth".to_string()
+    } else {
+        "compatible".to_string()
+    }
+}
+
+fn apply_ui_patch(settings: &mut UiSettings, patch: UiSettingsPatch) {
+    if let Some(value) = patch.hud_visible {
+        settings.hud_visible = value;
+    }
+    if let Some(value) = patch.bubble_visible {
+        settings.bubble_visible = value;
+    }
+    if let Some(value) = patch.bubble_shadow {
+        settings.bubble_shadow = value;
+    }
+    if let Some(value) = patch.bubble_background {
+        settings.bubble_background = normalize_bubble_background(&value);
+    }
+    if let Some(value) = patch.bubble_hold_ms {
+        settings.bubble_hold_ms = value.clamp(1500, 60000);
+    }
+    if let Some(value) = patch.drag_mode {
+        settings.drag_mode = normalize_drag_mode(&value);
+    }
+}
+
+fn current_ui_settings(data: &AppData) -> UiSettings {
+    data.ui_settings
+        .lock()
+        .map(|settings| settings.clone())
+        .unwrap_or_else(|_| {
+            data.public_config
+                .lock()
+                .map(|config| ui_settings_from_config(&config))
+                .unwrap_or_else(|_| ui_settings_from_config(&fallback_config()))
+        })
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CurrentModel {
+    id: String,
+    name: String,
+    skel: String,
+    asset_dir: String,
+    source: String,
+}
+
+fn public_config_with_ui(data: &AppData) -> serde_json::Value {
+    let mut public = data
+        .public_config
+        .lock()
+        .map(|config| config.clone())
+        .unwrap_or_else(|_| fallback_config());
+    if let Ok(value) = serde_json::to_value(current_ui_settings(data)) {
+        public["ui"] = value;
+    }
+    refresh_public_asset_fields(&mut public);
+    public
+}
+
+fn refresh_public_asset_fields(public: &mut serde_json::Value) {
+    let origin = string_at(public, &["server", "origin"])
+        .unwrap_or("http://127.0.0.1:17388")
+        .to_string();
+    let skel = string_at(public, &["spine", "skel"])
+        .unwrap_or("")
+        .to_string();
+    let asset_dir = string_at(public, &["spine", "assetDir"])
+        .unwrap_or("")
+        .to_string();
+    public["spine"]["assetUrl"] = serde_json::Value::String(format!(
+        "{}/assets/spine/{}",
+        origin.trim_end_matches('/'),
+        url_encode_path_segment(&skel)
+    ));
+    public["spine"]["assetDirConfigured"] = serde_json::Value::Bool(!asset_dir.is_empty());
+}
+
+fn update_ui_settings(app: &AppHandle, patch: UiSettingsPatch) -> Option<UiSettings> {
+    let data = app.state::<AppData>();
+    let next = {
+        let Ok(mut settings) = data.ui_settings.lock() else {
+            return None;
+        };
+        apply_ui_patch(&mut settings, patch);
+        settings.clone()
+    };
+    let _ = app.emit("companion:ui", next.clone());
+    Some(next)
+}
+
+fn open_external(target: &str) -> std::io::Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", target])
+            .spawn()?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open").arg(target).spawn()?;
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open").arg(target).spawn()?;
+    }
+    Ok(())
+}
+
 #[derive(Clone)]
 struct RuntimeConfig {
     public: serde_json::Value,
@@ -146,6 +391,9 @@ struct RuntimeConfig {
     port: u16,
     initial_state: String,
     asset_root: Option<PathBuf>,
+    ui_settings: UiSettings,
+    config_dir: PathBuf,
+    local_config_path: PathBuf,
 }
 
 fn load_runtime_config() -> RuntimeConfig {
@@ -157,9 +405,15 @@ fn load_runtime_config() -> RuntimeConfig {
     if let Some(committed) = read_json_if_exists(&root.join("companion.config.json")) {
         merge_json(&mut config, committed);
     }
+    let mut resolved_local_config_path = String::new();
+    let mut asset_base_dir = root.clone();
     for candidate in local_config_candidates(&root) {
         if let Some(local) = read_json_if_exists(&candidate) {
             merge_json(&mut config, local);
+            resolved_local_config_path = candidate.to_string_lossy().to_string();
+            if let Some(parent) = candidate.parent() {
+                asset_base_dir = parent.to_path_buf();
+            }
         }
     }
     if let Ok(asset_dir) = std::env::var("SPINE_ASSET_DIR") {
@@ -180,9 +434,25 @@ fn load_runtime_config() -> RuntimeConfig {
     let port = number_at(&config, &["server", "port"], 17388);
     let origin = format!("http://{}:{}", host, port);
     let raw_asset_dir = string_at(&config, &["spine", "assetDir"]).unwrap_or("");
-    let asset_dir = resolve_asset_dir(&root, raw_asset_dir);
+    let asset_dir = resolve_asset_dir(&asset_base_dir, raw_asset_dir);
     config["spine"]["assetDir"] = serde_json::Value::String(asset_dir.clone());
     let skel = string_at(&config, &["spine", "skel"]).unwrap_or("amiya.skel");
+    let default_local_config_path = local_config_candidates(&root)
+        .first()
+        .map(|path| path.to_string_lossy().to_string())
+        .unwrap_or_else(|| {
+            root.join("companion.local.json")
+                .to_string_lossy()
+                .to_string()
+        });
+    let config_dir_path = user_config_dir().unwrap_or_else(|| root.clone());
+    let local_config_path = if resolved_local_config_path.is_empty() {
+        PathBuf::from(&default_local_config_path)
+    } else {
+        PathBuf::from(&resolved_local_config_path)
+    };
+    let config_dir = config_dir_path.to_string_lossy().to_string();
+    let ui_settings = ui_settings_from_config(&config);
 
     let public = serde_json::json!({
         "window": config["window"].clone(),
@@ -193,8 +463,9 @@ fn load_runtime_config() -> RuntimeConfig {
             "websocketUrl": format!("ws://{}:{}/ws", host, port)
         },
         "spine": {
+            "assetDir": asset_dir.clone(),
             "skel": skel,
-            "assetUrl": format!("{}/assets/spine/{}", origin, skel),
+            "assetUrl": format!("{}/assets/spine/{}", origin, url_encode_path_segment(skel)),
             "assetDirConfigured": !asset_dir.is_empty(),
             "scale": config["spine"]["scale"].clone(),
             "offsetX": config["spine"]["offsetX"].clone(),
@@ -207,6 +478,12 @@ fn load_runtime_config() -> RuntimeConfig {
             "fitStates": config["spine"]["fitStates"].clone()
         },
         "ui": config["ui"].clone(),
+        "models": config["models"].clone(),
+        "paths": {
+            "configDir": config_dir,
+            "localConfigPath": local_config_path.to_string_lossy().to_string(),
+            "hasLocalConfig": !resolved_local_config_path.is_empty()
+        },
         "state": config["state"].clone(),
         "specialSegments": config["specialSegments"].clone()
     });
@@ -223,12 +500,15 @@ fn load_runtime_config() -> RuntimeConfig {
         } else {
             Some(PathBuf::from(asset_dir))
         },
+        ui_settings,
+        config_dir: config_dir_path,
+        local_config_path,
     }
 }
 
 #[tauri::command]
 async fn get_config(data: State<'_, AppData>) -> Result<serde_json::Value, String> {
-    Ok(data.public_config.clone())
+    Ok(public_config_with_ui(&data))
 }
 
 #[tauri::command]
@@ -253,15 +533,907 @@ async fn create_reminder_cmd(
 }
 
 #[tauri::command]
+async fn set_ui_settings(
+    window: WebviewWindow,
+    data: State<'_, AppData>,
+    input: UiSettingsPatch,
+) -> Result<UiSettings, String> {
+    let next = {
+        let mut settings = data
+            .ui_settings
+            .lock()
+            .map_err(|_| "UI settings lock is poisoned".to_string())?;
+        apply_ui_patch(&mut settings, input);
+        settings.clone()
+    };
+    window
+        .app_handle()
+        .emit("companion:ui", next.clone())
+        .map_err(|error| error.to_string())?;
+    Ok(next)
+}
+
+#[tauri::command]
+async fn emit_scale_event(window: WebviewWindow, input: ScalePayload) -> Result<(), String> {
+    window
+        .emit("companion:scale", input)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn import_model(
+    app: tauri::AppHandle,
+    data: State<'_, AppData>,
+    input: ImportModelInput,
+) -> Result<ImportModelResult, String> {
+    let public_config = data
+        .public_config
+        .lock()
+        .map(|config| config.clone())
+        .map_err(|_| "Config lock is poisoned".to_string())?;
+    let model = model_by_id(&public_config, &input.id)
+        .ok_or_else(|| format!("Unknown model id: {}", input.id))?;
+    let name = model
+        .get("name")
+        .and_then(|value| value.as_str())
+        .unwrap_or(&input.id)
+        .to_string();
+    let skel = model
+        .get("skel")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| "Model catalog entry is missing skel".to_string())?
+        .to_string();
+    let files = model
+        .get("files")
+        .and_then(|value| value.as_array())
+        .ok_or_else(|| "Model catalog entry is missing files".to_string())?;
+    let model_dir = data.config_dir.join("models").join(&input.id);
+    tokio::fs::create_dir_all(&model_dir)
+        .await
+        .map_err(|error| error.to_string())?;
+    let client = reqwest::Client::new();
+
+    let total_files = files.len();
+    for (i, file) in files.iter().enumerate() {
+        let file_name = file
+            .get("name")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| "Model file is missing name".to_string())?;
+        let url = file
+            .get("url")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| "Model file is missing url".to_string())?;
+
+        let _ = app.emit(
+            "companion:download-progress",
+            serde_json::json!({
+                "id": input.id,
+                "file": file_name,
+                "current": i + 1,
+                "total": total_files,
+                "status": "downloading"
+            }),
+        );
+
+        let bytes = client
+            .get(url)
+            .send()
+            .await
+            .map_err(|error| error.to_string())?
+            .error_for_status()
+            .map_err(|error| error.to_string())?
+            .bytes()
+            .await
+            .map_err(|error| error.to_string())?;
+        tokio::fs::write(model_dir.join(file_name), bytes)
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+
+    write_local_model_config(&data.local_config_path, &model_dir, &skel)?;
+    let canonical_model_dir = model_dir
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    if let Ok(mut public) = data.public_config.lock() {
+        merge_json(
+            &mut public,
+            serde_json::json!({
+                "spine": {
+                    "assetDir": canonical_model_dir.to_string_lossy().to_string(),
+                    "assetDirConfigured": true,
+                    "skel": skel
+                }
+            }),
+        );
+    }
+    {
+        let mut asset_root = data.asset_root.write().await;
+        *asset_root = Some(canonical_model_dir.clone());
+    }
+    let public = public_config_with_ui(&data);
+    let origin = public
+        .get("server")
+        .and_then(|server| server.get("origin"))
+        .and_then(|origin| origin.as_str())
+        .unwrap_or("http://127.0.0.1:17388");
+
+    let result = ImportModelResult {
+        id: input.id,
+        name,
+        asset_dir: canonical_model_dir.to_string_lossy().to_string(),
+        skel: skel.clone(),
+        asset_url: format!("{}/assets/spine/{}", origin, url_encode_path_segment(&skel)),
+        local_config_path: data.local_config_path.to_string_lossy().to_string(),
+        requires_restart: false,
+    };
+
+    let _ = app.emit("companion:model-imported", result.clone());
+
+    Ok(result)
+}
+
+#[tauri::command]
+async fn save_settings(
+    app: tauri::AppHandle,
+    data: State<'_, AppData>,
+    input: SaveSettingsInput,
+) -> Result<(), String> {
+    let path = &data.local_config_path;
+    let patch = input.patch;
+    let mut config = read_json_if_exists(path).unwrap_or_else(|| serde_json::json!({}));
+    merge_json(&mut config, patch.clone());
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let text = serde_json::to_string_pretty(&config).map_err(|error| error.to_string())?;
+    std::fs::write(path, format!("{}\n", text)).map_err(|error| error.to_string())?;
+    if let Ok(mut public) = data.public_config.lock() {
+        merge_json(&mut public, patch.clone());
+    }
+    if let Some(ui_patch) = patch.get("ui").cloned() {
+        if let Ok(patch) = serde_json::from_value::<UiSettingsPatch>(ui_patch) {
+            let _ = update_ui_settings(&app, patch);
+        }
+    }
+    let _ = app.emit("companion:config-changed", public_config_with_ui(&data));
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_diagnostics(data: State<'_, AppData>) -> Result<serde_json::Value, String> {
+    let public = public_config_with_ui(&data);
+    let origin = public
+        .get("server")
+        .and_then(|s| s.get("origin"))
+        .and_then(|o| o.as_str())
+        .unwrap_or("http://127.0.0.1:17388");
+
+    let state_ok = reqwest::get(&format!("{}/state", origin)).await.is_ok();
+
+    let local_config_exists = data.local_config_path.exists();
+
+    let mut asset_dir_exists = false;
+    let mut has_skel = false;
+    let mut has_atlas = false;
+    let mut has_png = false;
+
+    if let Some(asset_root) = &*data.asset_root.read().await {
+        asset_dir_exists = asset_root.exists();
+        if let Ok(mut entries) = tokio::fs::read_dir(asset_root).await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let path = entry.path();
+                if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
+                    if ext == "skel" {
+                        has_skel = true;
+                    }
+                    if ext == "atlas" {
+                        has_atlas = true;
+                    }
+                    if ext == "png" {
+                        has_png = true;
+                    }
+                }
+            }
+        }
+    }
+
+    let mut mcp_matches = Vec::new();
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_default();
+    if !home.is_empty() {
+        let home_path = std::path::Path::new(&home);
+        let mut mcp_paths = vec![
+            ("Codex", home_path.join(".codex").join("config.toml")),
+            (
+                "Gemini / Antigravity",
+                home_path
+                    .join(".gemini")
+                    .join("antigravity")
+                    .join("mcp_config.json"),
+            ),
+        ];
+        #[cfg(target_os = "windows")]
+        {
+            let roaming = std::env::var("APPDATA")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| home_path.join("AppData").join("Roaming"));
+            mcp_paths.push((
+                "Claude",
+                roaming.join("Claude").join("claude_desktop_config.json"),
+            ));
+            mcp_paths.push((
+                "Roo / Cline",
+                roaming
+                    .join("Code")
+                    .join("User")
+                    .join("globalStorage")
+                    .join("rooveterinaryinc.roo-cline")
+                    .join("settings")
+                    .join("cline_mcp_settings.json"),
+            ));
+        }
+        #[cfg(target_os = "macos")]
+        {
+            mcp_paths.push((
+                "Claude",
+                home_path
+                    .join("Library")
+                    .join("Application Support")
+                    .join("Claude")
+                    .join("claude_desktop_config.json"),
+            ));
+            mcp_paths.push((
+                "Roo / Cline",
+                home_path
+                    .join("Library")
+                    .join("Application Support")
+                    .join("Code")
+                    .join("User")
+                    .join("globalStorage")
+                    .join("rooveterinaryinc.roo-cline")
+                    .join("settings")
+                    .join("cline_mcp_settings.json"),
+            ));
+        }
+        #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+        {
+            let config_home = std::env::var("XDG_CONFIG_HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| home_path.join(".config"));
+            mcp_paths.push((
+                "Claude",
+                config_home
+                    .join("Claude")
+                    .join("claude_desktop_config.json"),
+            ));
+            mcp_paths.push((
+                "Roo / Cline",
+                config_home
+                    .join("Code")
+                    .join("User")
+                    .join("globalStorage")
+                    .join("rooveterinaryinc.roo-cline")
+                    .join("settings")
+                    .join("cline_mcp_settings.json"),
+            ));
+        }
+
+        for (tool, p) in mcp_paths {
+            if let Ok(content) = std::fs::read_to_string(&p) {
+                let configured =
+                    content.contains("spine_companion") || content.contains("spine-companion");
+                mcp_matches.push(serde_json::json!({
+                    "tool": tool,
+                    "path": p.to_string_lossy(),
+                    "exists": true,
+                    "configured": configured
+                }));
+            }
+        }
+    }
+    let mcp_configured = mcp_matches.iter().any(|item| {
+        item.get("configured")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+    });
+
+    Ok(serde_json::json!({
+        "apiOk": state_ok,
+        "localConfigExists": local_config_exists,
+        "assetDirExists": asset_dir_exists,
+        "hasSkel": has_skel,
+        "hasAtlas": has_atlas,
+        "hasPng": has_png,
+        "mcpConfigured": mcp_configured,
+        "mcpMatches": mcp_matches
+    }))
+}
+
+#[derive(serde::Serialize)]
+struct InstalledModel {
+    id: String,
+    dir: String,
+}
+
+#[tauri::command]
+fn get_installed_models(data: State<'_, AppData>) -> Result<Vec<InstalledModel>, String> {
+    let models_dir = data.config_dir.join("models");
+    let mut models = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(models_dir) {
+        for entry in entries.flatten() {
+            if let Ok(file_type) = entry.file_type() {
+                if file_type.is_dir() {
+                    let id = entry.file_name().to_string_lossy().to_string();
+                    let dir = entry.path().to_string_lossy().to_string();
+                    models.push(InstalledModel { id, dir });
+                }
+            }
+        }
+    }
+    Ok(models)
+}
+
+#[tauri::command]
+fn remove_model(data: State<'_, AppData>, id: String) -> Result<(), String> {
+    if id.contains("..") || id.contains('/') || id.contains('\\') {
+        return Err("Invalid model ID".to_string());
+    }
+    let models_dir = data.config_dir.join("models");
+    let model_dir = models_dir.join(&id);
+    let resolved_models_dir = models_dir
+        .canonicalize()
+        .unwrap_or_else(|_| models_dir.clone());
+    let resolved_model_dir = model_dir
+        .canonicalize()
+        .unwrap_or_else(|_| model_dir.clone());
+    if !resolved_model_dir.starts_with(&resolved_models_dir) {
+        return Err("Path traversal detected".to_string());
+    }
+    let active_asset_dir = data
+        .public_config
+        .lock()
+        .ok()
+        .and_then(|config| string_at(&config, &["spine", "assetDir"]).map(str::to_string));
+    if let Some(active_asset_dir) = active_asset_dir {
+        let active = PathBuf::from(active_asset_dir)
+            .canonicalize()
+            .unwrap_or_else(|_| PathBuf::new());
+        if active == resolved_model_dir {
+            return Err("Cannot remove the active model".to_string());
+        }
+    }
+    if model_dir.exists() {
+        std::fs::remove_dir_all(model_dir).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn get_history(data: State<'_, AppData>) -> Result<Vec<CompanionState>, String> {
+    data.history
+        .lock()
+        .map(|history| history.clone())
+        .map_err(|_| "History lock is poisoned".to_string())
+}
+
+#[tauri::command]
+fn get_current_model(data: State<'_, AppData>) -> Result<CurrentModel, String> {
+    let public = public_config_with_ui(&data);
+    let skel = string_at(&public, &["spine", "skel"])
+        .unwrap_or("")
+        .to_string();
+    let model = model_by_skel(&public, &skel);
+    Ok(CurrentModel {
+        id: model
+            .as_ref()
+            .and_then(|m| m.get("id").and_then(|v| v.as_str()))
+            .unwrap_or("")
+            .to_string(),
+        name: model
+            .as_ref()
+            .and_then(|m| m.get("name").and_then(|v| v.as_str()))
+            .unwrap_or(if skel.is_empty() { "None" } else { &skel })
+            .to_string(),
+        skel,
+        asset_dir: string_at(&public, &["spine", "assetDir"])
+            .unwrap_or("")
+            .to_string(),
+        source: model
+            .as_ref()
+            .and_then(|m| m.get("source").and_then(|v| v.as_str()))
+            .unwrap_or("Local")
+            .to_string(),
+    })
+}
+
+#[tauri::command]
+async fn set_active_model(
+    app: tauri::AppHandle,
+    data: State<'_, AppData>,
+    id: String,
+) -> Result<ImportModelResult, String> {
+    if id.contains("..") || id.contains('/') || id.contains('\\') {
+        return Err("Invalid model ID".to_string());
+    }
+    let public = public_config_with_ui(&data);
+    let model = model_by_id(&public, &id);
+    let model_dir = data.config_dir.join("models").join(&id);
+    if !model_dir.exists() {
+        return Err(format!("Model is not installed: {}", id));
+    }
+    let skel = model
+        .as_ref()
+        .and_then(|m| m.get("skel").and_then(|v| v.as_str()))
+        .map(str::to_string)
+        .or_else(|| {
+            std::fs::read_dir(&model_dir).ok().and_then(|entries| {
+                entries.flatten().find_map(|entry| {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name.ends_with(".skel") {
+                        Some(name)
+                    } else {
+                        None
+                    }
+                })
+            })
+        })
+        .ok_or_else(|| "No .skel file found".to_string())?;
+    write_local_model_config(&data.local_config_path, &model_dir, &skel)?;
+    let canonical_model_dir = model_dir
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    if let Ok(mut public) = data.public_config.lock() {
+        merge_json(
+            &mut public,
+            serde_json::json!({
+                "spine": {
+                    "assetDir": canonical_model_dir.to_string_lossy().to_string(),
+                    "assetDirConfigured": true,
+                    "skel": skel
+                }
+            }),
+        );
+    }
+    {
+        let mut asset_root = data.asset_root.write().await;
+        *asset_root = Some(canonical_model_dir.clone());
+    }
+    let origin = public
+        .get("server")
+        .and_then(|server| server.get("origin"))
+        .and_then(|origin| origin.as_str())
+        .unwrap_or("http://127.0.0.1:17388");
+    let result = ImportModelResult {
+        id: id.clone(),
+        name: model
+            .as_ref()
+            .and_then(|m| m.get("name").and_then(|v| v.as_str()))
+            .unwrap_or(&id)
+            .to_string(),
+        asset_dir: canonical_model_dir.to_string_lossy().to_string(),
+        skel: skel.clone(),
+        asset_url: format!("{}/assets/spine/{}", origin, url_encode_path_segment(&skel)),
+        local_config_path: data.local_config_path.to_string_lossy().to_string(),
+        requires_restart: false,
+    };
+    let _ = app.emit("companion:model-imported", result.clone());
+    Ok(result)
+}
+
+#[tauri::command]
+async fn check_updates() -> Result<serde_json::Value, String> {
+    let client = reqwest::Client::new();
+    let text = client
+        .get("https://api.github.com/repos/cb8010d6/spine-companion/releases/latest")
+        .header("User-Agent", "spine-companion")
+        .send()
+        .await
+        .map_err(|error| error.to_string())?
+        .error_for_status()
+        .map_err(|error| error.to_string())?
+        .text()
+        .await
+        .map_err(|error| error.to_string())?;
+    let response: serde_json::Value =
+        serde_json::from_str(&text).map_err(|error| error.to_string())?;
+    let assets = response
+        .get("assets")
+        .and_then(|value| value.as_array())
+        .map(|assets| {
+            assets
+                .iter()
+                .map(normalize_release_asset)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let recommended_asset = select_release_asset(&assets);
+    let latest_version = response
+        .get("tag_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim_start_matches('v')
+        .to_string();
+    let release_url = response
+        .get("html_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let download_url = recommended_asset
+        .as_ref()
+        .and_then(|asset| asset.get("url"))
+        .and_then(|value| value.as_str())
+        .unwrap_or(&release_url)
+        .to_string();
+    Ok(serde_json::json!({
+        "currentVersion": env!("CARGO_PKG_VERSION"),
+        "latestVersion": latest_version,
+        "updateAvailable": compare_versions(&latest_version, env!("CARGO_PKG_VERSION")) > 0,
+        "url": release_url,
+        "name": response.get("name").and_then(|v| v.as_str()).unwrap_or(""),
+        "assets": assets,
+        "recommendedAsset": recommended_asset,
+        "downloadUrl": download_url
+    }))
+}
+
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    if !url.starts_with("https://") && !url.starts_with("http://") {
+        return Err("Only http(s) URLs can be opened externally".to_string());
+    }
+    open_external(&url).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn set_auto_launch(_enabled: bool) -> Result<serde_json::Value, String> {
+    Ok(serde_json::json!({
+        "supported": false,
+        "enabled": false,
+        "reason": "Auto launch requires a platform startup plugin and is not enabled in the portable Tauri build."
+    }))
+}
+
+#[tauri::command]
+fn open_folder(app: tauri::AppHandle, p: String) -> Result<(), String> {
+    let data = app.state::<AppData>();
+    let requested = PathBuf::from(&p);
+    let allowed_root = data
+        .config_dir
+        .canonicalize()
+        .unwrap_or_else(|_| data.config_dir.clone());
+    let requested_canonical = requested
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    if !requested_canonical.starts_with(&allowed_root) {
+        return Err("Refusing to open a path outside the companion config directory".to_string());
+    }
+    open_external(&requested_canonical.to_string_lossy()).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn start_drag(window: tauri::Window) -> Result<(), String> {
     window.start_dragging().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn set_mouse_passthrough(window: tauri::Window, enabled: bool) -> Result<(), String> {
+    if enabled {
+        // Tauri does not support Electron's forward:true behavior here. If we
+        // ignore cursor events, the transparent window stops receiving the
+        // mousemove/wheel events needed to recover clickability and zoom.
+        return Ok(());
+    }
     window
-        .set_ignore_cursor_events(enabled)
+        .set_ignore_cursor_events(false)
         .map_err(|e| e.to_string())
+}
+
+fn show_companion_window(win: &WebviewWindow) {
+    let _ = win.set_ignore_cursor_events(false);
+    let _ = win.unminimize();
+    let _ = win.show();
+    let _ = win.set_always_on_top(true);
+    let _ = win.set_focus();
+}
+
+#[tauri::command]
+async fn reveal_window(window: WebviewWindow) -> Result<(), String> {
+    show_companion_window(&window);
+    Ok(())
+}
+
+#[tauri::command]
+async fn open_manager_window(app: tauri::AppHandle) -> Result<(), String> {
+    show_manager_window(&app).map(|_| ())
+}
+
+fn create_manager_window(app: &AppHandle) -> Result<WebviewWindow, String> {
+    WebviewWindowBuilder::new(app, "manager", WebviewUrl::App("manager.html".into()))
+        .title("Spine Companion - Manager")
+        .inner_size(800.0, 600.0)
+        .min_inner_size(600.0, 400.0)
+        .decorations(true)
+        .visible(false)
+        .build()
+        .map_err(|error| error.to_string())
+}
+
+fn show_manager_window(app: &AppHandle) -> Result<WebviewWindow, String> {
+    let win = if let Some(win) = app.get_webview_window("manager") {
+        win
+    } else {
+        create_manager_window(app)?
+    };
+    let _ = win.unminimize();
+    let _ = win.show();
+    let _ = win.set_focus();
+    Ok(win)
+}
+
+fn open_manager_from_tray(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window("manager") {
+        let _ = win.unminimize();
+        let _ = win.show();
+        let _ = win.set_focus();
+        return;
+    }
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        let _ = show_manager_window(&handle);
+    });
+}
+
+fn show_panel_window(app: &AppHandle) {
+    if let Some(panel) = app.get_webview_window("panel") {
+        let _ = panel.unminimize();
+        let _ = panel.show();
+        let _ = panel.set_focus();
+    }
+}
+
+fn hide_panel_window_inner(app: &AppHandle) {
+    if let Some(panel) = app.get_webview_window("panel") {
+        let _ = panel.hide();
+    }
+}
+
+fn hide_companion_window(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.hide();
+    }
+}
+
+#[tauri::command]
+fn hide_panel_window(app: tauri::AppHandle) -> Result<(), String> {
+    hide_panel_window_inner(&app);
+    Ok(())
+}
+
+#[tauri::command]
+fn quit_app(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
+fn set_tray_state(app: &AppHandle, state: &str, direction: Option<&str>) {
+    let app_handle = app.clone();
+    let state = state.to_string();
+    let direction = direction.map(str::to_string);
+    tauri::async_runtime::spawn(async move {
+        let data = app_handle.state::<AppData>();
+        let _ = set_state(
+            &data.store,
+            &data.tx,
+            SetStateInput {
+                state: Some(state),
+                direction,
+                source: Some("tray".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+    });
+}
+
+fn open_local_api(app: &AppHandle) {
+    let data = app.state::<AppData>();
+    let public = public_config_with_ui(&data);
+    let url = public
+        .get("server")
+        .and_then(|server| server.get("origin"))
+        .and_then(|origin| origin.as_str())
+        .unwrap_or("http://127.0.0.1:17388");
+    let _ = open_external(url);
+}
+
+fn open_config_dir(app: &AppHandle) {
+    let data = app.state::<AppData>();
+    let public = public_config_with_ui(&data);
+    if let Some(path) = public
+        .get("paths")
+        .and_then(|paths| paths.get("configDir"))
+        .and_then(|path| path.as_str())
+    {
+        let _ = open_external(path);
+    }
+}
+
+fn model_by_id(public_config: &serde_json::Value, id: &str) -> Option<serde_json::Value> {
+    public_config
+        .get("models")
+        .and_then(|models| models.get("catalog"))
+        .and_then(|catalog| catalog.as_array())
+        .and_then(|catalog| {
+            catalog
+                .iter()
+                .find(|model| model.get("id").and_then(|value| value.as_str()) == Some(id))
+                .cloned()
+        })
+}
+
+fn model_by_skel(public_config: &serde_json::Value, skel: &str) -> Option<serde_json::Value> {
+    public_config
+        .get("models")
+        .and_then(|models| models.get("catalog"))
+        .and_then(|catalog| catalog.as_array())
+        .and_then(|catalog| {
+            catalog
+                .iter()
+                .find(|model| model.get("skel").and_then(|value| value.as_str()) == Some(skel))
+                .cloned()
+        })
+}
+
+fn compare_versions(a: &str, b: &str) -> i8 {
+    let parse = |value: &str| {
+        value
+            .trim_start_matches('v')
+            .split('.')
+            .map(|part| part.parse::<i32>().unwrap_or(0))
+            .collect::<Vec<_>>()
+    };
+    let left = parse(a);
+    let right = parse(b);
+    let len = left.len().max(right.len());
+    for i in 0..len {
+        let diff = left.get(i).copied().unwrap_or(0) - right.get(i).copied().unwrap_or(0);
+        if diff > 0 {
+            return 1;
+        }
+        if diff < 0 {
+            return -1;
+        }
+    }
+    0
+}
+
+fn normalize_release_asset(asset: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "name": asset.get("name").and_then(|value| value.as_str()).unwrap_or(""),
+        "url": asset
+            .get("browser_download_url")
+            .or_else(|| asset.get("url"))
+            .and_then(|value| value.as_str())
+            .unwrap_or(""),
+        "size": asset.get("size").and_then(|value| value.as_u64()).unwrap_or(0),
+        "digest": asset.get("digest").and_then(|value| value.as_str()).unwrap_or("")
+    })
+}
+
+fn release_asset_score(asset: &serde_json::Value) -> i32 {
+    let name = asset
+        .get("name")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let os = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+    let is_arm = arch == "aarch64" || arch == "arm64";
+    let is_x64 = arch == "x86_64" || arch == "x64" || arch == "amd64";
+
+    match os {
+        "windows" => {
+            if !name.ends_with(".exe") && !name.ends_with(".msi") {
+                return 0;
+            }
+            let mut score = if name.ends_with(".exe") { 80 } else { 60 };
+            if is_x64 && (name.contains("x64") || name.contains("amd64")) {
+                score += 30;
+            }
+            if is_arm && (name.contains("arm64") || name.contains("aarch64")) {
+                score += 30;
+            }
+            score
+        }
+        "macos" => {
+            if !name.ends_with(".dmg") && !name.ends_with(".zip") {
+                return 0;
+            }
+            let mut score = if name.ends_with(".dmg") { 80 } else { 45 };
+            if is_arm && (name.contains("arm64") || name.contains("aarch64")) {
+                score += 35;
+            }
+            if is_x64 && (name.contains("x64") || name.contains("x86_64") || name.contains("amd64"))
+            {
+                score += 35;
+            }
+            score
+        }
+        "linux" => {
+            if !name.ends_with(".appimage") && !name.ends_with(".deb") {
+                return 0;
+            }
+            let mut score = if name.ends_with(".appimage") { 80 } else { 55 };
+            if is_x64 && (name.contains("x64") || name.contains("x86_64") || name.contains("amd64"))
+            {
+                score += 30;
+            }
+            if is_arm && (name.contains("arm64") || name.contains("aarch64")) {
+                score += 30;
+            }
+            score
+        }
+        _ => 0,
+    }
+}
+
+fn select_release_asset(assets: &[serde_json::Value]) -> Option<serde_json::Value> {
+    assets
+        .iter()
+        .filter(|asset| {
+            asset
+                .get("url")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                != ""
+        })
+        .map(|asset| (release_asset_score(asset), asset))
+        .filter(|(score, _)| *score > 0)
+        .max_by(|(left_score, left), (right_score, right)| {
+            left_score.cmp(right_score).then_with(|| {
+                right
+                    .get("name")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("")
+                    .cmp(
+                        left.get("name")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or(""),
+                    )
+            })
+        })
+        .map(|(_, asset)| asset.clone())
+}
+
+fn write_local_model_config(path: &Path, asset_dir: &Path, skel: &str) -> Result<(), String> {
+    let mut config = read_json_if_exists(path).unwrap_or_else(|| serde_json::json!({}));
+    merge_json(
+        &mut config,
+        serde_json::json!({
+            "spine": {
+                "assetDir": asset_dir.to_string_lossy().to_string(),
+                "skel": skel
+            }
+        }),
+    );
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let text = serde_json::to_string_pretty(&config).map_err(|error| error.to_string())?;
+    std::fs::write(path, format!("{}\n", text)).map_err(|error| error.to_string())
+}
+
+fn url_encode_path_segment(value: &str) -> String {
+    value
+        .bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (byte as char).to_string()
+            }
+            _ => format!("%{:02X}", byte),
+        })
+        .collect::<Vec<_>>()
+        .join("")
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -274,81 +1446,269 @@ pub fn run() {
     let reminders_for_server = reminders.clone();
     let host_for_server = runtime_config.host.clone();
     let port_for_server = runtime_config.port;
-    let asset_root_for_server = runtime_config.asset_root.clone();
+    let asset_root_store: server::AssetRootStore = Arc::new(tokio::sync::RwLock::new(
+        runtime_config
+            .asset_root
+            .clone()
+            .and_then(|path| path.canonicalize().ok()),
+    ));
+    let asset_root_for_server = asset_root_store.clone();
+    let history_store: Arc<Mutex<Vec<CompanionState>>> =
+        Arc::new(Mutex::new(vec![store.blocking_read().clone()]));
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(win) = app.get_webview_window("main") {
+                show_companion_window(&win);
+            }
+        }))
         .manage(AppData {
             store: store.clone(),
             tx: tx.clone(),
             reminders: reminders.clone(),
-            public_config: runtime_config.public.clone(),
+            public_config: Arc::new(Mutex::new(runtime_config.public.clone())),
+            ui_settings: Arc::new(Mutex::new(runtime_config.ui_settings.clone())),
+            config_dir: runtime_config.config_dir.clone(),
+            local_config_path: runtime_config.local_config_path.clone(),
+            asset_root: asset_root_store.clone(),
+            history: history_store.clone(),
         })
         .setup(move |app| {
-            // Start the local API server on a background task
-            tauri::async_runtime::spawn(async move {
-                if let Err(e) =
-                    server::start_api_server(
-                        store_for_server,
-                        tx_for_server,
-                        reminders_for_server,
-                        asset_root_for_server,
-                        &host_for_server,
-                        port_for_server,
-                    )
-                        .await
-                {
-                    eprintln!("Failed to start API server: {}", e);
-                }
-            });
+            // Bind the local API server before the hidden window is revealed.
+            // The renderer loads Spine assets from this server on startup, so
+            // racing the first PIXI load against server startup can leave the
+            // transparent window visible with no model.
+            if let Err(e) = tauri::async_runtime::block_on(server::start_api_server(
+                store_for_server,
+                tx_for_server,
+                reminders_for_server,
+                asset_root_for_server,
+                &host_for_server,
+                port_for_server,
+            )) {
+                eprintln!("Failed to start API server: {}", e);
+            }
 
             let app_handle = app.handle().clone();
             let mut rx = tx.subscribe();
             tauri::async_runtime::spawn(async move {
                 while let Ok(state) = rx.recv().await {
+                    let data = app_handle.state::<AppData>();
+                    if let Ok(mut history) = data.history.lock() {
+                        history.push(state.clone());
+                        while history.len() > 50 {
+                            history.remove(0);
+                        }
+                    }
                     let _ = app_handle.emit("companion:state", state);
                 }
             });
 
-            // Build tray menu
-            let show_item = MenuItem::with_id(app, "show", "Show Window", true, None::<&str>)?;
+            // Build minimal tray menu
+            let show_item =
+                MenuItem::with_id(app, "show_companion", "Show Companion", true, None::<&str>)?;
+            let hide_item =
+                MenuItem::with_id(app, "hide_companion", "Hide Companion", true, None::<&str>)?;
+            let panel_item =
+                MenuItem::with_id(app, "open_panel", "Open Quick Panel", true, None::<&str>)?;
+            let manager_item =
+                MenuItem::with_id(app, "open_manager", "Open Manager", true, None::<&str>)?;
+            let bubble_item = MenuItem::with_id(
+                app,
+                "toggle_bubble",
+                "Toggle Progress Bubble",
+                true,
+                None::<&str>,
+            )?;
+            let hud_item =
+                MenuItem::with_id(app, "toggle_hud", "Toggle Status Panel", true, None::<&str>)?;
+            let diagnostics_item =
+                MenuItem::with_id(app, "diagnostics", "Diagnostics", true, None::<&str>)?;
+            let config_item = MenuItem::with_id(
+                app,
+                "open_config_dir",
+                "Open Config Folder",
+                true,
+                None::<&str>,
+            )?;
+            let api_item =
+                MenuItem::with_id(app, "open_local_api", "Open Local API", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let sep = PredefinedMenuItem::separator(app)?;
-            let menu = Menu::with_items(app, &[&show_item, &sep, &quit_item])?;
+            let state_idle = MenuItem::with_id(app, "state_idle", "Idle", true, None::<&str>)?;
+            let state_working =
+                MenuItem::with_id(app, "state_working", "Working", true, None::<&str>)?;
+            let state_reviewing =
+                MenuItem::with_id(app, "state_reviewing", "Reviewing", true, None::<&str>)?;
+            let state_running_left = MenuItem::with_id(
+                app,
+                "state_running_left",
+                "Running Left",
+                true,
+                None::<&str>,
+            )?;
+            let state_running_right = MenuItem::with_id(
+                app,
+                "state_running_right",
+                "Running Right",
+                true,
+                None::<&str>,
+            )?;
+            let state_success =
+                MenuItem::with_id(app, "state_success", "Success", true, None::<&str>)?;
+            let state_failed =
+                MenuItem::with_id(app, "state_failed", "Failed", true, None::<&str>)?;
+            let state_waiting =
+                MenuItem::with_id(app, "state_waiting", "Waiting", true, None::<&str>)?;
+            let state_sleeping =
+                MenuItem::with_id(app, "state_sleeping", "Sleeping", true, None::<&str>)?;
+            let state_reminder =
+                MenuItem::with_id(app, "state_reminder", "Reminder", true, None::<&str>)?;
+            let state_menu = Submenu::with_items(
+                app,
+                "Set State",
+                true,
+                &[
+                    &state_idle,
+                    &state_working,
+                    &state_reviewing,
+                    &state_running_left,
+                    &state_running_right,
+                    &state_success,
+                    &state_failed,
+                    &state_waiting,
+                    &state_sleeping,
+                    &state_reminder,
+                ],
+            )?;
+            let sep1 = PredefinedMenuItem::separator(app)?;
+            let sep2 = PredefinedMenuItem::separator(app)?;
+            let sep3 = PredefinedMenuItem::separator(app)?;
+            let sep4 = PredefinedMenuItem::separator(app)?;
 
-            TrayIconBuilder::new()
+            let menu = Menu::with_items(
+                app,
+                &[
+                    &show_item,
+                    &hide_item,
+                    &panel_item,
+                    &manager_item,
+                    &sep1,
+                    &bubble_item,
+                    &hud_item,
+                    &sep2,
+                    &state_menu,
+                    &sep3,
+                    &diagnostics_item,
+                    &config_item,
+                    &api_item,
+                    &sep4,
+                    &quit_item,
+                ],
+            )?;
+
+            let mut tray_builder = TrayIconBuilder::new();
+            if let Some(icon) = app.default_window_icon().cloned() {
+                tray_builder = tray_builder.icon(icon).icon_as_template(true);
+            }
+            tray_builder
                 .tooltip("Spine Companion")
                 .menu(&menu)
                 .on_menu_event(move |app, event| match event.id.as_ref() {
-                    "show" => {
+                    "show_companion" => {
                         if let Some(win) = app.get_webview_window("main") {
-                            let _ = win.show();
-                            let _ = win.set_focus();
+                            show_companion_window(&win);
                         }
                     }
+                    "hide_companion" => hide_companion_window(app),
+                    "open_panel" => show_panel_window(app),
+                    "open_manager" => open_manager_from_tray(app),
+                    "toggle_bubble" => {
+                        let data = app.state::<AppData>();
+                        let visible = current_ui_settings(&data).bubble_visible;
+                        let _ = update_ui_settings(
+                            app,
+                            UiSettingsPatch {
+                                bubble_visible: Some(!visible),
+                                ..Default::default()
+                            },
+                        );
+                    }
+                    "toggle_hud" => {
+                        let data = app.state::<AppData>();
+                        let visible = current_ui_settings(&data).hud_visible;
+                        let _ = update_ui_settings(
+                            app,
+                            UiSettingsPatch {
+                                hud_visible: Some(!visible),
+                                ..Default::default()
+                            },
+                        );
+                    }
+                    "state_idle" => set_tray_state(app, "idle", None),
+                    "state_working" => set_tray_state(app, "working", None),
+                    "state_reviewing" => set_tray_state(app, "reviewing", None),
+                    "state_running_left" => set_tray_state(app, "running", Some("left")),
+                    "state_running_right" => set_tray_state(app, "running", Some("right")),
+                    "state_success" => set_tray_state(app, "success", None),
+                    "state_failed" => set_tray_state(app, "failed", None),
+                    "state_waiting" => set_tray_state(app, "waiting", None),
+                    "state_sleeping" => set_tray_state(app, "sleeping", None),
+                    "state_reminder" => set_tray_state(app, "reminder", None),
+                    "diagnostics" => open_manager_from_tray(app),
+                    "open_config_dir" => open_config_dir(app),
+                    "open_local_api" => open_local_api(app),
                     "quit" => app.exit(0),
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    } = event
-                    {
-                        let app = tray.app_handle();
-                        if let Some(win) = app.get_webview_window("main") {
-                            let _ = win.show();
-                            let _ = win.set_focus();
+                    let app = tray.app_handle();
+                    match event {
+                        TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            rect,
+                            ..
+                        } => {
+                            if let Some(panel) = app.get_webview_window("panel") {
+                                if panel.is_visible().unwrap_or(false) {
+                                    let _ = panel.hide();
+                                    return;
+                                }
+                                let panel_size = panel
+                                    .outer_size()
+                                    .unwrap_or(tauri::PhysicalSize::new(320, 480));
+
+                                // Try to calculate position slightly offset from the tray icon.
+                                let (rect_x, rect_y) = match rect.position {
+                                    tauri::Position::Physical(p) => (p.x, p.y),
+                                    tauri::Position::Logical(p) => (p.x as i32, p.y as i32),
+                                };
+                                let (_rect_w, rect_h) = match rect.size {
+                                    tauri::Size::Physical(s) => (s.width as i32, s.height as i32),
+                                    tauri::Size::Logical(s) => (s.width as i32, s.height as i32),
+                                };
+
+                                let x = rect_x - (panel_size.width as i32) / 2;
+                                let mut y = rect_y - (panel_size.height as i32) - 10;
+                                if y < 0 {
+                                    y = rect_y + rect_h + 10;
+                                }
+
+                                let _ = panel.set_position(tauri::PhysicalPosition::new(x, y));
+                                let _ = panel.unminimize();
+                                let _ = panel.show();
+                                let _ = panel.set_focus();
+                            }
                         }
+                        TrayIconEvent::Click {
+                            button: MouseButton::Right,
+                            button_state: MouseButtonState::Down,
+                            ..
+                        } => hide_panel_window_inner(app),
+                        _ => {}
                     }
                 })
                 .build(app)?;
-
-            // Show main window after setup
-            if let Some(win) = app.get_webview_window("main") {
-                let _ = win.show();
-            }
 
             Ok(())
         })
@@ -357,9 +1717,47 @@ pub fn run() {
             get_state,
             set_companion_state,
             create_reminder_cmd,
+            set_ui_settings,
+            emit_scale_event,
+            import_model,
+            save_settings,
+            get_diagnostics,
+            get_installed_models,
+            get_history,
+            get_current_model,
+            set_active_model,
+            check_updates,
+            open_url,
+            set_auto_launch,
+            remove_model,
+            open_folder,
             start_drag,
             set_mouse_passthrough,
+            reveal_window,
+            open_manager_window,
+            hide_panel_window,
+            quit_app,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encodes_spine_asset_file_names_for_urls() {
+        assert_eq!(
+            url_encode_path_segment("build_char_1001_amiya2_sale#16.skel"),
+            "build_char_1001_amiya2_sale%2316.skel"
+        );
+    }
+
+    #[test]
+    fn compares_semver_like_versions() {
+        assert_eq!(compare_versions("0.2.2", "0.2.1"), 1);
+        assert_eq!(compare_versions("v0.2.1", "0.2.1"), 0);
+        assert_eq!(compare_versions("0.1.9", "0.2.0"), -1);
+    }
 }
