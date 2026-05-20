@@ -1,6 +1,6 @@
 const path = require("node:path");
 const fs = require("node:fs");
-const { Menu, Tray, nativeImage, app, shell, BrowserWindow, ipcMain, Notification, globalShortcut, dialog } = require("electron");
+const { Menu, Tray, nativeImage, app, shell, BrowserWindow, ipcMain, Notification, globalShortcut, dialog, screen } = require("electron");
 const os = require("os");
 const { loadConfig, getPublicConfig, readJsonIfExists } = require("./config.cjs");
 const { createCompanionServer } = require("./state-server.cjs");
@@ -8,6 +8,7 @@ const { applyUiSettingsPatch: applySharedUiPatch, normalizeUiSettings } = requir
 const { mcpConfigCandidates, detectMcpReferences } = require("../shared/diagnostics-paths.cjs");
 const { trayMenuModel } = require("../shared/tray-menu-model.cjs");
 const { checkGitHubRelease } = require("../shared/update-checker.cjs");
+const { validateSpineAssetDir, validateSpineAssetSelection } = require("../shared/spine-assets.cjs");
 const pkg = require("../../package.json");
 
 const isDev = !app.isPackaged;
@@ -28,11 +29,13 @@ let uiSettings = {
   bubbleShadow: true,
   bubbleBackground: "solid",
   bubbleHoldMs: 8000,
-  dragMode: "compatible"
+  dragMode: "compatible",
+  autoRevealOnMcp: true
 };
 let alwaysOnTop = true;
 let isQuitting = false;
 let panelWindow = null;
+let windowBoundsTimer = null;
 
 function rendererUrl() {
   if (isDev) return process.env.VITE_DEV_SERVER_URL || "http://127.0.0.1:17389";
@@ -54,6 +57,33 @@ function applyUiSettingsPatch(patch = {}) {
   uiSettings = applySharedUiPatch(uiSettings, patch);
   updateUiSettings();
   return uiSettings;
+}
+
+function isFiniteNumber(value) {
+  return Number.isFinite(Number(value));
+}
+
+function intersectsWorkArea(bounds, workArea) {
+  const minVisible = 40;
+  const left = Math.max(bounds.x, workArea.x);
+  const right = Math.min(bounds.x + bounds.width, workArea.x + workArea.width);
+  const top = Math.max(bounds.y, workArea.y);
+  const bottom = Math.min(bounds.y + bounds.height, workArea.y + workArea.height);
+  return right - left >= minVisible && bottom - top >= minVisible;
+}
+
+function initialWindowBounds(config) {
+  const bounds = {
+    width: Number(config.window.width || 360),
+    height: Number(config.window.height || 460)
+  };
+  if (isFiniteNumber(config.window.x) && isFiniteNumber(config.window.y)) {
+    const saved = { ...bounds, x: Math.round(Number(config.window.x)), y: Math.round(Number(config.window.y)) };
+    if (screen.getAllDisplays().some((display) => intersectsWorkArea(saved, display.workArea))) {
+      return saved;
+    }
+  }
+  return bounds;
 }
 
 function mergeDeepMutable(base, patch) {
@@ -85,6 +115,7 @@ async function importModel(input = {}) {
     const bytes = Buffer.from(await response.arrayBuffer());
     fs.writeFileSync(path.join(modelDir, file.name), bytes);
   }
+  validateSpineAssetDir(modelDir, model.skel);
   const current = readJsonIfExists(localConfigPath);
   mergeDeepMutable(current, {
     spine: {
@@ -116,51 +147,55 @@ async function importModel(input = {}) {
 }
 
 async function importLocalModel() {
-  const result = await dialog.showOpenDialog({
-    title: "Import local Spine model",
-    properties: ["openFile"],
-    filters: [
-      { name: "Spine skeleton", extensions: ["skel"] },
-      { name: "All files", extensions: ["*"] }
-    ]
-  });
-  if (result.canceled || !result.filePaths?.[0]) return { canceled: true };
+  try {
+    const result = await dialog.showOpenDialog({
+      title: "Import local Spine model",
+      properties: ["openFile"],
+      filters: [
+        { name: "Spine skeleton", extensions: ["skel"] },
+        { name: "All files", extensions: ["*"] }
+      ]
+    });
+    if (result.canceled || !result.filePaths?.[0]) return { canceled: true };
 
-  const skelPath = result.filePaths[0];
-  const assetDir = path.dirname(skelPath);
-  const skel = path.basename(skelPath);
-  const localConfigPath = publicConfigCache.paths?.localConfigPath || path.join(app.getPath("appData"), "spine-companion", "companion.local.json");
-  await saveSettings({
-    spine: {
+    const { assetDir, skel } = validateSpineAssetSelection(result.filePaths[0]);
+    const localConfigPath = publicConfigCache.paths?.localConfigPath || path.join(app.getPath("appData"), "spine-companion", "companion.local.json");
+    await saveSettings({
+      spine: {
+        assetDir,
+        skel
+      }
+    }, { notify: false });
+    serverRuntime?.setAssetRoot(assetDir);
+    const origin = publicConfigCache?.server?.origin || `http://${publicConfigCache?.server?.host || "127.0.0.1"}:17388`;
+    mergeDeepMutable(publicConfigCache, {
+      spine: {
+        assetDir,
+        assetDirConfigured: true,
+        skel,
+        assetUrl: `${origin}/assets/spine/${encodeURIComponent(skel)}`
+      }
+    });
+    const payload = {
+      id: `local-${path.basename(assetDir)}`,
+      name: skel,
       assetDir,
-      skel
-    }
-  });
-  serverRuntime?.setAssetRoot(assetDir);
-  const origin = publicConfigCache?.server?.origin || `http://${publicConfigCache?.server?.host || "127.0.0.1"}:17388`;
-  mergeDeepMutable(publicConfigCache, {
-    spine: {
-      assetDir,
-      assetDirConfigured: true,
       skel,
-      assetUrl: `${origin}/assets/spine/${encodeURIComponent(skel)}`
-    }
-  });
-  const payload = {
-    id: `local-${path.basename(assetDir)}`,
-    name: skel,
-    assetDir,
-    skel,
-    assetUrl: `${origin}/assets/spine/${encodeURIComponent(skel)}`,
-    localConfigPath,
-    requiresRestart: false
-  };
-  sendToRenderer("companion:model-imported", payload);
-  sendToRenderer("companion:config-changed", publicConfigCache);
-  return payload;
+      assetUrl: `${origin}/assets/spine/${encodeURIComponent(skel)}`,
+      localConfigPath,
+      requiresRestart: false
+    };
+    sendToRenderer("companion:model-imported", payload);
+    sendToRenderer("companion:config-changed", publicConfigCache);
+    return payload;
+  } catch (error) {
+    dialog.showErrorBox("Unable to import Spine model", error.message || String(error));
+    throw error;
+  }
 }
 
-async function saveSettings(patch) {
+async function saveSettings(patch, options = {}) {
+  const notify = options.notify !== false;
   const localConfigPath = publicConfigCache.paths?.localConfigPath || path.join(app.getPath("appData"), "spine-companion", "companion.local.json");
   const current = readJsonIfExists(localConfigPath);
   mergeDeepMutable(current, patch);
@@ -169,7 +204,7 @@ async function saveSettings(patch) {
 
   mergeDeepMutable(publicConfigCache, patch);
   if (patch.ui) updateUiSettingsPatch(patch.ui);
-  sendToRenderer("companion:config-changed", publicConfigCache);
+  if (notify) sendToRenderer("companion:config-changed", publicConfigCache);
   return true;
 }
 
@@ -255,9 +290,18 @@ async function setActiveModel(id) {
   const files = fs.readdirSync(installed.dir);
   const skel = model.skel || files.find((file) => file.endsWith(".skel"));
   if (!skel) throw new Error(`No .skel file found for ${id}`);
-  await saveSettings({ spine: { assetDir: installed.dir, skel } });
+  validateSpineAssetDir(installed.dir, skel);
+  await saveSettings({ spine: { assetDir: installed.dir, skel } }, { notify: false });
   serverRuntime?.setAssetRoot(installed.dir);
   const origin = publicConfigCache?.server?.origin || "http://127.0.0.1:17388";
+  mergeDeepMutable(publicConfigCache, {
+    spine: {
+      assetDir: installed.dir,
+      assetDirConfigured: true,
+      skel,
+      assetUrl: `${origin}/assets/spine/${encodeURIComponent(skel)}`
+    }
+  });
   const result = {
     id,
     name: model.name || id,
@@ -268,6 +312,7 @@ async function setActiveModel(id) {
     requiresRestart: false
   };
   sendToRenderer("companion:model-imported", result);
+  sendToRenderer("companion:config-changed", publicConfigCache);
   return result;
 }
 
@@ -380,7 +425,7 @@ function showCompanionWindowInactive() {
 }
 
 function shouldRevealForState(state = {}) {
-  return state.source === "codex-mcp" && state.state && state.state !== "idle";
+  return uiSettings.autoRevealOnMcp !== false && state.source === "codex-mcp" && state.state && state.state !== "idle";
 }
 
 function hideCompanionWindow() {
@@ -505,6 +550,25 @@ function updateTrayMenu() {
   if (tray) tray.setContextMenu(buildTrayMenu());
 }
 
+function saveMainWindowBoundsSoon(delayMs = 400) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  window.clearTimeout(windowBoundsTimer);
+  windowBoundsTimer = setTimeout(() => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    const bounds = mainWindow.getBounds();
+    saveSettings({
+      window: {
+        x: bounds.x,
+        y: bounds.y,
+        width: bounds.width,
+        height: bounds.height
+      }
+    }, { notify: false }).catch((error) => {
+      console.warn("[spine-companion] Unable to save window bounds", error);
+    });
+  }, delayMs);
+}
+
 function createTray() {
   if (tray) return;
   tray = new Tray(createTrayIcon());
@@ -514,9 +578,9 @@ function createTray() {
 }
 
 async function createWindow(config) {
+  const bounds = initialWindowBounds(config);
   mainWindow = new BrowserWindow({
-    width: Number(config.window.width || 360),
-    height: Number(config.window.height || 460),
+    ...bounds,
     minWidth: 260,
     minHeight: 320,
     frame: false,
@@ -538,6 +602,8 @@ async function createWindow(config) {
   alwaysOnTop = config.window.alwaysOnTop !== false;
   mainWindow.setAlwaysOnTop(alwaysOnTop, "floating");
   mainWindow.once("ready-to-show", () => mainWindow.show());
+  mainWindow.on("move", () => saveMainWindowBoundsSoon());
+  mainWindow.on("resize", () => saveMainWindowBoundsSoon());
   mainWindow.on("close", (event) => {
     if (isQuitting) return;
     event.preventDefault();
@@ -636,6 +702,7 @@ function registerIpc(config) {
       const dy = Math.round(Number(pendingDragPoint.screenY) - dragState.startY);
       dragState.win.setPosition(dragState.bounds.x + dx, dragState.bounds.y + dy, false);
     }
+    saveMainWindowBoundsSoon(50);
     dragState = null;
     pendingDragPoint = null;
   });
@@ -717,6 +784,7 @@ app.on("activate", () => {
 
 app.on("before-quit", () => {
   isQuitting = true;
+  if (windowBoundsTimer) clearTimeout(windowBoundsTimer);
   globalShortcut.unregisterAll();
   if (serverRuntime) serverRuntime.close();
 });

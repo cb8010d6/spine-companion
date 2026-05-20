@@ -34,6 +34,7 @@ struct UiSettings {
     bubble_background: String,
     bubble_hold_ms: u64,
     drag_mode: String,
+    auto_reveal_on_mcp: bool,
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -45,6 +46,7 @@ struct UiSettingsPatch {
     bubble_background: Option<String>,
     bubble_hold_ms: Option<u64>,
     drag_mode: Option<String>,
+    auto_reveal_on_mcp: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -101,7 +103,8 @@ fn fallback_config() -> serde_json::Value {
             "bubbleShadow": true,
             "bubbleBackground": "solid",
             "bubbleHoldMs": 8000,
-            "dragMode": "compatible"
+            "dragMode": "compatible",
+            "autoRevealOnMcp": true
         },
         "models": {
             "catalog": [
@@ -247,6 +250,42 @@ fn resolve_asset_dir(root: &Path, value: &str) -> String {
     }
 }
 
+fn validate_spine_asset_dir(asset_dir: &Path, skel: &str) -> Result<(), String> {
+    let skel_path = asset_dir.join(skel);
+    if skel.is_empty()
+        || skel_path
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|value| value.eq_ignore_ascii_case("skel"))
+            != Some(true)
+    {
+        return Err("Choose a Spine .skel file.".to_string());
+    }
+    if !skel_path.is_file() {
+        return Err(format!(
+            "Spine skeleton file does not exist: {}",
+            skel_path.to_string_lossy()
+        ));
+    }
+    let mut has_atlas = false;
+    let mut has_png = false;
+    for entry in std::fs::read_dir(asset_dir).map_err(|error| error.to_string())? {
+        let path = entry.map_err(|error| error.to_string())?.path();
+        if let Some(ext) = path.extension().and_then(|value| value.to_str()) {
+            if ext.eq_ignore_ascii_case("atlas") {
+                has_atlas = true;
+            }
+            if ext.eq_ignore_ascii_case("png") {
+                has_png = true;
+            }
+        }
+    }
+    if !has_atlas || !has_png {
+        return Err("The selected .skel folder must also contain at least one .atlas file and one .png texture.".to_string());
+    }
+    Ok(())
+}
+
 fn ui_settings_from_config(config: &serde_json::Value) -> UiSettings {
     let background = string_at(config, &["ui", "bubbleBackground"])
         .unwrap_or("solid")
@@ -261,6 +300,7 @@ fn ui_settings_from_config(config: &serde_json::Value) -> UiSettings {
         bubble_background: normalize_bubble_background(&background),
         bubble_hold_ms: u64_at(config, &["ui", "bubbleHoldMs"], 8000),
         drag_mode: normalize_drag_mode(&drag_mode),
+        auto_reveal_on_mcp: bool_at(config, &["ui", "autoRevealOnMcp"], true),
     }
 }
 
@@ -297,6 +337,9 @@ fn apply_ui_patch(settings: &mut UiSettings, patch: UiSettingsPatch) {
     }
     if let Some(value) = patch.drag_mode {
         settings.drag_mode = normalize_drag_mode(&value);
+    }
+    if let Some(value) = patch.auto_reveal_on_mcp {
+        settings.auto_reveal_on_mcp = value;
     }
 }
 
@@ -629,6 +672,7 @@ async fn import_model(
             .await
             .map_err(|error| error.to_string())?;
     }
+    validate_spine_asset_dir(&model_dir, &skel)?;
 
     write_local_model_config(&data.local_config_path, &model_dir, &skel)?;
     let canonical_model_dir = model_dir
@@ -668,6 +712,7 @@ async fn import_model(
     };
 
     let _ = app.emit("companion:model-imported", result.clone());
+    let _ = app.emit("companion:config-changed", public_config_with_ui(&data));
 
     Ok(result)
 }
@@ -979,6 +1024,7 @@ async fn set_active_model(
             })
         })
         .ok_or_else(|| "No .skel file found".to_string())?;
+    validate_spine_asset_dir(&model_dir, &skel)?;
     write_local_model_config(&data.local_config_path, &model_dir, &skel)?;
     let canonical_model_dir = model_dir
         .canonicalize()
@@ -1018,6 +1064,7 @@ async fn set_active_model(
         requires_restart: false,
     };
     let _ = app.emit("companion:model-imported", result.clone());
+    let _ = app.emit("companion:config-changed", public_config_with_ui(&data));
     Ok(result)
 }
 
@@ -1135,6 +1182,10 @@ fn show_companion_window(win: &WebviewWindow) {
     let _ = win.show();
     let _ = win.set_always_on_top(true);
     let _ = win.set_focus();
+}
+
+fn should_reveal_for_state(settings: &UiSettings, state: &CompanionState) -> bool {
+    settings.auto_reveal_on_mcp && state.source == "codex-mcp" && state.state != "idle"
 }
 
 #[tauri::command]
@@ -1498,6 +1549,11 @@ pub fn run() {
                         history.push(state.clone());
                         while history.len() > 50 {
                             history.remove(0);
+                        }
+                    }
+                    if should_reveal_for_state(&current_ui_settings(&data), &state) {
+                        if let Some(win) = app_handle.get_webview_window("main") {
+                            show_companion_window(&win);
                         }
                     }
                     let _ = app_handle.emit("companion:state", state);

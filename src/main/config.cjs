@@ -36,6 +36,8 @@ const fallbackConfig = {
   window: {
     width: 360,
     height: 460,
+    x: null,
+    y: null,
     alwaysOnTop: true,
     transparent: true
   },
@@ -69,7 +71,8 @@ const fallbackConfig = {
     bubbleShadow: true,
     bubbleBackground: "solid",
     bubbleHoldMs: 8000,
-    dragMode: "compatible"
+    dragMode: "compatible",
+    autoRevealOnMcp: true
   },
   models: {
     catalog: [

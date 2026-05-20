@@ -194,7 +194,8 @@ async fn get_spine_asset(
                 .unwrap_or(false)
             {
                 let text = String::from_utf8_lossy(&bytes);
-                return (StatusCode::OK, headers, rewrite_atlas_texture_urls(&text)).into_response();
+                return (StatusCode::OK, headers, rewrite_atlas_texture_urls(&text))
+                    .into_response();
             }
             (StatusCode::OK, headers, bytes).into_response()
         }

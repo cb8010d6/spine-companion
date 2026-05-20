@@ -204,11 +204,19 @@ async function importLocalModel() {
     setStatus("Local file import is not available in this runtime.");
     return;
   }
-  const result = await window.companion.importLocalModel();
-  if (result?.canceled) return;
-  await refreshConfig();
-  setStatus(`Loaded local model: ${result.skel || result.name}`);
-  renderView(activeView);
+  try {
+    const result = await window.companion.importLocalModel();
+    if (result?.canceled) return;
+    await refreshConfig();
+    setStatus(`Loaded local model: ${result.skel || result.name}`);
+    renderView(activeView);
+  } catch (error) {
+    const message = error.message || "Local import failed";
+    setStatus(message);
+    showModal("Import failed", message, [
+      h("button", { class: "btn", type: "button", onClick: closeModal }, "Close")
+    ]);
+  }
 }
 
 function installedView() {
@@ -294,6 +302,7 @@ function settingsView() {
         h("h3", {}, "Interface"),
         check("Show Status Panel", ui.hudVisible !== false, (checked) => saveUi({ hudVisible: checked })),
         check("Show Progress Bubble", ui.bubbleVisible !== false, (checked) => saveUi({ bubbleVisible: checked })),
+        check("Auto-show on Codex MCP", ui.autoRevealOnMcp !== false, (checked) => saveUi({ autoRevealOnMcp: checked })),
         check("Bubble shadow", ui.bubbleShadow !== false, (checked) => saveUi({ bubbleShadow: checked })),
         field("Bubble Theme", h("select", { class: "select", value: ui.bubbleBackground || "solid", onChange: (e) => saveUi({ bubbleBackground: e.target.value }) },
           ["solid", "soft", "clear", "light"].map((value) => h("option", { value, selected: (ui.bubbleBackground || "solid") === value }, value))

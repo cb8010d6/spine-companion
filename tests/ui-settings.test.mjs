@@ -15,11 +15,13 @@ describe("ui-settings", () => {
     const settings = normalizeUiSettings({
       hudVisible: false,
       bubbleVisible: false,
-      bubbleShadow: false
+      bubbleShadow: false,
+      autoRevealOnMcp: false
     });
     expect(settings.hudVisible).toBe(false);
     expect(settings.bubbleVisible).toBe(false);
     expect(settings.bubbleShadow).toBe(false);
+    expect(settings.autoRevealOnMcp).toBe(false);
   });
 
   it("clamps bubble hold time", () => {
@@ -48,7 +50,13 @@ describe("ui-settings", () => {
       hudVisible: true,
       bubbleVisible: false,
       bubbleBackground: "light",
-      dragMode: "smooth"
+      dragMode: "smooth",
+      autoRevealOnMcp: true
     });
+  });
+
+  it("applies the MCP auto reveal flag", () => {
+    const next = applyUiSettingsPatch(DEFAULT_UI_SETTINGS, { autoRevealOnMcp: false });
+    expect(next.autoRevealOnMcp).toBe(false);
   });
 });

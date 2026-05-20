@@ -254,6 +254,12 @@ function createCompanionServer(config, publicConfig) {
     },
     close() {
       for (const client of wss.clients) client.close();
+      for (const res of sseClients) {
+        try {
+          res.end();
+        } catch {}
+      }
+      sseClients.clear();
       server.close();
     },
     setAssetRoot(nextAssetRoot) {

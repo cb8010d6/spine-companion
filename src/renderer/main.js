@@ -360,6 +360,17 @@ async function loadPlayer(config) {
   setMousePassthrough(true);
 }
 
+async function hotReloadPlayer(nextConfig, statusText = "") {
+  try {
+    await loadPlayer(nextConfig);
+    if (statusText && modelStatus) modelStatus.textContent = statusText;
+  } catch (error) {
+    showEmptyState(error, nextConfig);
+    showErrorBoundary(error, nextConfig);
+    if (modelStatus) modelStatus.textContent = error.message;
+  }
+}
+
 function wireDragging() {
   shell.addEventListener("pointerdown", (event) => {
     if (event.button !== 0 || event.target.closest(".hud")) return;
@@ -484,7 +495,7 @@ async function boot() {
         assetDirConfigured: true
       }
     };
-    await loadPlayer(runtimeConfig);
+    await hotReloadPlayer(runtimeConfig, `Imported and loaded from ${result.assetDir}.`);
   });
 
   window.companion?.onConfigChanged?.(async (config) => {
@@ -496,7 +507,7 @@ async function boot() {
         ...(config.spine || {})
       }
     };
-    await loadPlayer(runtimeConfig);
+    await hotReloadPlayer(runtimeConfig);
   });
 
   settingsToggle.addEventListener("click", () => {
