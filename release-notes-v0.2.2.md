@@ -10,6 +10,9 @@ Hotfix for the v0.2.1 Tauri package.
   unencoded `#` filenames to Pixi.
 - Regenerate the public Tauri `assetUrl` from the current `skel` every time
   config is returned, preventing stale unencoded URLs after hot reloads.
+- Rewrites `.atlas` texture page filenames when served locally, so entries
+  such as `build_char_1001_amiya2_sale#16.png` load as `%2316.png` without
+  modifying the local asset files.
 - Kept the error/onboarding overlays interactive while the transparent
   companion window is visible, so `Retry` and `Open Manager` remain clickable.
 - Kept `assetDir` in the public runtime config so Manager can reliably detect

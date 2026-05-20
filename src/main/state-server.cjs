@@ -82,6 +82,19 @@ function fileContentType(file) {
   return "application/octet-stream";
 }
 
+function encodeAtlasTextureLine(line) {
+  const trimmed = String(line || "").trim();
+  if (!/^[^\s].+\.(png|jpe?g|webp)$/i.test(trimmed)) return line;
+  return encodeURIComponent(trimmed);
+}
+
+function rewriteAtlasTextureUrls(text) {
+  return String(text || "")
+    .split(/\r?\n/)
+    .map(encodeAtlasTextureLine)
+    .join("\n");
+}
+
 function isInside(root, file) {
   const relative = path.relative(root, file);
   return relative && !relative.startsWith("..") && !path.isAbsolute(relative);
@@ -182,6 +195,10 @@ function createCompanionServer(config, publicConfig) {
           "Access-Control-Allow-Origin": corsOrigin(req),
           "Content-Type": fileContentType(file)
         });
+        if (path.extname(file).toLowerCase() === ".atlas") {
+          res.end(rewriteAtlasTextureUrls(fs.readFileSync(file, "utf8")));
+          return;
+        }
         fs.createReadStream(file).pipe(res);
         return;
       }
@@ -247,5 +264,6 @@ function createCompanionServer(config, publicConfig) {
 
 module.exports = {
   createCompanionServer,
-  normalizeStateId
+  normalizeStateId,
+  rewriteAtlasTextureUrls
 };

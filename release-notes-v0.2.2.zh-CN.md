@@ -9,6 +9,9 @@
 - 新增 renderer 侧 URL 规范化，避免旧运行时配置把未编码的 `#` 文件名传给 Pixi。
 - Tauri 每次返回配置时都会基于当前 `skel` 重新生成 public `assetUrl`，
   避免热更新后残留旧的未编码 URL。
+- 本地服务返回 `.atlas` 时会重写贴图页文件名，例如
+  `build_char_1001_amiya2_sale#16.png` 会以 `%2316.png` 加载，
+  不修改本地素材文件本体。
 - 让错误弹窗、引导弹窗和设置区域在透明窗口里保持可点击，`Retry` 和
   `Open Manager` 不再被鼠标穿透影响。
 - 在 public runtime config 中保留 `assetDir`，Manager 可以稳定识别当前激活模型。

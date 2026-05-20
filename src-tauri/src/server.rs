@@ -124,6 +124,42 @@ fn file_content_type(file: &FsPath) -> &'static str {
     }
 }
 
+fn encode_url_path_segment(value: &str) -> String {
+    value
+        .bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (byte as char).to_string()
+            }
+            _ => format!("%{:02X}", byte),
+        })
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+fn encode_atlas_texture_line(line: &str) -> String {
+    let trimmed = line.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    let looks_like_texture = !trimmed.is_empty()
+        && !line.starts_with(char::is_whitespace)
+        && (lower.ends_with(".png")
+            || lower.ends_with(".jpg")
+            || lower.ends_with(".jpeg")
+            || lower.ends_with(".webp"));
+    if looks_like_texture {
+        encode_url_path_segment(trimmed)
+    } else {
+        line.to_string()
+    }
+}
+
+fn rewrite_atlas_texture_urls(text: &str) -> String {
+    text.lines()
+        .map(encode_atlas_texture_line)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn is_inside(root: &FsPath, file: &FsPath) -> bool {
     file.strip_prefix(root).is_ok()
 }
@@ -151,6 +187,15 @@ async fn get_spine_asset(
                 header::CONTENT_TYPE,
                 header::HeaderValue::from_static(file_content_type(&file)),
             );
+            if file
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| ext.eq_ignore_ascii_case("atlas"))
+                .unwrap_or(false)
+            {
+                let text = String::from_utf8_lossy(&bytes);
+                return (StatusCode::OK, headers, rewrite_atlas_texture_urls(&text)).into_response();
+            }
             (StatusCode::OK, headers, bytes).into_response()
         }
         Err(_) => (StatusCode::NOT_FOUND, "Asset not found").into_response(),
@@ -234,5 +279,13 @@ mod tests {
     fn strips_route_wildcard_leading_slash_for_asset_paths() {
         let relative = "/amiya.skel".trim_start_matches(['/', '\\']);
         assert_eq!(relative, "amiya.skel");
+    }
+
+    #[test]
+    fn rewrites_hash_texture_names_in_atlas_text() {
+        let text = "build_char_1001_amiya2_sale#16.png\nsize: 956,956\nB_HandD_FA\n  rotate: true";
+        let rewritten = rewrite_atlas_texture_urls(text);
+        assert!(rewritten.starts_with("build_char_1001_amiya2_sale%2316.png\n"));
+        assert!(rewritten.contains("\nB_HandD_FA\n"));
     }
 }
