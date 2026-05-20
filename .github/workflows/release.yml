@@ -19,15 +19,11 @@ permissions:
 jobs:
   tauri-package:
     name: Tauri Package (${{ matrix.os }})
-    if: ${{ !(contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc')) || matrix.os == 'windows-latest' }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os:
-          - windows-latest
-          - ubuntu-latest
-          - macos-latest
+        os: ${{ fromJSON((contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc')) && '["windows-latest"]' || '["windows-latest","ubuntu-latest","macos-latest"]') }}
     steps:
       - uses: actions/checkout@v6
       - uses: oven-sh/setup-bun@v2
