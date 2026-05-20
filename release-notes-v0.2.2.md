@@ -19,6 +19,8 @@ Hotfix for the v0.2.1 Tauri package.
   made clicking and scroll zoom unreliable.
 - Made the tray quick panel behave like a flyout: left-click toggles it,
   right-click hides it before the native menu opens, and blur/Escape closes it.
+- Fixed Quick Panel switches so the progress bubble and status panel toggles
+  render as compact switches instead of stretching across the row.
 - Added real model preview images in Manager and Quick Panel using local asset
   URLs for the active model and remote Ark-Models URLs for catalog previews.
 - Added update metadata with a recommended release asset for the current

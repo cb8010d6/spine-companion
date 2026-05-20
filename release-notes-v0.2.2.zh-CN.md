@@ -16,6 +16,7 @@
   表现为点击和滚轮缩放时好时坏。
 - 托盘 Quick Panel 改成类似 flyout 的行为：左键切换显示，右键打开原生菜单前先隐藏，
   失焦或按 `Esc` 会自动关闭。
+- 修复 Quick Panel 开关样式，Progress Bubble 和 Status Panel 不再被拉伸成整行长条。
 - Manager 和 Quick Panel 增加真实模型预览图：当前激活模型走本地 asset URL，
   模型库项目走 Ark-Models 远程 PNG URL，不包含版权素材本体。
 - 更新检查返回当前平台/架构推荐安装包。
