@@ -1,12 +1,43 @@
+function parseVersion(value) {
+  const raw = String(value || "0").replace(/^v/, "");
+  const [core, prerelease = ""] = raw.split("-", 2);
+  return {
+    core: core.split(".").map((part) => Number.parseInt(part, 10) || 0),
+    prerelease: prerelease ? prerelease.split(/[.-]/).filter(Boolean) : []
+  };
+}
+
+function compareIdentifiers(a, b) {
+  const leftNumber = /^\d+$/.test(a);
+  const rightNumber = /^\d+$/.test(b);
+  if (leftNumber && rightNumber) return Number(a) - Number(b);
+  if (leftNumber) return -1;
+  if (rightNumber) return 1;
+  return a.localeCompare(b);
+}
+
 function compareVersions(a, b) {
-  const left = String(a || "0").replace(/^v/, "").split(".").map((n) => Number(n) || 0);
-  const right = String(b || "0").replace(/^v/, "").split(".").map((n) => Number(n) || 0);
-  const length = Math.max(left.length, right.length);
+  const left = parseVersion(a);
+  const right = parseVersion(b);
+  const length = Math.max(left.core.length, right.core.length);
   for (let i = 0; i < length; i++) {
-    const diff = (left[i] || 0) - (right[i] || 0);
+    const diff = (left.core[i] || 0) - (right.core[i] || 0);
+    if (diff !== 0) return diff > 0 ? 1 : -1;
+  }
+  if (!left.prerelease.length && right.prerelease.length) return 1;
+  if (left.prerelease.length && !right.prerelease.length) return -1;
+  const preLength = Math.max(left.prerelease.length, right.prerelease.length);
+  for (let i = 0; i < preLength; i++) {
+    if (left.prerelease[i] === undefined) return -1;
+    if (right.prerelease[i] === undefined) return 1;
+    const diff = compareIdentifiers(left.prerelease[i], right.prerelease[i]);
     if (diff !== 0) return diff > 0 ? 1 : -1;
   }
   return 0;
+}
+
+function isPrereleaseVersion(version) {
+  return /-(alpha|beta|rc)(?:[.-]|\d|$)/i.test(String(version || ""));
 }
 
 function normalizeAsset(asset = {}) {
@@ -66,11 +97,19 @@ async function checkGitHubRelease({
   platform = process.platform,
   arch = process.arch
 }) {
-  const response = await fetchImpl(`https://api.github.com/repos/${owner}/${repo}/releases/latest`, {
+  const includePrereleases = isPrereleaseVersion(currentVersion);
+  const endpoint = includePrereleases ? "releases?per_page=20" : "releases/latest";
+  const response = await fetchImpl(`https://api.github.com/repos/${owner}/${repo}/${endpoint}`, {
     headers: { "Accept": "application/vnd.github+json" }
   });
   if (!response.ok) throw new Error(`GitHub release check failed: HTTP ${response.status}`);
-  const release = await response.json();
+  const payload = await response.json();
+  const release = Array.isArray(payload)
+    ? payload
+        .filter((item) => !item.draft)
+        .sort((a, b) => compareVersions(String(b.tag_name || ""), String(a.tag_name || "")))[0]
+    : payload;
+  if (!release) throw new Error("GitHub release check failed: no releases found.");
   const latestVersion = String(release.tag_name || "").replace(/^v/, "");
   const assets = Array.isArray(release.assets) ? release.assets.map(normalizeAsset) : [];
   const recommendedAsset = selectReleaseAsset(assets, platform, arch);

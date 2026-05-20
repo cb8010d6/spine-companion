@@ -7,30 +7,79 @@ describe("update-checker", () => {
     expect(compareVersions("0.2.1", "0.2.0")).toBe(1);
     expect(compareVersions("v0.2.0", "0.2.0")).toBe(0);
     expect(compareVersions("0.1.9", "0.2.0")).toBe(-1);
+    expect(compareVersions("0.2.3-alpha.2", "0.2.3-alpha.1")).toBe(1);
+    expect(compareVersions("0.2.3-alpha.1", "0.2.2")).toBe(1);
+    expect(compareVersions("0.2.3", "0.2.3-alpha.2")).toBe(1);
   });
 
   it("reports update availability from GitHub release response", async () => {
+    let requestedUrl = "";
     const result = await checkGitHubRelease({
       currentVersion: "0.2.0",
       platform: "win32",
       arch: "x64",
-      fetchImpl: async () => ({
-        ok: true,
-        json: async () => ({
-          tag_name: "v0.2.1",
-          html_url: "https://example.test",
-          name: "v0.2.1",
-          assets: [
-            { name: "Spine.Companion_0.2.1_x64_en-US.msi", browser_download_url: "https://example.test/app.msi" },
-            { name: "Spine.Companion_0.2.1_x64-setup.exe", browser_download_url: "https://example.test/setup.exe" }
-          ]
-        })
-      })
+      fetchImpl: async (url) => {
+        requestedUrl = url;
+        return {
+          ok: true,
+          json: async () => ({
+            tag_name: "v0.2.1",
+            html_url: "https://example.test",
+            name: "v0.2.1",
+            assets: [
+              { name: "Spine.Companion_0.2.1_x64_en-US.msi", browser_download_url: "https://example.test/app.msi" },
+              { name: "Spine.Companion_0.2.1_x64-setup.exe", browser_download_url: "https://example.test/setup.exe" }
+            ]
+          })
+        };
+      }
     });
+    expect(requestedUrl).toContain("/releases/latest");
     expect(result.updateAvailable).toBe(true);
     expect(result.latestVersion).toBe("0.2.1");
     expect(result.recommendedAsset.name).toContain("setup.exe");
     expect(result.downloadUrl).toBe("https://example.test/setup.exe");
+  });
+
+  it("checks prerelease channel when the current version is a prerelease", async () => {
+    let requestedUrl = "";
+    const result = await checkGitHubRelease({
+      currentVersion: "0.2.3-alpha.1",
+      platform: "win32",
+      arch: "x64",
+      fetchImpl: async (url) => {
+        requestedUrl = url;
+        return {
+          ok: true,
+          json: async () => ([
+            {
+              tag_name: "v0.2.2",
+              html_url: "https://example.test/stable",
+              name: "v0.2.2",
+              prerelease: false,
+              draft: false,
+              assets: [
+                { name: "Spine.Companion_0.2.2_x64-setup.exe", browser_download_url: "https://example.test/stable.exe" }
+              ]
+            },
+            {
+              tag_name: "v0.2.3-alpha.2",
+              html_url: "https://example.test/alpha2",
+              name: "v0.2.3-alpha.2",
+              prerelease: true,
+              draft: false,
+              assets: [
+                { name: "Spine.Companion_0.2.3-alpha.2_x64-setup.exe", browser_download_url: "https://example.test/alpha2.exe" }
+              ]
+            }
+          ])
+        };
+      }
+    });
+    expect(requestedUrl).toContain("/releases?per_page=20");
+    expect(result.updateAvailable).toBe(true);
+    expect(result.latestVersion).toBe("0.2.3-alpha.2");
+    expect(result.downloadUrl).toBe("https://example.test/alpha2.exe");
   });
 
   it("selects platform-specific release assets", () => {

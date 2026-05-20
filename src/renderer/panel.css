@@ -1,14 +1,17 @@
+@import "./design-tokens.css";
+
 :root {
-  --bg: #202124;
-  --bg-panel: #292A2D;
-  --bg-hover: #3C4043;
-  --border: #3C4043;
-  --text: #E8EAED;
-  --text-muted: #9AA0A6;
-  --accent: #8AB4F8;
-  --danger: #F28B82;
-  --success: #81C995;
+  --bg: var(--sc-bg);
+  --bg-panel: var(--sc-bg-elevated);
+  --bg-hover: var(--sc-bg-hover);
+  --border: var(--sc-border);
+  --text: var(--sc-text);
+  --text-muted: var(--sc-text-muted);
+  --accent: var(--sc-accent);
+  --danger: var(--sc-danger);
+  --success: var(--sc-success);
 }
+
 
 body {
   margin: 0;

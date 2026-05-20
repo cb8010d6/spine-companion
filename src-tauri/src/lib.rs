@@ -1071,8 +1071,17 @@ async fn set_active_model(
 #[tauri::command]
 async fn check_updates() -> Result<serde_json::Value, String> {
     let client = reqwest::Client::new();
+    let current_version = env!("CARGO_PKG_VERSION");
+    let endpoint = if is_prerelease_version(current_version) {
+        "releases?per_page=20"
+    } else {
+        "releases/latest"
+    };
     let text = client
-        .get("https://api.github.com/repos/cb8010d6/spine-companion/releases/latest")
+        .get(format!(
+            "https://api.github.com/repos/cb8010d6/spine-companion/{}",
+            endpoint
+        ))
         .header("User-Agent", "spine-companion")
         .send()
         .await
@@ -1082,8 +1091,10 @@ async fn check_updates() -> Result<serde_json::Value, String> {
         .text()
         .await
         .map_err(|error| error.to_string())?;
-    let response: serde_json::Value =
+    let payload: serde_json::Value =
         serde_json::from_str(&text).map_err(|error| error.to_string())?;
+    let response = latest_release_from_payload(&payload)
+        .ok_or_else(|| "GitHub release check failed: no releases found.".to_string())?;
     let assets = response
         .get("assets")
         .and_then(|value| value.as_array())
@@ -1113,9 +1124,9 @@ async fn check_updates() -> Result<serde_json::Value, String> {
         .unwrap_or(&release_url)
         .to_string();
     Ok(serde_json::json!({
-        "currentVersion": env!("CARGO_PKG_VERSION"),
+        "currentVersion": current_version,
         "latestVersion": latest_version,
-        "updateAvailable": compare_versions(&latest_version, env!("CARGO_PKG_VERSION")) > 0,
+        "updateAvailable": compare_versions(&latest_version, current_version) > 0,
         "url": release_url,
         "name": response.get("name").and_then(|v| v.as_str()).unwrap_or(""),
         "assets": assets,
@@ -1335,19 +1346,74 @@ fn model_by_skel(public_config: &serde_json::Value, skel: &str) -> Option<serde_
         })
 }
 
-fn compare_versions(a: &str, b: &str) -> i8 {
-    let parse = |value: &str| {
-        value
-            .trim_start_matches('v')
-            .split('.')
-            .map(|part| part.parse::<i32>().unwrap_or(0))
-            .collect::<Vec<_>>()
+fn is_prerelease_version(value: &str) -> bool {
+    let value = value.to_ascii_lowercase();
+    value.contains("-alpha") || value.contains("-beta") || value.contains("-rc")
+}
+
+fn parse_version(value: &str) -> (Vec<i32>, Vec<String>) {
+    let raw = value.trim_start_matches('v');
+    let mut parts = raw.splitn(2, '-');
+    let core = parts
+        .next()
+        .unwrap_or("0")
+        .split('.')
+        .map(|part| part.parse::<i32>().unwrap_or(0))
+        .collect::<Vec<_>>();
+    let prerelease = parts
+        .next()
+        .unwrap_or("")
+        .split(['.', '-'])
+        .filter(|part| !part.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    (core, prerelease)
+}
+
+fn compare_prerelease_identifier(a: &str, b: &str) -> i8 {
+    let left_number = a.parse::<i32>();
+    let right_number = b.parse::<i32>();
+    let ordering = match (left_number, right_number) {
+        (Ok(left), Ok(right)) => left.cmp(&right),
+        (Ok(_), Err(_)) => return -1,
+        (Err(_), Ok(_)) => return 1,
+        (Err(_), Err(_)) => a.cmp(b),
     };
-    let left = parse(a);
-    let right = parse(b);
-    let len = left.len().max(right.len());
+    match ordering {
+        std::cmp::Ordering::Greater => 1,
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+    }
+}
+
+fn compare_versions(a: &str, b: &str) -> i8 {
+    let (left_core, left_pre) = parse_version(a);
+    let (right_core, right_pre) = parse_version(b);
+    let len = left_core.len().max(right_core.len());
     for i in 0..len {
-        let diff = left.get(i).copied().unwrap_or(0) - right.get(i).copied().unwrap_or(0);
+        let diff = left_core.get(i).copied().unwrap_or(0) - right_core.get(i).copied().unwrap_or(0);
+        if diff > 0 {
+            return 1;
+        }
+        if diff < 0 {
+            return -1;
+        }
+    }
+    if left_pre.is_empty() && !right_pre.is_empty() {
+        return 1;
+    }
+    if !left_pre.is_empty() && right_pre.is_empty() {
+        return -1;
+    }
+    let pre_len = left_pre.len().max(right_pre.len());
+    for i in 0..pre_len {
+        let Some(left) = left_pre.get(i) else {
+            return -1;
+        };
+        let Some(right) = right_pre.get(i) else {
+            return 1;
+        };
+        let diff = compare_prerelease_identifier(left, right);
         if diff > 0 {
             return 1;
         }
@@ -1356,6 +1422,32 @@ fn compare_versions(a: &str, b: &str) -> i8 {
         }
     }
     0
+}
+
+fn latest_release_from_payload(payload: &serde_json::Value) -> Option<serde_json::Value> {
+    if let Some(releases) = payload.as_array() {
+        return releases
+            .iter()
+            .filter(|release| {
+                !release
+                    .get("draft")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false)
+            })
+            .max_by(|a, b| {
+                let left = a
+                    .get("tag_name")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("");
+                let right = b
+                    .get("tag_name")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("");
+                compare_versions(left, right).cmp(&0)
+            })
+            .cloned();
+    }
+    Some(payload.clone())
 }
 
 fn normalize_release_asset(asset: &serde_json::Value) -> serde_json::Value {
@@ -1815,5 +1907,22 @@ mod tests {
         assert_eq!(compare_versions("0.2.2", "0.2.1"), 1);
         assert_eq!(compare_versions("v0.2.1", "0.2.1"), 0);
         assert_eq!(compare_versions("0.1.9", "0.2.0"), -1);
+        assert_eq!(compare_versions("0.2.3-alpha.2", "0.2.3-alpha.1"), 1);
+        assert_eq!(compare_versions("0.2.3-alpha.1", "0.2.2"), 1);
+        assert_eq!(compare_versions("0.2.3", "0.2.3-alpha.2"), 1);
+    }
+
+    #[test]
+    fn selects_latest_release_from_prerelease_payload() {
+        let payload = serde_json::json!([
+            { "tag_name": "v0.2.2", "draft": false },
+            { "tag_name": "v0.2.3-alpha.2", "draft": false },
+            { "tag_name": "v0.2.3-alpha.1", "draft": false }
+        ]);
+        let latest = latest_release_from_payload(&payload).unwrap();
+        assert_eq!(
+            latest.get("tag_name").and_then(|value| value.as_str()),
+            Some("v0.2.3-alpha.2")
+        );
     }
 }
