@@ -241,7 +241,6 @@ async function importLocalModel() {
 }
 
 async function saveSettings(patch, options = {}) {
-  patch = validateSaveSettings(patch);
   const notify = options.notify !== false;
   const localConfigPath = publicConfigCache.paths?.localConfigPath || path.join(app.getPath("appData"), "spine-companion", "companion.local.json");
   const current = readJsonIfExists(localConfigPath);
@@ -588,10 +587,19 @@ async function openPanel(bounds) {
     await panelWindow.loadURL(panelUrl);
   }
 
-  // Calculate position (bottom right generally)
-  const x = Math.round(bounds.x - (320 / 2));
-  let y = Math.round(bounds.y - 480 - 10);
-  if (y < 0) y = Math.round(bounds.y + bounds.height + 10); // if taskbar on top
+  const panelBounds = panelWindow.getBounds();
+  const anchor = {
+    x: Math.round((bounds.x || 0) + ((bounds.width || 0) / 2)),
+    y: Math.round((bounds.y || 0) + ((bounds.height || 0) / 2))
+  };
+  const display = screen.getDisplayNearestPoint(anchor);
+  const area = display.workArea;
+  const preferredX = Math.round((bounds.x || 0) - (panelBounds.width / 2));
+  const preferredY = Math.round((bounds.y || 0) - panelBounds.height - 10);
+  const fallbackY = Math.round((bounds.y || 0) + (bounds.height || 0) + 10);
+  const x = Math.max(area.x, Math.min(preferredX, area.x + area.width - panelBounds.width));
+  const yCandidate = preferredY < area.y ? fallbackY : preferredY;
+  const y = Math.max(area.y, Math.min(yCandidate, area.y + area.height - panelBounds.height));
 
   panelWindow.setPosition(x, y);
   panelWindow.show();
