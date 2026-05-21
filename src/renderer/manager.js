@@ -14,11 +14,20 @@ let config = { models: { catalog: [] }, ui: {}, spine: {} };
 let installedModels = [];
 let diagnostics = null;
 let history = [];
+let reminders = [];
 let updateStatus = null;
 const downloads = {};
 
 function setStatus(text) {
   topbarStatus.textContent = text;
+}
+
+function showToast(message) {
+  const container = document.getElementById("toast-container");
+  if (!container) return;
+  const toast = h("div", { class: "toast" }, message);
+  container.appendChild(toast);
+  window.setTimeout(() => toast.remove(), 3600);
 }
 
 function closeModal() {
@@ -81,6 +90,11 @@ async function refreshConfig() {
   installedModels = await window.companion?.getInstalledModels?.() || [];
 }
 
+async function refreshReminders() {
+  reminders = await window.companion?.listReminders?.() || [];
+  return reminders;
+}
+
 async function refreshUpdateStatus({ silent = false } = {}) {
   try {
     updateStatus = await window.companion?.checkUpdates?.();
@@ -116,11 +130,11 @@ async function startDownload(id) {
   renderView(activeView);
   try {
     const result = await window.companion?.importModel?.({ id });
-    downloads[id] = { status: "succeeded", current: 1, total: 1, file: "Done" };
+    downloads[id] = { ...(downloads[id] || {}), status: "succeeded", current: downloads[id]?.total || 1, total: downloads[id]?.total || 1, file: "Done" };
     await refreshConfig();
     setStatus(t("manager.status.loadedModel", { name: result.name || id }));
   } catch (error) {
-    downloads[id] = { status: "failed", error: error.message || "Download failed", current: 0, total: 1 };
+    downloads[id] = { ...(downloads[id] || {}), status: "failed", error: error.message || "Download failed", current: 0, total: downloads[id]?.total || 1 };
     setStatus(t("manager.status.downloadFailed", { id }));
   }
   if (activeView === "library" || activeView === "downloads" || activeView === "installed") renderView(activeView);
@@ -266,7 +280,7 @@ function downloadsView() {
     const percent = Math.max(0, Math.min(100, Math.round((Number(dl.current || 0) / total) * 100)));
     return h("article", { class: "download-card fade-in" },
       h("div", { class: "download-title" }, id),
-      h("div", { class: "download-meta" }, `${String(dl.status || "pending").toUpperCase()} ${dl.file || ""}`),
+      h("div", { class: "download-meta" }, `${String(dl.status || "pending").toUpperCase()} ${dl.file || ""} ${dl.current || 0}/${dl.total || 1}`),
       h("div", { class: "progress-bar" }, h("div", { class: "progress-fill", style: { width: `${percent}%` } })),
       dl.error ? h("div", { class: "error-text" }, dl.error) : null,
       dl.status === "failed" ? h("button", { class: "btn", type: "button", onClick: () => startDownload(id) }, t("manager.actions.retry")) : null
@@ -278,34 +292,50 @@ function downloadsView() {
 function settingsView() {
   const ui = config.ui || {};
   const spine = config.spine || {};
+  const numeric = (id) => Number(document.getElementById(id).value || 0);
   const saveSpine = async () => {
     await window.companion?.saveSettings?.({
       spine: {
-        scale: Number(document.getElementById("set-scale").value || 1),
-        offsetX: Number(document.getElementById("set-offset-x").value || 0),
-        offsetY: Number(document.getElementById("set-offset-y").value || 0)
+        scale: numeric("set-scale-number"),
+        offsetX: numeric("set-offset-x-number"),
+        offsetY: numeric("set-offset-y-number")
       }
     });
     config = await window.companion?.getConfig?.() || config;
     setStatus(t("manager.status.settingsSaved"));
+    showToast(t("manager.status.settingsSaved"));
   };
-  const saveUi = (patch) => window.companion?.saveSettings?.({ ui: patch });
+  const resetSpine = async () => {
+    await window.companion?.saveSettings?.({ spine: { scale: 0.86, offsetX: 0, offsetY: -18 } });
+    await refreshConfig();
+    showToast(t("manager.status.settingsSaved"));
+    renderView("settings");
+  };
+  const saveUi = async (patch) => {
+    await window.companion?.saveSettings?.({ ui: patch });
+    config.ui = { ...(config.ui || {}), ...patch };
+    showToast(t("manager.status.settingsSaved"));
+  };
   return h("section", {},
     h("h2", { class: "view-title" }, t("manager.settings.title")),
     h("div", { class: "settings-grid" },
       h("article", { class: "card form-card" },
         h("h3", {}, t("manager.section.spine")),
         h("button", { class: "btn", type: "button", onClick: importLocalModel }, t("manager.actions.importLocal")),
-        field(t("manager.field.scale"), h("input", { class: "input", id: "set-scale", type: "number", step: "0.05", value: spine.scale || 1 })),
-        field(t("manager.field.offsetX"), h("input", { class: "input", id: "set-offset-x", type: "number", value: spine.offsetX || 0 })),
-        field(t("manager.field.offsetY"), h("input", { class: "input", id: "set-offset-y", type: "number", value: spine.offsetY || 0 })),
-        h("button", { class: "btn btn-primary", type: "button", onClick: saveSpine }, t("manager.actions.saveConfiguration"))
+        rangeNumber(t("manager.field.scale"), "set-scale", Number(spine.scale || 1), 0.2, 2.5, 0.01),
+        rangeNumber(t("manager.field.offsetX"), "set-offset-x", Number(spine.offsetX || 0), -240, 240, 1),
+        rangeNumber(t("manager.field.offsetY"), "set-offset-y", Number(spine.offsetY || 0), -240, 240, 1),
+        h("div", { class: "model-actions" },
+          h("button", { class: "btn btn-primary", type: "button", onClick: saveSpine }, t("manager.actions.saveConfiguration")),
+          h("button", { class: "btn", type: "button", onClick: resetSpine }, t("manager.actions.resetDefaults"))
+        )
       ),
       h("article", { class: "card form-card" },
         h("h3", {}, t("manager.section.interface")),
         check(t("manager.field.showStatusPanel"), ui.hudVisible !== false, (checked) => saveUi({ hudVisible: checked })),
         check(t("manager.field.showProgressBubble"), ui.bubbleVisible !== false, (checked) => saveUi({ bubbleVisible: checked })),
         check(t("manager.field.autoShowCodex"), ui.autoRevealOnMcp !== false, (checked) => saveUi({ autoRevealOnMcp: checked })),
+        check(t("manager.field.systemNotifications"), ui.systemNotifications !== false, (checked) => saveUi({ systemNotifications: checked })),
         check(t("manager.field.bubbleShadow"), ui.bubbleShadow !== false, (checked) => saveUi({ bubbleShadow: checked })),
         field(t("manager.field.bubbleTheme"), h("select", { class: "select", value: ui.bubbleBackground || "solid", onChange: (e) => saveUi({ bubbleBackground: e.target.value }) },
           ["solid", "soft", "clear", "light"].map((value) => h("option", { value, selected: (ui.bubbleBackground || "solid") === value }, value))
@@ -319,9 +349,39 @@ function settingsView() {
           h("option", { value: "en" }, "English"),
           h("option", { value: "zh-CN" }, "中文")
         ))
+      ),
+      h("article", { class: "card form-card" },
+        h("h3", {}, t("manager.section.reminders")),
+        reminders.length
+          ? reminders.map((reminder) => h("div", { class: "reminder-row" },
+              h("div", {},
+                h("strong", { title: reminder.text }, reminder.text || "Reminder"),
+                h("span", {}, `${reminder.fired ? t("manager.status.fired") : t("manager.status.pending")} ${reminder.dueAt || ""}`)
+              ),
+              h("button", { class: "btn", type: "button", onClick: async () => {
+                await window.companion?.deleteReminder?.(reminder.id);
+                await refreshReminders();
+                renderView("settings");
+              } }, t("manager.actions.delete"))
+            ))
+          : h("p", { class: "empty-text" }, t("manager.empty.noReminders"))
       )
     )
   );
+}
+
+function rangeNumber(label, id, value, min, max, step) {
+  const rangeId = `${id}-range`;
+  const numberId = `${id}-number`;
+  const sync = (source, target) => {
+    const next = source.value;
+    target.value = next;
+  };
+  const range = h("input", { id: rangeId, type: "range", min, max, step, value });
+  const number = h("input", { id: numberId, class: "input", type: "number", min, max, step, value });
+  range.addEventListener("input", () => sync(range, number));
+  number.addEventListener("input", () => sync(number, range));
+  return field(label, h("div", { class: "setting-inline" }, range, number));
 }
 
 function field(label, control) {
@@ -338,6 +398,7 @@ function check(label, checked, onChange) {
 async function diagnosticsView() {
   diagnostics = await window.companion?.getDiagnostics?.() || {};
   history = await window.companion?.getHistory?.() || [];
+  await refreshReminders();
   if (!updateStatus) await refreshUpdateStatus({ silent: true });
   const row = (label, ok, value) => h("div", { class: "status-row" },
     h("span", { class: "status-label" }, label),
@@ -353,11 +414,19 @@ async function diagnosticsView() {
         diagnostics.localConfigPath ? h("p", { class: "model-meta", title: diagnostics.localConfigPath }, diagnostics.localConfigPath) : null,
         ...(diagnostics.configWarnings || []).map((warning) => h("p", { class: "error-text", title: warning.file }, `Config warning: ${warning.message}`)),
         row(t("manager.diagnostics.spineAssets"), diagnostics.assetDirExists && diagnostics.hasSkel && diagnostics.hasAtlas && diagnostics.hasPng, "skel / atlas / png"),
-        h("button", { class: "btn", type: "button", onClick: () => window.companion?.openFolder?.(config.paths?.configDir) }, "Open Config Folder")
+        row(t("manager.diagnostics.modelHealth"), diagnostics.modelHealth?.ok, diagnostics.modelHealth?.message),
+        h("div", { class: "model-actions" },
+          h("button", { class: "btn", type: "button", onClick: () => window.companion?.openFolder?.(config.paths?.configDir) }, t("manager.actions.openConfigFolder")),
+          h("button", { class: "btn", type: "button", onClick: async () => {
+            const result = await window.companion?.exportLogs?.();
+            showToast(t("manager.status.logsExported", { path: result?.file || "" }));
+          } }, t("manager.actions.exportLogs"))
+        )
       ),
       h("article", { class: "card diag-card" },
         h("h3", {}, t("manager.diagnostics.updates")),
-        h("p", { class: "model-meta" }, updateStatus?.error || `Current ${updateStatus?.currentVersion || ""}, latest ${updateStatus?.latestVersion || ""}`),
+        h("p", { class: "model-meta" }, updateStatus?.error || `Channel ${updateStatus?.channel || "stable"} | Current ${updateStatus?.currentVersion || ""}, latest ${updateStatus?.latestVersion || ""}`),
+        updateStatus?.source ? h("p", { class: "model-meta", title: updateStatus.source }, t("manager.diagnostics.updateSource", { source: updateStatus.source })) : null,
         updateStatus?.recommendedAsset
           ? h("p", { class: "model-meta" }, t("manager.diagnostics.recommended", { name: updateStatus.recommendedAsset.name }))
           : null,
@@ -390,7 +459,10 @@ async function renderView(viewName) {
   if (viewName === "library") render(libraryView(), viewContainer);
   else if (viewName === "installed") render(installedView(), viewContainer);
   else if (viewName === "downloads") render(downloadsView(), viewContainer);
-  else if (viewName === "settings") render(settingsView(), viewContainer);
+  else if (viewName === "settings") {
+    await refreshReminders();
+    render(settingsView(), viewContainer);
+  }
   else if (viewName === "diagnostics") render(await diagnosticsView(), viewContainer);
 }
 

@@ -68,17 +68,23 @@ function createStateStore(config, stateMachineConfig) {
     const requested = input.state || input.id || input.status;
     const nextState = requested ? normalizeStateId(requested) : previous.state;
     const direction = nextState === "running" ? (input.direction || previous.direction || "right") : "right";
+    const hasMessage = Object.prototype.hasOwnProperty.call(input, "message");
+    const message = hasMessage
+      ? String(input.message || "")
+      : (input.preserveMessage === true || !requested ? previous.message || "" : "");
     current = {
       ...previous,
       ...input,
       state: nextState,
       id: nextState,
+      message,
       direction,
       updatedAt: new Date().toISOString(),
       source: input.source || previous.source || "local"
     };
     delete current.status;
-    for (const key of ["reminderId", "autoReturnMs", "returnTo", "durationMs", "delayMs", "inSeconds", "dueAt", "at"]) {
+    delete current.preserveMessage;
+    for (const key of ["reminderId", "autoReturnMs", "returnTo", "durationMs", "delayMs", "inSeconds", "dueAt", "at", "notify"]) {
       if (!(key in input)) delete current[key];
     }
     emitter.emit("state", snapshot());
@@ -124,7 +130,8 @@ function createStateStore(config, stateMachineConfig) {
       text: String(input.text || input.message || "Reminder"),
       dueAt: new Date(dueAtMs).toISOString(),
       createdAt: existing?.createdAt || new Date(now).toISOString(),
-      fired: Boolean(existing?.fired)
+      fired: Boolean(existing?.fired),
+      snoozeAfterMs: Number(input.snoozeAfterMs || existing?.snoozeAfterMs || 5 * 60 * 1000)
     };
 
     const timeout = setTimeout(() => {
@@ -141,6 +148,7 @@ function createStateStore(config, stateMachineConfig) {
       emitter.emit("reminder", { ...reminder });
       reminders.set(id, { ...reminder, timeout });
       persistReminders();
+      emitter.emit("reminders", listReminders());
     }, Math.max(0, dueAtMs - now));
 
     reminders.set(id, { ...reminder, timeout });
@@ -150,11 +158,22 @@ function createStateStore(config, stateMachineConfig) {
   function createReminder(input = {}) {
     const reminder = scheduleReminder(input);
     persistReminders();
+    emitter.emit("reminders", listReminders());
     return reminder;
   }
 
   function listReminders() {
     return [...reminders.values()].map(({ timeout, ...reminder }) => reminder);
+  }
+
+  function deleteReminder(id) {
+    const reminder = reminders.get(id);
+    if (!reminder) return false;
+    if (reminder.timeout) clearTimeout(reminder.timeout);
+    reminders.delete(id);
+    persistReminders();
+    emitter.emit("reminders", listReminders());
+    return true;
   }
 
   function listHistory() {
@@ -193,6 +212,7 @@ function createStateStore(config, stateMachineConfig) {
     setState,
     createReminder,
     listReminders,
+    deleteReminder,
     listHistory,
     normalizeStateId,
     destroy

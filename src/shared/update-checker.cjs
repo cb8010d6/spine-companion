@@ -99,7 +99,8 @@ async function checkGitHubRelease({
 }) {
   const includePrereleases = isPrereleaseVersion(currentVersion);
   const endpoint = includePrereleases ? "releases?per_page=20" : "releases/latest";
-  const response = await fetchImpl(`https://api.github.com/repos/${owner}/${repo}/${endpoint}`, {
+  const sourceUrl = `https://api.github.com/repos/${owner}/${repo}/${endpoint}`;
+  const response = await fetchImpl(sourceUrl, {
     headers: { "Accept": "application/vnd.github+json" }
   });
   if (!response.ok) throw new Error(`GitHub release check failed: HTTP ${response.status}`);
@@ -121,7 +122,9 @@ async function checkGitHubRelease({
     name: release.name || release.tag_name,
     assets,
     recommendedAsset,
-    downloadUrl: recommendedAsset?.url || release.html_url
+    downloadUrl: recommendedAsset?.url || release.html_url,
+    channel: includePrereleases ? "prerelease" : "stable",
+    source: sourceUrl
   };
 }
 

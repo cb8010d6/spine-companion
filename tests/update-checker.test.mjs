@@ -39,6 +39,8 @@ describe("update-checker", () => {
     expect(result.latestVersion).toBe("0.2.1");
     expect(result.recommendedAsset.name).toContain("setup.exe");
     expect(result.downloadUrl).toBe("https://example.test/setup.exe");
+    expect(result.channel).toBe("stable");
+    expect(result.source).toContain("/releases/latest");
   });
 
   it("checks prerelease channel when the current version is a prerelease", async () => {
@@ -80,6 +82,8 @@ describe("update-checker", () => {
     expect(result.updateAvailable).toBe(true);
     expect(result.latestVersion).toBe("0.2.3-alpha.2");
     expect(result.downloadUrl).toBe("https://example.test/alpha2.exe");
+    expect(result.channel).toBe("prerelease");
+    expect(result.source).toContain("/releases?per_page=20");
   });
 
   it("selects platform-specific release assets", () => {

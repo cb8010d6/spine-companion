@@ -3,6 +3,7 @@ import { initTauriBridge, isTauri } from "./tauri-bridge.js";
 import { modelPreview } from "./model-preview.js";
 
 let config = null;
+let panelPinned = false;
 const quickStates = ["idle", "working", "running", "reviewing", "success", "failed"];
 
 function renderPreview(previewEl, preview) {
@@ -25,12 +26,41 @@ function renderPreview(previewEl, preview) {
   previewEl.appendChild(fallback);
 }
 
-async function closePanel() {
+async function closePanel(force = false) {
+  if (panelPinned && !force) return;
   if (isTauri()) {
     await window.companion?.closePanel?.();
     return;
   }
   window.close();
+}
+
+function renderReminderList(reminders = []) {
+  const list = document.getElementById("reminder-list");
+  if (!reminders.length) {
+    list.textContent = "No reminders";
+    return;
+  }
+  list.replaceChildren(...reminders.slice().sort((a, b) => String(a.dueAt).localeCompare(String(b.dueAt))).map((reminder) => {
+    const item = document.createElement("div");
+    item.className = "reminder-item";
+    const info = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = reminder.text || "Reminder";
+    const meta = document.createElement("span");
+    meta.textContent = `${reminder.fired ? "Fired" : "Due"} ${reminder.dueAt || ""}`;
+    info.append(title, meta);
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "mini-button";
+    remove.textContent = "Delete";
+    remove.addEventListener("click", async () => {
+      await window.companion?.deleteReminder?.(reminder.id);
+      renderReminderList(await window.companion?.listReminders?.() || []);
+    });
+    item.append(info, remove);
+    return item;
+  }));
 }
 
 async function updateState() {
@@ -80,9 +110,8 @@ async function updateState() {
     document.querySelector(".local-dot").classList.toggle("on", diag.apiOk);
   }
 
-  if (window.companion?.getHistory) {
-    const history = await window.companion.getHistory();
-    document.getElementById("reminder-list").textContent = history.slice(-1)[0]?.message || "No active reminder";
+  if (window.companion?.listReminders) {
+    renderReminderList(await window.companion.listReminders());
   }
 
   if (window.companion?.checkUpdates) {
@@ -126,6 +155,13 @@ async function boot() {
     updateState();
   });
 
+  document.getElementById("panel-pin").addEventListener("click", async (event) => {
+    panelPinned = !panelPinned;
+    event.currentTarget.setAttribute("aria-pressed", String(panelPinned));
+    event.currentTarget.textContent = panelPinned ? "Pinned" : "Pin";
+    await window.companion?.setPanelPinned?.(panelPinned);
+  });
+
   // Controls
   const scaleSlider = document.getElementById("scale-slider");
   scaleSlider.addEventListener("input", (e) => {
@@ -150,7 +186,7 @@ async function boot() {
   // Actions
   document.getElementById("btn-manager").addEventListener("click", () => {
     window.companion?.openManager?.();
-    closePanel();
+    closePanel(true);
   });
 
   document.getElementById("btn-quit").addEventListener("click", () => {
@@ -163,7 +199,7 @@ async function boot() {
 
   // Close panel on blur so it behaves like a tray flyout.
   window.addEventListener("blur", () => {
-    if (isTauri()) {
+    if (isTauri() && !panelPinned) {
       closePanel();
     }
   });

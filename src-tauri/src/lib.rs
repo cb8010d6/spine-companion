@@ -2,8 +2,9 @@ mod server;
 mod state;
 
 use state::{
-    create_reminder, create_reminder_store, create_state_store, set_state, CompanionState,
-    CreateReminderInput, Reminder, ReminderStore, SetStateInput, StateBroadcast, StateStore,
+    create_reminder, create_reminder_store, create_state_store, delete_reminder, list_reminders,
+    set_state, CompanionState, CreateReminderInput, Reminder, ReminderStore, SetStateInput,
+    StateBroadcast, StateStore,
 };
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -35,6 +36,7 @@ struct UiSettings {
     bubble_hold_ms: u64,
     drag_mode: String,
     auto_reveal_on_mcp: bool,
+    system_notifications: bool,
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -47,6 +49,7 @@ struct UiSettingsPatch {
     bubble_hold_ms: Option<u64>,
     drag_mode: Option<String>,
     auto_reveal_on_mcp: Option<bool>,
+    system_notifications: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -104,7 +107,8 @@ fn fallback_config() -> serde_json::Value {
             "bubbleBackground": "solid",
             "bubbleHoldMs": 8000,
             "dragMode": "compatible",
-            "autoRevealOnMcp": true
+            "autoRevealOnMcp": true,
+            "systemNotifications": true
         },
         "models": {
             "catalog": [
@@ -250,6 +254,31 @@ fn resolve_asset_dir(root: &Path, value: &str) -> String {
     }
 }
 
+fn atlas_texture_refs(text: &str) -> Vec<String> {
+    text.lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            let lower = trimmed.to_ascii_lowercase();
+            let top_level = !line
+                .chars()
+                .next()
+                .map(|ch| ch.is_whitespace())
+                .unwrap_or(false);
+            if top_level
+                && !trimmed.is_empty()
+                && (lower.ends_with(".png")
+                    || lower.ends_with(".jpg")
+                    || lower.ends_with(".jpeg")
+                    || lower.ends_with(".webp"))
+            {
+                Some(trimmed.to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 fn validate_spine_asset_dir(asset_dir: &Path, skel: &str) -> Result<(), String> {
     let skel_path = asset_dir.join(skel);
     if skel.is_empty()
@@ -267,21 +296,37 @@ fn validate_spine_asset_dir(asset_dir: &Path, skel: &str) -> Result<(), String> 
             skel_path.to_string_lossy()
         ));
     }
-    let mut has_atlas = false;
+    let mut atlas_files = Vec::new();
     let mut has_png = false;
     for entry in std::fs::read_dir(asset_dir).map_err(|error| error.to_string())? {
         let path = entry.map_err(|error| error.to_string())?.path();
         if let Some(ext) = path.extension().and_then(|value| value.to_str()) {
             if ext.eq_ignore_ascii_case("atlas") {
-                has_atlas = true;
+                atlas_files.push(path.clone());
             }
             if ext.eq_ignore_ascii_case("png") {
                 has_png = true;
             }
         }
     }
-    if !has_atlas || !has_png {
+    if atlas_files.is_empty() || !has_png {
         return Err("The selected .skel folder must also contain at least one .atlas file and one .png texture.".to_string());
+    }
+    let mut missing = Vec::new();
+    for atlas in atlas_files {
+        let text = std::fs::read_to_string(&atlas).map_err(|error| error.to_string())?;
+        for texture in atlas_texture_refs(&text) {
+            if !asset_dir.join(&texture).is_file() {
+                missing.push(format!(
+                    "{} -> {}",
+                    atlas.file_name().and_then(|value| value.to_str()).unwrap_or("atlas"),
+                    texture
+                ));
+            }
+        }
+    }
+    if !missing.is_empty() {
+        return Err(format!("Missing atlas texture file(s): {}", missing.join(", ")));
     }
     Ok(())
 }
@@ -301,6 +346,7 @@ fn ui_settings_from_config(config: &serde_json::Value) -> UiSettings {
         bubble_hold_ms: u64_at(config, &["ui", "bubbleHoldMs"], 8000),
         drag_mode: normalize_drag_mode(&drag_mode),
         auto_reveal_on_mcp: bool_at(config, &["ui", "autoRevealOnMcp"], true),
+        system_notifications: bool_at(config, &["ui", "systemNotifications"], true),
     }
 }
 
@@ -340,6 +386,9 @@ fn apply_ui_patch(settings: &mut UiSettings, patch: UiSettingsPatch) {
     }
     if let Some(value) = patch.auto_reveal_on_mcp {
         settings.auto_reveal_on_mcp = value;
+    }
+    if let Some(value) = patch.system_notifications {
+        settings.system_notifications = value;
     }
 }
 
@@ -576,6 +625,17 @@ async fn create_reminder_cmd(
 }
 
 #[tauri::command]
+async fn list_reminders_cmd(data: State<'_, AppData>) -> Result<Vec<Reminder>, String> {
+    Ok(list_reminders(&data.reminders).await)
+}
+
+#[tauri::command]
+async fn delete_reminder_cmd(data: State<'_, AppData>, id: String) -> Result<serde_json::Value, String> {
+    let deleted = delete_reminder(&data.reminders, &id).await;
+    Ok(serde_json::json!({ "deleted": deleted, "id": id }))
+}
+
+#[tauri::command]
 async fn set_ui_settings(
     window: WebviewWindow,
     data: State<'_, AppData>,
@@ -634,7 +694,10 @@ async fn import_model(
     tokio::fs::create_dir_all(&model_dir)
         .await
         .map_err(|error| error.to_string())?;
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|error| error.to_string())?;
 
     let total_files = files.len();
     for (i, file) in files.iter().enumerate() {
@@ -658,21 +721,47 @@ async fn import_model(
             }),
         );
 
-        let bytes = client
+        let bytes = match client
             .get(url)
             .send()
             .await
-            .map_err(|error| error.to_string())?
-            .error_for_status()
-            .map_err(|error| error.to_string())?
-            .bytes()
-            .await
-            .map_err(|error| error.to_string())?;
+        {
+            Ok(response) => match response.error_for_status() {
+                Ok(response) => response.bytes().await.map_err(|error| error.to_string()),
+                Err(error) => Err(error.to_string()),
+            },
+            Err(error) => Err(error.to_string()),
+        }
+        .map_err(|error| {
+            let message = format!("Failed to download {}: {}", file_name, error);
+            let _ = app.emit(
+                "companion:download-progress",
+                serde_json::json!({
+                    "id": input.id,
+                    "file": file_name,
+                    "current": i + 1,
+                    "total": total_files,
+                    "status": "failed",
+                    "error": message
+                }),
+            );
+            message
+        })?;
         tokio::fs::write(model_dir.join(file_name), bytes)
             .await
             .map_err(|error| error.to_string())?;
     }
     validate_spine_asset_dir(&model_dir, &skel)?;
+    let _ = app.emit(
+        "companion:download-progress",
+        serde_json::json!({
+            "id": input.id,
+            "file": "Done",
+            "current": total_files,
+            "total": total_files,
+            "status": "succeeded"
+        }),
+    );
 
     write_local_model_config(&data.local_config_path, &model_dir, &skel)?;
     let canonical_model_dir = model_dir
@@ -761,6 +850,10 @@ async fn get_diagnostics(data: State<'_, AppData>) -> Result<serde_json::Value, 
     let mut has_skel = false;
     let mut has_atlas = false;
     let mut has_png = false;
+    let mut model_health = serde_json::json!({
+        "ok": false,
+        "message": "No active asset directory."
+    });
 
     if let Some(asset_root) = &*data.asset_root.read().await {
         asset_dir_exists = asset_root.exists();
@@ -780,6 +873,17 @@ async fn get_diagnostics(data: State<'_, AppData>) -> Result<serde_json::Value, 
                 }
             }
         }
+        let skel = string_at(&public, &["spine", "skel"]).unwrap_or("");
+        model_health = match validate_spine_asset_dir(asset_root, skel) {
+            Ok(()) => serde_json::json!({
+                "ok": true,
+                "message": "Spine asset set is healthy."
+            }),
+            Err(error) => serde_json::json!({
+                "ok": false,
+                "message": error
+            }),
+        };
     }
 
     let mut mcp_matches = Vec::new();
@@ -890,6 +994,8 @@ async fn get_diagnostics(data: State<'_, AppData>) -> Result<serde_json::Value, 
         "hasSkel": has_skel,
         "hasAtlas": has_atlas,
         "hasPng": has_png,
+        "modelHealth": model_health,
+        "logsDir": data.config_dir.join("logs").to_string_lossy().to_string(),
         "mcpConfigured": mcp_configured,
         "mcpMatches": mcp_matches
     }))
@@ -1131,7 +1237,46 @@ async fn check_updates() -> Result<serde_json::Value, String> {
         "name": response.get("name").and_then(|v| v.as_str()).unwrap_or(""),
         "assets": assets,
         "recommendedAsset": recommended_asset,
-        "downloadUrl": download_url
+        "downloadUrl": download_url,
+        "channel": if is_prerelease_version(current_version) { "prerelease" } else { "stable" },
+        "source": format!("https://api.github.com/repos/cb8010d6/spine-companion/{}", endpoint)
+    }))
+}
+
+#[tauri::command]
+fn export_logs(data: State<'_, AppData>) -> Result<serde_json::Value, String> {
+    let logs_dir = data.config_dir.join("logs");
+    std::fs::create_dir_all(&logs_dir).map_err(|error| error.to_string())?;
+    let output = logs_dir.join(format!(
+        "spine-companion-logs-{}.txt",
+        chrono::Utc::now().to_rfc3339().replace([':', '.'], "-")
+    ));
+    let mut body = String::new();
+    if let Ok(entries) = std::fs::read_dir(&logs_dir) {
+        let mut files = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("log"))
+            .collect::<Vec<_>>();
+        files.sort();
+        for file in files.into_iter().rev().take(7).collect::<Vec<_>>().into_iter().rev() {
+            body.push_str(&format!(
+                "===== {} =====\n",
+                file.file_name().and_then(|name| name.to_str()).unwrap_or("log")
+            ));
+            if let Ok(text) = std::fs::read_to_string(&file) {
+                body.push_str(&text);
+            }
+            body.push('\n');
+        }
+    }
+    if body.is_empty() {
+        body.push_str("No log entries yet.\n");
+    }
+    std::fs::write(&output, body).map_err(|error| error.to_string())?;
+    Ok(serde_json::json!({
+        "file": output.to_string_lossy().to_string(),
+        "logsDir": logs_dir.to_string_lossy().to_string()
     }))
 }
 
@@ -1196,7 +1341,20 @@ fn show_companion_window(win: &WebviewWindow) {
 }
 
 fn should_reveal_for_state(settings: &UiSettings, state: &CompanionState) -> bool {
-    settings.auto_reveal_on_mcp && state.source == "codex-mcp" && state.state != "idle"
+    settings.auto_reveal_on_mcp && is_ai_source(&state.source) && state.state != "idle"
+}
+
+fn is_ai_source(source: &str) -> bool {
+    let source = source.to_ascii_lowercase();
+    source.starts_with("codex")
+        || source.starts_with("claude")
+        || source.starts_with("cursor")
+        || source.starts_with("cline")
+        || source.starts_with("roo")
+        || source.starts_with("gemini")
+        || source.starts_with("antigravity")
+        || source.starts_with("local-ai")
+        || source.ends_with("-mcp")
 }
 
 #[tauri::command]
@@ -1865,11 +2023,14 @@ pub fn run() {
             get_state,
             set_companion_state,
             create_reminder_cmd,
+            list_reminders_cmd,
+            delete_reminder_cmd,
             set_ui_settings,
             emit_scale_event,
             import_model,
             save_settings,
             get_diagnostics,
+            export_logs,
             get_installed_models,
             get_history,
             get_current_model,

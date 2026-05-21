@@ -5,7 +5,8 @@ const DEFAULT_UI_SETTINGS = Object.freeze({
   bubbleBackground: "solid",
   bubbleHoldMs: 8000,
   dragMode: "compatible",
-  autoRevealOnMcp: true
+  autoRevealOnMcp: true,
+  systemNotifications: true
 });
 
 const BUBBLE_BACKGROUNDS = new Set(["solid", "soft", "clear", "light"]);
@@ -24,7 +25,8 @@ function normalizeUiSettings(input = {}, defaults = DEFAULT_UI_SETTINGS) {
       ? Math.min(60000, Math.max(1500, Number(source.bubbleHoldMs)))
       : defaults.bubbleHoldMs,
     dragMode: DRAG_MODES.has(source.dragMode) ? source.dragMode : defaults.dragMode,
-    autoRevealOnMcp: typeof source.autoRevealOnMcp === "boolean" ? source.autoRevealOnMcp : defaults.autoRevealOnMcp
+    autoRevealOnMcp: typeof source.autoRevealOnMcp === "boolean" ? source.autoRevealOnMcp : defaults.autoRevealOnMcp,
+    systemNotifications: typeof source.systemNotifications === "boolean" ? source.systemNotifications : defaults.systemNotifications
   };
 }
 
@@ -39,6 +41,7 @@ function applyUiSettingsPatch(current = DEFAULT_UI_SETTINGS, patch = {}) {
   }
   if (DRAG_MODES.has(patch.dragMode)) next.dragMode = patch.dragMode;
   if (typeof patch.autoRevealOnMcp === "boolean") next.autoRevealOnMcp = patch.autoRevealOnMcp;
+  if (typeof patch.systemNotifications === "boolean") next.systemNotifications = patch.systemNotifications;
   return normalizeUiSettings(next, current);
 }
 

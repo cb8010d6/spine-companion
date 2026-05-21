@@ -5,6 +5,7 @@ import { SpinePlayer } from "./spine-player.js";
 import { stateLabels } from "./state.js";
 import { createOnboarding, shouldShowOnboarding } from "./onboarding.js";
 import { createErrorCard } from "./error-boundary.js";
+import { defaultMessageForState, isAiSource, notificationForState, shouldNotifyState, sourceDisplayName } from "../shared/notification-policy.js";
 
 const stage = document.getElementById("stage");
 const shell = document.getElementById("stage-shell");
@@ -62,6 +63,7 @@ let mousePassthrough = false;
 let pendingMousePassthroughEvent = null;
 let mousePassthroughFrame = 0;
 let runtimeConfig = null;
+let providerErrorToastTimer = null;
 
 function applyUiSettings(settings = {}) {
   currentUiSettings = { ...currentUiSettings, ...settings };
@@ -211,8 +213,8 @@ function updateBubble(state) {
   const shouldShow = currentUiSettings.bubbleVisible !== false && displayMessage && displayId !== "idle";
   progressBubble.hidden = !shouldShow;
   if (!shouldShow) return;
-  bubbleTitle.textContent = displayState?.source === "codex-mcp"
-    ? "Codex"
+  bubbleTitle.textContent = isAiSource(displayState?.source)
+    ? sourceDisplayName(displayState?.source)
     : displayId[0].toUpperCase() + displayId.slice(1);
   bubbleMessage.textContent = displayMessage;
   progressBubble.dataset.state = displayId;
@@ -222,23 +224,10 @@ function updateBubble(state) {
   });
 }
 
-function defaultMessageForState(id, source) {
-  if (source !== "codex-mcp") return "";
-  const messages = {
-    working: "Working on it",
-    reviewing: "Reviewing changes",
-    running: "Running checks",
-    waiting: "Waiting",
-    success: "Task complete",
-    failed: "Task failed",
-    reminder: "Reminder"
-  };
-  return messages[id] || "";
-}
-
 function updateCompletionToast(state) {
   const id = state?.state || "idle";
   if (id !== "success" && id !== "failed") return;
+  if (!shouldNotifyState(state)) return;
   const key = `${id}:${state.updatedAt || ""}`;
   if (key === lastCompletionKey) return;
   lastCompletionKey = key;
@@ -246,8 +235,9 @@ function updateCompletionToast(state) {
   setMousePassthrough(false);
   window.clearTimeout(completionToastTimer);
   completionToast.dataset.state = id;
-  completionTitle.textContent = id === "success" ? "Task complete" : "Task failed";
-  completionMessage.textContent = String(state.message || (id === "success" ? "Finished successfully" : "Needs attention"));
+  const notification = notificationForState(state);
+  completionTitle.textContent = notification?.title || (id === "success" ? "Task complete" : "Task failed");
+  completionMessage.textContent = notification?.body || String(state.message || (id === "success" ? "Finished successfully" : "Needs attention"));
   completionToastTimer = window.setTimeout(() => {
     completionToast.hidden = true;
     setMousePassthrough(true);
@@ -360,6 +350,18 @@ async function loadPlayer(config) {
   setMousePassthrough(true);
 }
 
+function showProviderError(error, context = {}) {
+  if ((context.consecutiveErrors || 0) < 3) return;
+  window.clearTimeout(providerErrorToastTimer);
+  const message = `State source connection issue: ${error.message || error}`;
+  updateBubble({
+    state: "waiting",
+    source: context.provider || "provider",
+    message
+  });
+  providerErrorToastTimer = window.setTimeout(() => updateBubble(currentState), 7000);
+}
+
 async function hotReloadPlayer(nextConfig, statusText = "") {
   try {
     await loadPlayer(nextConfig);
@@ -455,6 +457,7 @@ async function boot() {
   runtimeConfig = config;
   applyUiSettings(config.ui);
   provider = createStateProvider(config);
+  provider.onError = showProviderError;
   renderStateControls((state) => provider.setState(state));
   renderModelCatalog(config);
   showOnboardingIfNeeded(config);
@@ -510,6 +513,12 @@ async function boot() {
     await hotReloadPlayer(runtimeConfig);
   });
 
+  window.companion?.onNotificationDismiss?.(() => {
+    completionToast.hidden = true;
+    window.clearTimeout(completionToastTimer);
+    setMousePassthrough(true);
+  });
+
   settingsToggle.addEventListener("click", () => {
     settingsPanel.hidden = !settingsPanel.hidden;
   });
@@ -540,6 +549,18 @@ async function boot() {
     setMousePassthrough(true);
   });
 }
+
+window.addEventListener("error", (event) => {
+  const error = event.error || new Error(event.message || "Renderer error");
+  console.error("[spine-companion] renderer error", error);
+  showErrorBoundary(error, runtimeConfig);
+});
+
+window.addEventListener("unhandledrejection", (event) => {
+  const reason = event.reason instanceof Error ? event.reason : new Error(String(event.reason || "Unhandled rejection"));
+  console.error("[spine-companion] renderer rejection", reason);
+  showErrorBoundary(reason, runtimeConfig);
+});
 
 boot().catch((error) => {
   emptyState.hidden = false;

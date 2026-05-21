@@ -20,6 +20,14 @@ export class IpcStateProvider {
   createReminder(reminder) {
     return window.companion.createReminder(reminder);
   }
+
+  listReminders() {
+    return window.companion.listReminders?.() || Promise.resolve([]);
+  }
+
+  deleteReminder(id) {
+    return window.companion.deleteReminder?.(id);
+  }
 }
 
 export class HttpStateProvider {
@@ -72,6 +80,17 @@ export class HttpStateProvider {
     });
     return response.json();
   }
+
+  async listReminders() {
+    const response = await fetch(`${this.baseUrl}/reminders`, { cache: "no-store" });
+    const body = await response.json();
+    return body.reminders || [];
+  }
+
+  async deleteReminder(id) {
+    const response = await fetch(`${this.baseUrl}/reminders/${encodeURIComponent(id)}`, { method: "DELETE" });
+    return response.json();
+  }
 }
 
 export class JsonStateProvider {
@@ -79,16 +98,25 @@ export class JsonStateProvider {
     this.url = url;
     this.pollMs = pollMs;
     this.timer = null;
+    this.onError = null;
+    this.consecutiveErrors = 0;
   }
 
   async start(onState) {
     const poll = async () => {
-      const response = await fetch(this.url, { cache: "no-store" });
-      if (response.ok) onState(await response.json());
+      try {
+        const response = await fetch(this.url, { cache: "no-store" });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        this.consecutiveErrors = 0;
+        onState(await response.json());
+      } catch (error) {
+        this.consecutiveErrors++;
+        this.onError?.(error, { consecutiveErrors: this.consecutiveErrors, provider: "json" });
+      }
     };
     await poll();
     this.timer = setInterval(() => {
-      poll().catch(() => {});
+      poll();
     }, this.pollMs);
   }
 

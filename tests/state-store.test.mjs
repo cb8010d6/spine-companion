@@ -142,11 +142,32 @@ describe("createStateStore", () => {
       expect(result.message).toBe("Building");
     });
 
+    it("clears old message when a state transition does not provide one", () => {
+      store.setState({ state: "working", message: "Building" });
+      const result = store.setState({ state: "running" });
+      expect(result.message).toBe("");
+    });
+
+    it("preserves old message only when explicitly requested", () => {
+      store.setState({ state: "working", message: "Building" });
+      const result = store.setState({ state: "running", preserveMessage: true });
+      expect(result.message).toBe("Building");
+      expect(result.preserveMessage).toBeUndefined();
+    });
+
+    it("keeps message updates in the current state when no state is specified", () => {
+      store.setState({ state: "working", message: "Building" });
+      const result = store.setState({ source: "test" });
+      expect(result.state).toBe("working");
+      expect(result.message).toBe("Building");
+    });
+
     it("clears transient keys not present in input", () => {
-      store.setState({ state: "reminder", reminderId: "r1", autoReturnMs: 5000 });
+      store.setState({ state: "reminder", reminderId: "r1", autoReturnMs: 5000, notify: true });
       const next = store.setState({ state: "idle" });
       expect(next.reminderId).toBeUndefined();
       expect(next.autoReturnMs).toBeUndefined();
+      expect(next.notify).toBeUndefined();
     });
 
     it("removes status key from output", () => {
@@ -219,6 +240,13 @@ describe("createStateStore", () => {
       const list = store.listReminders();
       expect(list[0].timeout).toBeUndefined();
     });
+
+    it("deletes pending reminders", () => {
+      const reminder = store.createReminder({ text: "A", delayMs: 60000 });
+      expect(store.deleteReminder(reminder.id)).toBe(true);
+      expect(store.listReminders()).toEqual([]);
+      expect(store.deleteReminder(reminder.id)).toBe(false);
+    });
   });
 
   describe("history and persistence", () => {
@@ -288,6 +316,18 @@ describe("createStateStore", () => {
       const last = events[events.length - 1];
       expect(last.state).toBe("working");
       expect(last.source).toBe("auto-return");
+    });
+
+    it("returns to the previous state when returnTo is omitted", async () => {
+      store.setState({ state: "working", source: "test" });
+      store.setState({
+        state: "reminder",
+        message: "Temporary",
+        autoReturnMs: 50
+      });
+      await new Promise((r) => setTimeout(r, 100));
+      expect(store.snapshot().state).toBe("working");
+      expect(store.snapshot().message).toBe("");
     });
 
     it("does not auto-return if state changed in the meantime", async () => {

@@ -118,6 +118,27 @@ nav button.active {
 }
 
 /* Modal / Toast */
+.toast-container {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 120;
+  display: grid;
+  gap: 8px;
+}
+
+.toast {
+  min-width: 220px;
+  max-width: 340px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-panel);
+  color: var(--text);
+  box-shadow: 0 12px 28px rgba(0,0,0,0.38);
+  font-size: 12px;
+}
+
 #modal-container {
   position: fixed;
   inset: 0;
@@ -328,12 +349,20 @@ button:disabled {
   margin-bottom: 12px;
   display: flex;
   align-items: center;
+  gap: 10px;
 }
 
-.form-group label {
+.form-group > span {
   width: 120px;
   font-size: 12px;
   color: var(--text-muted);
+}
+
+.setting-inline {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) 80px;
+  gap: 8px;
+  align-items: center;
 }
 
 input[type="number"], select {
@@ -344,6 +373,37 @@ input[type="number"], select {
   padding: 6px 8px;
   border-radius: 4px;
   font-size: 12px;
+}
+
+input[type="range"] {
+  accent-color: var(--accent);
+}
+
+.reminder-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.reminder-row:last-child {
+  border-bottom: none;
+}
+
+.reminder-row strong {
+  display: block;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reminder-row span {
+  color: var(--text-muted);
+  font-size: 11px;
 }
 
 .checkbox-label {

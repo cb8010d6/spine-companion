@@ -5,7 +5,7 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Json, Response,
     },
-    routing::{get, post},
+    routing::{delete, get, post},
     Router,
 };
 use serde_json::json;
@@ -17,8 +17,8 @@ use tokio_stream::StreamExt;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::state::{
-    create_reminder, list_reminders, set_state, CreateReminderInput, ReminderStore, SetStateInput,
-    StateBroadcast, StateStore,
+    create_reminder, delete_reminder, list_reminders, set_state, CreateReminderInput,
+    ReminderStore, SetStateInput, StateBroadcast, StateStore,
 };
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -47,7 +47,7 @@ fn localhost_cors() -> CorsLayer {
                 false
             }
         }))
-        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
         .allow_headers(tower_http::cors::Any)
 }
 
@@ -89,6 +89,15 @@ async fn post_reminder(
 ) -> impl IntoResponse {
     let reminder = create_reminder(&app.store, &app.tx, &app.reminders, input).await;
     (StatusCode::CREATED, Json(reminder))
+}
+
+async fn delete_reminder_route(
+    AxumState(app): AxumState<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let deleted = delete_reminder(&app.reminders, &id).await;
+    let status = if deleted { StatusCode::OK } else { StatusCode::NOT_FOUND };
+    (status, Json(json!({ "deleted": deleted, "id": id })))
 }
 
 async fn events(AxumState(app): AxumState<AppState>) -> impl IntoResponse {
@@ -223,6 +232,7 @@ pub async fn start_api_server(
         .route("/state", get(get_state).post(post_state))
         .route("/state/{id}", post(post_state_by_id))
         .route("/reminders", get(get_reminders).post(post_reminder))
+        .route("/reminders/{id}", delete(delete_reminder_route))
         .route("/events", get(events))
         .route("/assets/spine/*path", get(get_spine_asset))
         .layer(localhost_cors())

@@ -69,6 +69,8 @@ pub struct CompanionState {
     pub auto_return_ms: Option<u64>,
     #[serde(default, rename = "returnTo", skip_serializing_if = "Option::is_none")]
     pub return_to: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notify: Option<bool>,
 }
 
 impl Default for CompanionState {
@@ -83,6 +85,7 @@ impl Default for CompanionState {
             reminder_id: None,
             auto_return_ms: None,
             return_to: None,
+            notify: None,
         }
     }
 }
@@ -107,6 +110,10 @@ pub struct SetStateInput {
     pub return_to: Option<String>,
     #[serde(default, rename = "reminderId")]
     pub reminder_id: Option<String>,
+    #[serde(default)]
+    pub notify: Option<bool>,
+    #[serde(default, rename = "preserveMessage")]
+    pub preserve_message: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -120,6 +127,8 @@ pub struct Reminder {
     pub fired: bool,
     #[serde(rename = "firedAt", skip_serializing_if = "Option::is_none")]
     pub fired_at: Option<String>,
+    #[serde(rename = "snoozeAfterMs")]
+    pub snooze_after_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -142,6 +151,8 @@ pub struct CreateReminderInput {
     pub duration_ms: Option<u64>,
     #[serde(default, rename = "returnTo")]
     pub return_to: Option<String>,
+    #[serde(default, rename = "snoozeAfterMs")]
+    pub snooze_after_ms: Option<u64>,
 }
 
 pub type StateStore = Arc<RwLock<CompanionState>>;
@@ -168,8 +179,9 @@ pub async fn set_state(
     tx: &StateBroadcast,
     input: SetStateInput,
 ) -> CompanionState {
+    let previous_state = store.read().await.state.clone();
     let snapshot = apply_state(store, tx, input.clone()).await;
-    schedule_auto_return(store, tx, &input, &snapshot);
+    schedule_auto_return(store, tx, &input, &snapshot, &previous_state);
     snapshot
 }
 
@@ -205,12 +217,16 @@ async fn apply_state(
         .source
         .clone()
         .unwrap_or_else(|| current.source.clone());
+    let has_requested_state = requested.is_some();
     if let Some(msg) = &input.message {
         current.message = msg.clone();
+    } else if has_requested_state && input.preserve_message != Some(true) {
+        current.message.clear();
     }
     current.reminder_id = input.reminder_id.clone();
     current.auto_return_ms = input.auto_return_ms;
     current.return_to = input.return_to.clone();
+    current.notify = input.notify;
 
     let snapshot = current.clone();
     drop(current);
@@ -223,13 +239,14 @@ fn schedule_auto_return(
     tx: &StateBroadcast,
     input: &SetStateInput,
     snapshot: &CompanionState,
+    previous_state: &str,
 ) {
     if let Some(ms) = input.auto_return_ms {
         if ms > 0 {
             let store_for_return = store.clone();
             let tx_for_return = tx.clone();
             let return_to = input.return_to.clone();
-            let previous_state = snapshot.state.clone();
+            let previous_state = previous_state.to_string();
             let updated_at = snapshot.updated_at.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
@@ -305,6 +322,7 @@ pub async fn create_reminder(
         created_at: now.to_rfc3339(),
         fired: false,
         fired_at: None,
+        snooze_after_ms: input.snooze_after_ms.unwrap_or(5 * 60 * 1000),
     };
 
     reminders.write().await.push(reminder.clone());
@@ -347,10 +365,18 @@ pub async fn create_reminder(
                 ..Default::default()
             },
             &fired,
+            "idle",
         );
     });
 
     reminder
+}
+
+pub async fn delete_reminder(reminders: &ReminderStore, id: &str) -> bool {
+    let mut list = reminders.write().await;
+    let before = list.len();
+    list.retain(|item| item.id != id);
+    list.len() != before
 }
 
 #[cfg(test)]
@@ -379,6 +405,34 @@ mod tests {
         )
         .await;
         assert_eq!(state.state, "reminder");
+        tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+        assert_eq!(store.read().await.state, "working");
+    }
+
+    #[tokio::test]
+    async fn set_state_clears_message_and_returns_to_previous_state() {
+        let (store, tx) = create_state_store("idle");
+        set_state(
+            &store,
+            &tx,
+            SetStateInput {
+                state: Some("working".to_string()),
+                message: Some("Building".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+        set_state(
+            &store,
+            &tx,
+            SetStateInput {
+                state: Some("reminder".to_string()),
+                auto_return_ms: Some(20),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(store.read().await.message, "");
         tokio::time::sleep(std::time::Duration::from_millis(60)).await;
         assert_eq!(store.read().await.state, "working");
     }

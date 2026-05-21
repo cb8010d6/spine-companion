@@ -5,9 +5,12 @@ contextBridge.exposeInMainWorld("companion", {
   getState: () => ipcRenderer.invoke("companion:get-state"),
   setState: (state) => ipcRenderer.invoke("companion:set-state", state),
   createReminder: (reminder) => ipcRenderer.invoke("companion:create-reminder", reminder),
+  listReminders: () => ipcRenderer.invoke("companion:list-reminders"),
+  deleteReminder: (id) => ipcRenderer.invoke("companion:delete-reminder", id),
   setUiSettings: (settings) => ipcRenderer.invoke("companion:set-ui-settings", settings),
   saveSettings: (patch) => ipcRenderer.invoke("companion:save-settings", patch),
   getDiagnostics: () => ipcRenderer.invoke("companion:get-diagnostics"),
+  exportLogs: () => ipcRenderer.invoke("companion:export-logs"),
   getInstalledModels: () => ipcRenderer.invoke("companion:get-installed-models"),
   getHistory: () => ipcRenderer.invoke("companion:get-history"),
   getCurrentModel: () => ipcRenderer.invoke("companion:get-current-model"),
@@ -18,6 +21,7 @@ contextBridge.exposeInMainWorld("companion", {
   removeModel: (id) => ipcRenderer.invoke("companion:remove-model", id),
   openFolder: (p) => ipcRenderer.invoke("companion:open-folder", p),
   openManager: () => ipcRenderer.invoke("companion:open-manager"),
+  setPanelPinned: (pinned) => ipcRenderer.invoke("companion:set-panel-pinned", Boolean(pinned)),
   quitApp: () => ipcRenderer.invoke("companion:quit-app"),
   emitScale: (payload) => ipcRenderer.invoke("companion:emit-scale", payload),
   importModel: (input) => ipcRenderer.invoke("companion:import-model", input),
@@ -51,6 +55,16 @@ contextBridge.exposeInMainWorld("companion", {
     const handler = (_event, p) => callback(p);
     ipcRenderer.on("companion:download-progress", handler);
     return () => ipcRenderer.off("companion:download-progress", handler);
+  },
+  onNotification: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on("companion:notification", handler);
+    return () => ipcRenderer.off("companion:notification", handler);
+  },
+  onNotificationDismiss: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on("companion:notification-dismiss", handler);
+    return () => ipcRenderer.off("companion:notification-dismiss", handler);
   },
   dragStart: (point) => ipcRenderer.send("companion:drag-start", point),
   dragMove: (point) => ipcRenderer.send("companion:drag-move", point),

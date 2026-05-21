@@ -9,6 +9,13 @@ function listFiles(dir) {
   }
 }
 
+function atlasTextureRefs(text) {
+  return String(text || "")
+    .split(/\r?\n/)
+    .filter((line) => /^[^\s].+\.(png|jpe?g|webp)\s*$/i.test(line))
+    .map((line) => line.trim());
+}
+
 function validateSpineAssetSelection(skelPath) {
   if (!skelPath || path.extname(skelPath).toLowerCase() !== ".skel") {
     throw new Error("Choose a Spine .skel file.");
@@ -24,12 +31,32 @@ function validateSpineAssetSelection(skelPath) {
   if (!atlasFiles.length || !pngFiles.length) {
     throw new Error("The selected .skel folder must also contain at least one .atlas file and one .png texture.");
   }
+  const missingTextures = [];
+  for (const atlas of atlasFiles) {
+    const atlasPath = path.join(assetDir, atlas);
+    let refs = [];
+    try {
+      refs = atlasTextureRefs(fs.readFileSync(atlasPath, "utf8"));
+    } catch (error) {
+      throw new Error(`Unable to read Spine atlas file ${atlas}: ${error.message || String(error)}`);
+    }
+    for (const ref of refs) {
+      const texturePath = path.join(assetDir, ref);
+      if (!fs.existsSync(texturePath) || !fs.statSync(texturePath).isFile()) {
+        missingTextures.push(`${atlas} -> ${ref}`);
+      }
+    }
+  }
+  if (missingTextures.length) {
+    throw new Error(`Missing atlas texture file(s): ${missingTextures.join(", ")}`);
+  }
 
   return {
     assetDir,
     skel: path.basename(skelPath),
     atlasFiles,
-    pngFiles
+    pngFiles,
+    atlasTextureRefs: atlasFiles.flatMap((atlas) => atlasTextureRefs(fs.readFileSync(path.join(assetDir, atlas), "utf8")))
   };
 }
 
@@ -38,6 +65,7 @@ function validateSpineAssetDir(assetDir, skel) {
 }
 
 module.exports = {
+  atlasTextureRefs,
   validateSpineAssetDir,
   validateSpineAssetSelection
 };

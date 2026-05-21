@@ -72,7 +72,8 @@ const fallbackConfig = {
     bubbleBackground: "solid",
     bubbleHoldMs: 8000,
     dragMode: "compatible",
-    autoRevealOnMcp: true
+    autoRevealOnMcp: true,
+    systemNotifications: true
   },
   models: {
     catalog: [
@@ -209,6 +210,7 @@ function getPublicConfig(config, serverOrigin) {
     models: config.models,
     paths: {
       configDir: userConfigDir(),
+      logsDir: path.join(userConfigDir(), "logs"),
       localConfigPath: config.localConfigPath,
       hasLocalConfig: config.hasLocalConfig,
       warnings: config.configWarnings || []

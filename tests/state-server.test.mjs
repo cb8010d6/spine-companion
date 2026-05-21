@@ -87,6 +87,12 @@ describe("state-server HTTP API", () => {
       const res = await postJson(`${baseUrl}/state`, { state: "move" });
       expect(res.body.state).toBe("running");
     });
+
+    it("rejects invalid state payloads", async () => {
+      const res = await postJson(`${baseUrl}/state`, { autoReturnMs: -1 });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/Invalid state payload/);
+    });
   });
 
   describe("POST /state/:id", () => {
@@ -132,6 +138,15 @@ describe("state-server HTTP API", () => {
       const res = await request(`${baseUrl}/reminders`);
       expect(res.body.reminders).toHaveLength(1);
       expect(res.body.reminders[0].text).toBe("Listed");
+    });
+
+    it("deletes reminders", async () => {
+      const created = await postJson(`${baseUrl}/reminders`, { text: "Delete me", delayMs: 60000 });
+      const deleted = await request(`${baseUrl}/reminders/${encodeURIComponent(created.body.id)}`, { method: "DELETE" });
+      expect(deleted.status).toBe(200);
+      expect(deleted.body.deleted).toBe(true);
+      const listed = await request(`${baseUrl}/reminders`);
+      expect(listed.body.reminders).toEqual([]);
     });
   });
 
