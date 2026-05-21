@@ -31,6 +31,9 @@ export class SpinePlayer {
     this.resizeTimer = null;
     this.handleResize = null;
     this.handleWheel = null;
+    this.hitboxPadding = Number.isFinite(Number(config.ui?.hitboxPadding))
+      ? Math.min(48, Math.max(0, Number(config.ui.hitboxPadding)))
+      : 8;
   }
 
   async init() {
@@ -348,14 +351,11 @@ export class SpinePlayer {
     const zoomRatio = Math.max(0, Math.min(1, (this.userScale - this.minUserScale) / zoomRange));
     const hitWidth = width * (0.62 + zoomRatio * 0.18);
     const hitHeight = height * (0.72 + zoomRatio * 0.16);
-    const paddingX = Math.max(3, width * (0.012 + zoomRatio * 0.025));
-    const paddingTop = Math.max(2, height * (0.006 + zoomRatio * 0.018));
-    const paddingBottom = Math.max(8, height * (0.018 + zoomRatio * 0.028));
     return {
-      left: this.model.x - hitWidth / 2 - paddingX,
-      right: this.model.x + hitWidth / 2 + paddingX,
-      top: this.model.y - hitHeight - paddingTop,
-      bottom: this.model.y + paddingBottom
+      left: this.model.x - hitWidth / 2 - this.hitboxPadding,
+      right: this.model.x + hitWidth / 2 + this.hitboxPadding,
+      top: this.model.y - hitHeight - this.hitboxPadding,
+      bottom: this.model.y + this.hitboxPadding
     };
   }
 

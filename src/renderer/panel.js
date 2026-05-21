@@ -1,10 +1,23 @@
 import "./panel.css";
 import { initTauriBridge, isTauri } from "./tauri-bridge.js";
 import { modelPreview } from "./model-preview.js";
+import { createI18n, t } from "../shared/i18n.js";
 
 let config = null;
 let panelPinned = false;
 const quickStates = ["idle", "working", "running", "reviewing", "success", "failed"];
+
+function stateLabel(id) {
+  return t(`state.${id}`);
+}
+
+function updateStaticLabels() {
+  const pin = document.getElementById("panel-pin");
+  if (pin) {
+    pin.textContent = panelPinned ? t("panel.pin.pinned") : t("panel.pin.pin");
+    pin.title = pin.textContent;
+  }
+}
 
 function renderPreview(previewEl, preview) {
   previewEl.replaceChildren();
@@ -38,7 +51,7 @@ async function closePanel(force = false) {
 function renderReminderList(reminders = []) {
   const list = document.getElementById("reminder-list");
   if (!reminders.length) {
-    list.textContent = "No reminders";
+    list.textContent = t("panel.reminders.none");
     return;
   }
   list.replaceChildren(...reminders.slice().sort((a, b) => String(a.dueAt).localeCompare(String(b.dueAt))).map((reminder) => {
@@ -46,14 +59,14 @@ function renderReminderList(reminders = []) {
     item.className = "reminder-item";
     const info = document.createElement("div");
     const title = document.createElement("strong");
-    title.textContent = reminder.text || "Reminder";
+    title.textContent = reminder.text || t("panel.reminders.defaultTitle");
     const meta = document.createElement("span");
-    meta.textContent = `${reminder.fired ? "Fired" : "Due"} ${reminder.dueAt || ""}`;
+    meta.textContent = `${reminder.fired ? t("panel.reminders.fired") : t("panel.reminders.due")} ${reminder.dueAt || ""}`;
     info.append(title, meta);
     const remove = document.createElement("button");
     remove.type = "button";
     remove.className = "mini-button";
-    remove.textContent = "Delete";
+    remove.textContent = t("manager.actions.delete");
     remove.addEventListener("click", async () => {
       await window.companion?.deleteReminder?.(reminder.id);
       renderReminderList(await window.companion?.listReminders?.() || []);
@@ -71,6 +84,8 @@ async function updateState() {
   } catch(e) { console.warn(e); return; }
 
   if (!config) return;
+  createI18n(config);
+  updateStaticLabels();
 
   const spine = config.spine || {};
   const ui = config.ui || {};
@@ -118,7 +133,11 @@ async function updateState() {
     const update = await window.companion.checkUpdates().catch((error) => ({ error: error.message }));
     document.getElementById("update-status").textContent = update.error
       ? update.error
-      : `${update.channel || "stable"} | Current ${update.currentVersion || ""}, latest ${update.latestVersion || ""}`;
+      : t("panel.update.currentLatest", {
+        channel: update.channel || "stable",
+        current: update.currentVersion || "",
+        latest: update.latestVersion || ""
+      });
   }
 }
 
@@ -126,8 +145,8 @@ function applyCompanionState(state = {}) {
   const dot = document.getElementById("global-status-dot");
   const text = document.getElementById("global-status-text");
   const id = state.state || "idle";
-  text.textContent = id;
-  dot.title = id;
+  text.textContent = stateLabel(id);
+  dot.title = stateLabel(id);
   dot.className = "dot";
   if (id === "working" || id === "thinking" || id === "running" || id === "reviewing") dot.classList.add("working");
   if (id === "failed") dot.classList.add("failed");
@@ -144,7 +163,8 @@ async function boot() {
   quickStateSection.replaceChildren(...quickStates.map((state) => {
     const button = document.createElement("button");
     button.type = "button";
-    button.textContent = state;
+    button.textContent = stateLabel(state);
+    button.setAttribute("aria-label", stateLabel(state));
     button.addEventListener("click", () => window.companion?.setState?.({ state, source: "quick-panel" }));
     return button;
   }));
@@ -159,7 +179,7 @@ async function boot() {
   document.getElementById("panel-pin").addEventListener("click", async (event) => {
     panelPinned = !panelPinned;
     event.currentTarget.setAttribute("aria-pressed", String(panelPinned));
-    event.currentTarget.textContent = panelPinned ? "Pinned" : "Pin";
+    event.currentTarget.textContent = panelPinned ? t("panel.pin.pinned") : t("panel.pin.pin");
     await window.companion?.setPanelPinned?.(panelPinned);
   });
 

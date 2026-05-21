@@ -8,6 +8,8 @@ const {
   sourceDisplayName
 } = require("../src/shared/notification-policy.cjs");
 
+const esmPolicy = await import("../src/shared/notification-policy.js");
+
 describe("notification policy", () => {
   it("recognizes supported AI task sources", () => {
     expect(isAiSource("codex-mcp")).toBe(true);
@@ -32,6 +34,16 @@ describe("notification policy", () => {
     expect(notificationForState({ state: "success", source: "codex-mcp" })).toMatchObject({
       title: "Codex task complete",
       body: "Finished successfully"
+    });
+  });
+
+  it("keeps the renderer ESM wrapper aligned with the CommonJS policy", () => {
+    expect(esmPolicy.shouldNotifyState({ state: "success", source: "codex-mcp" })).toBe(
+      shouldNotifyState({ state: "success", source: "codex-mcp" })
+    );
+    expect(esmPolicy.notificationForState({ state: "failed", source: "cursor-mcp" })).toMatchObject({
+      title: "Cursor task failed",
+      body: "Needs attention"
     });
   });
 });
