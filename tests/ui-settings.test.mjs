@@ -45,7 +45,11 @@ describe("ui-settings", () => {
       hudVisible: true,
       bubbleVisible: true,
       bubbleBackground: "light",
-      dragMode: "smooth"
+      dragMode: "smooth",
+      hitboxPadding: 12,
+      maxDevicePixelRatio: 2.5,
+      shortcutEnabled: false,
+      updateAutoCheck: false
     });
     const next = applyUiSettingsPatch(current, { bubbleVisible: false });
     expect(next).toMatchObject({
@@ -53,6 +57,10 @@ describe("ui-settings", () => {
       bubbleVisible: false,
       bubbleBackground: "light",
       dragMode: "smooth",
+      hitboxPadding: 12,
+      maxDevicePixelRatio: 2.5,
+      shortcutEnabled: false,
+      updateAutoCheck: false,
       autoRevealOnMcp: true,
       systemNotifications: true
     });
@@ -66,5 +74,23 @@ describe("ui-settings", () => {
   it("applies the system notification flag", () => {
     const next = applyUiSettingsPatch(DEFAULT_UI_SETTINGS, { systemNotifications: false });
     expect(next.systemNotifications).toBe(false);
+  });
+
+  it("clamps DPI and hitbox settings", () => {
+    expect(normalizeUiSettings({ maxDevicePixelRatio: 10 }).maxDevicePixelRatio).toBe(3);
+    expect(normalizeUiSettings({ maxDevicePixelRatio: 0 }).maxDevicePixelRatio).toBe(1);
+    expect(normalizeUiSettings({ hitboxPadding: 100 }).hitboxPadding).toBe(48);
+    expect(normalizeUiSettings({ hitboxPadding: -4 }).hitboxPadding).toBe(0);
+  });
+
+  it("applies shortcut and update settings", () => {
+    const next = applyUiSettingsPatch(DEFAULT_UI_SETTINGS, {
+      shortcutEnabled: false,
+      shortcutAccelerator: "Alt+Shift+S",
+      updateAutoCheck: false
+    });
+    expect(next.shortcutEnabled).toBe(false);
+    expect(next.shortcutAccelerator).toBe("Alt+Shift+S");
+    expect(next.updateAutoCheck).toBe(false);
   });
 });

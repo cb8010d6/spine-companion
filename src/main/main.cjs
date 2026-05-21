@@ -41,7 +41,12 @@ let uiSettings = {
   bubbleHoldMs: 8000,
   dragMode: "compatible",
   autoRevealOnMcp: true,
-  systemNotifications: true
+  systemNotifications: true,
+  shortcutEnabled: true,
+  shortcutAccelerator: "CommandOrControl+Shift+S",
+  updateAutoCheck: true,
+  maxDevicePixelRatio: 2,
+  hitboxPadding: 8
 };
 let alwaysOnTop = true;
 let isQuitting = false;
@@ -49,6 +54,9 @@ let panelWindow = null;
 let panelPinned = false;
 let windowBoundsTimer = null;
 let logger = null;
+let shortcutStatus = { enabled: true, registered: false, accelerator: "CommandOrControl+Shift+S", error: "" };
+let updateStatusCache = null;
+let updateCheckTimer = null;
 
 function rendererUrl() {
   if (isDev) return process.env.VITE_DEV_SERVER_URL || "http://127.0.0.1:17389";
@@ -264,6 +272,15 @@ function updateUiSettingsPatch(patch) {
     };
   }
   sendToRenderer("companion:ui", publicConfigCache.ui);
+  if (
+    Object.prototype.hasOwnProperty.call(patch, "shortcutEnabled")
+    || Object.prototype.hasOwnProperty.call(patch, "shortcutAccelerator")
+  ) {
+    registerStateShortcut();
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, "updateAutoCheck")) {
+    scheduleBackgroundUpdateCheck();
+  }
   updateTrayMenu();
 }
 
@@ -329,6 +346,8 @@ async function getDiagnostics() {
     hasPng,
     modelHealth,
     logsDir: logger?.logsDir || path.join(publicConfigCache?.paths?.configDir || "", "logs"),
+    shortcut: shortcutStatus,
+    updateStatus: updateStatusCache,
     mcpConfigured: mcp.configured,
     mcpMatches: mcp.matches
   };
@@ -412,8 +431,48 @@ function exportLogs() {
   return { file, logsDir: logger?.logsDir };
 }
 
-function getUpdateStatus() {
-  return checkGitHubRelease({ currentVersion: pkg.version });
+async function getUpdateStatus({ background = false } = {}) {
+  try {
+    const status = await checkGitHubRelease({ currentVersion: pkg.version });
+    updateStatusCache = { ...status, checkedAt: new Date().toISOString() };
+    logger?.info("updates.checked", {
+      background,
+      channel: updateStatusCache.channel,
+      latestVersion: updateStatusCache.latestVersion,
+      updateAvailable: updateStatusCache.updateAvailable
+    });
+    if (background && updateStatusCache.updateAvailable) {
+      sendToRenderer("companion:update-available", updateStatusCache);
+      sendToRenderer("companion:notification", {
+        id: `update:${updateStatusCache.latestVersion}`,
+        title: "Spine Companion update available",
+        body: `Version ${updateStatusCache.latestVersion} is available.`,
+        state: "reminder",
+        source: "update-checker"
+      });
+    }
+    return updateStatusCache;
+  } catch (error) {
+    updateStatusCache = {
+      currentVersion: pkg.version,
+      latestVersion: pkg.version,
+      updateAvailable: false,
+      error: error.message || String(error),
+      checkedAt: new Date().toISOString(),
+      channel: pkg.version.includes("-") ? "prerelease" : "stable"
+    };
+    logger?.warn("updates.failed", { background, error: updateStatusCache.error });
+    if (!background) throw error;
+    return updateStatusCache;
+  }
+}
+
+function scheduleBackgroundUpdateCheck() {
+  clearTimeout(updateCheckTimer);
+  if (uiSettings.updateAutoCheck === false) return;
+  updateCheckTimer = setTimeout(() => {
+    getUpdateStatus({ background: true }).catch(() => {});
+  }, 5 * 60 * 1000);
 }
 
 function setAutoLaunch(enabled) {
@@ -722,7 +781,7 @@ function registerIpc(config) {
   ipcMain.handle("companion:create-reminder", (_event, reminder) => serverRuntime.store.createReminder(validateReminder(reminder)));
   ipcMain.handle("companion:list-reminders", () => listReminders());
   ipcMain.handle("companion:delete-reminder", (_event, id) => deleteReminder(id));
-  ipcMain.handle("companion:set-ui-settings", (_event, settings) => applyUiSettingsPatch(settings));
+  ipcMain.handle("companion:set-ui-settings", (_event, settings) => applyUiSettingsPatch(validateSaveSettings({ ui: settings }).ui));
   ipcMain.handle("companion:emit-scale", (_event, payload) => {
     sendToRenderer("companion:scale", payload);
     return true;
@@ -800,7 +859,7 @@ function registerIpc(config) {
     if (!dragState) return;
     pendingDragPoint = point;
     if (dragFrame) return;
-    const dragFrameMs = uiSettings.dragMode === "smooth" ? 16 : 34;
+    const dragFrameMs = uiSettings.dragMode === "smooth" ? 16 : 24;
     dragFrame = setTimeout(() => {
       dragFrame = null;
       if (!dragState || !pendingDragPoint) return;
@@ -839,6 +898,34 @@ function setMousePassthrough(enabled, win = mainWindow) {
   updateTrayMenu();
 }
 
+function registerStateShortcut() {
+  const accelerator = uiSettings.shortcutAccelerator || "CommandOrControl+Shift+S";
+  globalShortcut.unregisterAll();
+  shortcutStatus = {
+    enabled: uiSettings.shortcutEnabled !== false,
+    registered: false,
+    accelerator,
+    error: ""
+  };
+  if (uiSettings.shortcutEnabled === false) {
+    logger?.info("shortcut.disabled", { accelerator });
+    return shortcutStatus;
+  }
+  try {
+    const registered = globalShortcut.register(accelerator, () => {
+      const state = serverRuntime.store.snapshot().state === "working" ? "idle" : "working";
+      serverRuntime.store.setState({ state, source: "global-shortcut", message: state === "working" ? "Working" : "" });
+    });
+    shortcutStatus.registered = registered;
+    if (!registered) shortcutStatus.error = "Shortcut is already in use by another application.";
+    logger?.[registered ? "info" : "warn"]("shortcut.register", shortcutStatus);
+  } catch (error) {
+    shortcutStatus.error = error.message || String(error);
+    logger?.warn("shortcut.register_failed", shortcutStatus);
+  }
+  return shortcutStatus;
+}
+
 async function boot() {
   const config = loadConfig();
   uiSettings = normalizeUiSettings(config.ui);
@@ -850,10 +937,8 @@ async function boot() {
   serverRuntime = createCompanionServer(config, () => publicConfigCache);
   await serverRuntime.listen();
   registerIpc(config);
-  globalShortcut.register("CommandOrControl+Shift+S", () => {
-    const state = serverRuntime.store.snapshot().state === "working" ? "idle" : "working";
-    serverRuntime.store.setState({ state, source: "global-shortcut", message: state === "working" ? "Working" : "" });
-  });
+  registerStateShortcut();
+  scheduleBackgroundUpdateCheck();
   createTray();
   await createWindow(config);
   if (!config.spine.assetDir) {

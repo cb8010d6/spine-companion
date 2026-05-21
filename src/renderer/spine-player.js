@@ -34,12 +34,15 @@ export class SpinePlayer {
   }
 
   async init() {
+    const dprLimit = Number.isFinite(Number(this.config.ui?.maxDevicePixelRatio))
+      ? Math.min(3, Math.max(1, Number(this.config.ui.maxDevicePixelRatio)))
+      : 2;
     this.app = new PIXI.Application({
       resizeTo: this.stageElement,
       backgroundAlpha: 0,
       antialias: true,
       autoDensity: true,
-      resolution: Math.min(window.devicePixelRatio || 1, 2)
+      resolution: Math.min(window.devicePixelRatio || 1, dprLimit)
     });
     this.stageElement.appendChild(this.app.view);
     this.model = new PIXI.Container();
@@ -147,7 +150,7 @@ export class SpinePlayer {
 
   applyTickerMode() {
     if (!this.app) return;
-    this.app.ticker.maxFPS = this.dragActive && this.dragMode !== "smooth" ? 30 : 0;
+    this.app.ticker.maxFPS = this.dragActive && this.dragMode !== "smooth" ? 42 : 0;
   }
 
   setDirection(direction) {

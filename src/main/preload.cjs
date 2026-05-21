@@ -66,6 +66,11 @@ contextBridge.exposeInMainWorld("companion", {
     ipcRenderer.on("companion:notification-dismiss", handler);
     return () => ipcRenderer.off("companion:notification-dismiss", handler);
   },
+  onUpdateAvailable: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on("companion:update-available", handler);
+    return () => ipcRenderer.off("companion:update-available", handler);
+  },
   dragStart: (point) => ipcRenderer.send("companion:drag-start", point),
   dragMove: (point) => ipcRenderer.send("companion:drag-move", point),
   dragEnd: () => ipcRenderer.send("companion:drag-end"),

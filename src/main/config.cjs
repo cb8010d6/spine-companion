@@ -73,7 +73,12 @@ const fallbackConfig = {
     bubbleHoldMs: 8000,
     dragMode: "compatible",
     autoRevealOnMcp: true,
-    systemNotifications: true
+    systemNotifications: true,
+    shortcutEnabled: true,
+    shortcutAccelerator: "CommandOrControl+Shift+S",
+    updateAutoCheck: true,
+    maxDevicePixelRatio: 2,
+    hitboxPadding: 8
   },
   models: {
     catalog: [

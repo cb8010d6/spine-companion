@@ -353,18 +353,26 @@ restart Codex or open a new session.
 ### macOS arm64 app cannot be opened
 
 Unsigned macOS artifacts from GitHub Actions can be blocked by Gatekeeper,
-especially on Apple Silicon. For public macOS releases, configure repository
-secrets so the release workflow can sign and notarize:
+especially on Apple Silicon. Only use these steps for artifacts downloaded from
+a release you trust.
 
-- `MACOS_CERTIFICATE`
-- `MACOS_CERTIFICATE_PASSWORD`
-- `APPLE_API_KEY`
-- `APPLE_API_KEY_ID`
-- `APPLE_API_ISSUER`
-- `APPLE_TEAM_ID`
+Option 1: use Finder:
 
-Without those secrets, users may need to remove quarantine manually or use a
-local development run instead of the release artifact.
+1. Move `Spine Companion.app` to `/Applications`.
+2. Right-click the app and choose **Open**.
+3. In the warning dialog, choose **Open** again.
+
+Option 2: remove the quarantine flag in Terminal:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Spine Companion.app"
+open "/Applications/Spine Companion.app"
+```
+
+Official signing and notarization are deferred. For public signed macOS
+releases, configure repository secrets such as `MACOS_CERTIFICATE`,
+`MACOS_CERTIFICATE_PASSWORD`, `APPLE_API_KEY`, `APPLE_API_KEY_ID`,
+`APPLE_API_ISSUER`, and `APPLE_TEAM_ID`.
 
 ### The model changes size between animations
 

@@ -18,10 +18,42 @@ const setStateSchema = z.object({
   preserveMessage: z.boolean().optional()
 }).passthrough();
 
+const spineSettingsSchema = z.object({
+  assetDir: z.string().max(4096).optional(),
+  skel: z.string().max(512).optional(),
+  scale: z.number().min(0.1).max(3).optional(),
+  offsetX: z.number().min(-1000).max(1000).optional(),
+  offsetY: z.number().min(-1000).max(1000).optional(),
+  mixDurationMs: z.number().min(0).max(10000).optional(),
+  boundsSamples: z.number().int().min(1).max(120).optional(),
+  framePadding: z.number().min(0.5).max(3).optional(),
+  maxViewportFill: z.number().min(0.1).max(1).optional(),
+  stageBottomInset: z.number().min(0).max(1000).optional(),
+  fitStates: z.array(z.string().max(64)).max(32).optional()
+}).passthrough();
+
+const uiSettingsSchema = z.object({
+  hudVisible: z.boolean().optional(),
+  bubbleVisible: z.boolean().optional(),
+  bubbleShadow: z.boolean().optional(),
+  bubbleBackground: z.enum(["solid", "soft", "clear", "light"]).optional(),
+  bubbleHoldMs: z.number().min(1500).max(60000).optional(),
+  dragMode: z.enum(["compatible", "smooth"]).optional(),
+  autoRevealOnMcp: z.boolean().optional(),
+  systemNotifications: z.boolean().optional(),
+  shortcutEnabled: z.boolean().optional(),
+  shortcutAccelerator: z.string().trim().min(1).max(80).optional(),
+  updateAutoCheck: z.boolean().optional(),
+  maxDevicePixelRatio: z.number().min(1).max(3).optional(),
+  hitboxPadding: z.number().min(0).max(48).optional(),
+  theme: z.enum(["dark", "light"]).optional(),
+  locale: z.enum(["auto", "en", "zh-CN"]).optional()
+}).passthrough();
+
 const saveSettingsSchema = z.object({
   window: z.record(z.string(), jsonValue).optional(),
-  spine: z.record(z.string(), jsonValue).optional(),
-  ui: z.record(z.string(), jsonValue).optional(),
+  spine: spineSettingsSchema.optional(),
+  ui: uiSettingsSchema.optional(),
   state: z.record(z.string(), jsonValue).optional(),
   models: z.record(z.string(), jsonValue).optional(),
   specialSegments: z.record(z.string(), jsonValue).optional()

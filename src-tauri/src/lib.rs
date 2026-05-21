@@ -37,6 +37,11 @@ struct UiSettings {
     drag_mode: String,
     auto_reveal_on_mcp: bool,
     system_notifications: bool,
+    shortcut_enabled: bool,
+    shortcut_accelerator: String,
+    update_auto_check: bool,
+    max_device_pixel_ratio: f64,
+    hitbox_padding: f64,
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -50,6 +55,11 @@ struct UiSettingsPatch {
     drag_mode: Option<String>,
     auto_reveal_on_mcp: Option<bool>,
     system_notifications: Option<bool>,
+    shortcut_enabled: Option<bool>,
+    shortcut_accelerator: Option<String>,
+    update_auto_check: Option<bool>,
+    max_device_pixel_ratio: Option<f64>,
+    hitbox_padding: Option<f64>,
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -108,7 +118,12 @@ fn fallback_config() -> serde_json::Value {
             "bubbleHoldMs": 8000,
             "dragMode": "compatible",
             "autoRevealOnMcp": true,
-            "systemNotifications": true
+            "systemNotifications": true,
+            "shortcutEnabled": true,
+            "shortcutAccelerator": "CommandOrControl+Shift+S",
+            "updateAutoCheck": true,
+            "maxDevicePixelRatio": 2,
+            "hitboxPadding": 8
         },
         "models": {
             "catalog": [
@@ -242,6 +257,18 @@ fn u64_at(value: &serde_json::Value, path: &[&str], fallback: u64) -> u64 {
     current.as_u64().unwrap_or(fallback)
 }
 
+fn f64_at(value: &serde_json::Value, path: &[&str], fallback: f64) -> f64 {
+    let mut current = value;
+    for key in path {
+        if let Some(next) = current.get(*key) {
+            current = next;
+        } else {
+            return fallback;
+        }
+    }
+    current.as_f64().unwrap_or(fallback)
+}
+
 fn resolve_asset_dir(root: &Path, value: &str) -> String {
     if value.is_empty() {
         return String::new();
@@ -338,6 +365,9 @@ fn ui_settings_from_config(config: &serde_json::Value) -> UiSettings {
     let drag_mode = string_at(config, &["ui", "dragMode"])
         .unwrap_or("compatible")
         .to_string();
+    let shortcut = string_at(config, &["ui", "shortcutAccelerator"])
+        .unwrap_or("CommandOrControl+Shift+S")
+        .to_string();
     UiSettings {
         hud_visible: bool_at(config, &["ui", "hudVisible"], false),
         bubble_visible: bool_at(config, &["ui", "bubbleVisible"], true),
@@ -347,6 +377,15 @@ fn ui_settings_from_config(config: &serde_json::Value) -> UiSettings {
         drag_mode: normalize_drag_mode(&drag_mode),
         auto_reveal_on_mcp: bool_at(config, &["ui", "autoRevealOnMcp"], true),
         system_notifications: bool_at(config, &["ui", "systemNotifications"], true),
+        shortcut_enabled: bool_at(config, &["ui", "shortcutEnabled"], true),
+        shortcut_accelerator: if shortcut.trim().is_empty() {
+            "CommandOrControl+Shift+S".to_string()
+        } else {
+            shortcut.trim().to_string()
+        },
+        update_auto_check: bool_at(config, &["ui", "updateAutoCheck"], true),
+        max_device_pixel_ratio: f64_at(config, &["ui", "maxDevicePixelRatio"], 2.0).clamp(1.0, 3.0),
+        hitbox_padding: f64_at(config, &["ui", "hitboxPadding"], 8.0).clamp(0.0, 48.0),
     }
 }
 
@@ -389,6 +428,23 @@ fn apply_ui_patch(settings: &mut UiSettings, patch: UiSettingsPatch) {
     }
     if let Some(value) = patch.system_notifications {
         settings.system_notifications = value;
+    }
+    if let Some(value) = patch.shortcut_enabled {
+        settings.shortcut_enabled = value;
+    }
+    if let Some(value) = patch.shortcut_accelerator {
+        if !value.trim().is_empty() {
+            settings.shortcut_accelerator = value.trim().to_string();
+        }
+    }
+    if let Some(value) = patch.update_auto_check {
+        settings.update_auto_check = value;
+    }
+    if let Some(value) = patch.max_device_pixel_ratio {
+        settings.max_device_pixel_ratio = value.clamp(1.0, 3.0);
+    }
+    if let Some(value) = patch.hitbox_padding {
+        settings.hitbox_padding = value.clamp(0.0, 48.0);
     }
 }
 
@@ -996,6 +1052,16 @@ async fn get_diagnostics(data: State<'_, AppData>) -> Result<serde_json::Value, 
         "hasPng": has_png,
         "modelHealth": model_health,
         "logsDir": data.config_dir.join("logs").to_string_lossy().to_string(),
+        "shortcut": {
+            "enabled": current_ui_settings(&data).shortcut_enabled,
+            "registered": false,
+            "accelerator": current_ui_settings(&data).shortcut_accelerator,
+            "error": "Global shortcuts are not implemented in the Tauri runtime yet."
+        },
+        "runtime": {
+            "name": "tauri",
+            "experimental": true
+        },
         "mcpConfigured": mcp_configured,
         "mcpMatches": mcp_matches
     }))

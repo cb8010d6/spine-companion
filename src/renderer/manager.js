@@ -33,6 +33,7 @@ function showToast(message) {
 function closeModal() {
   modalContainer.classList.add("hidden");
   document.getElementById("modal-actions").replaceChildren();
+  document.removeEventListener("keydown", trapModalKeys);
 }
 
 function showModal(title, bodyText, actions = []) {
@@ -40,6 +41,30 @@ function showModal(title, bodyText, actions = []) {
   document.getElementById("modal-body").textContent = bodyText;
   document.getElementById("modal-actions").replaceChildren(...actions);
   modalContainer.classList.remove("hidden");
+  document.addEventListener("keydown", trapModalKeys);
+  window.setTimeout(() => modalContainer.querySelector("button")?.focus(), 0);
+}
+
+function trapModalKeys(event) {
+  if (modalContainer.classList.contains("hidden")) return;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeModal();
+    return;
+  }
+  if (event.key !== "Tab") return;
+  const focusable = [...modalContainer.querySelectorAll("button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])")]
+    .filter((node) => !node.disabled);
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
 }
 
 function navTo(viewName) {
@@ -305,8 +330,11 @@ function settingsView() {
     setStatus(t("manager.status.settingsSaved"));
     showToast(t("manager.status.settingsSaved"));
   };
-  const resetSpine = async () => {
-    await window.companion?.saveSettings?.({ spine: { scale: 0.86, offsetX: 0, offsetY: -18 } });
+  const resetExperience = async () => {
+    await window.companion?.saveSettings?.({
+      spine: { scale: 0.86, offsetX: 0, offsetY: -18 },
+      ui: { maxDevicePixelRatio: 2, hitboxPadding: 8 }
+    });
     await refreshConfig();
     showToast(t("manager.status.settingsSaved"));
     renderView("settings");
@@ -322,12 +350,12 @@ function settingsView() {
       h("article", { class: "card form-card" },
         h("h3", {}, t("manager.section.spine")),
         h("button", { class: "btn", type: "button", onClick: importLocalModel }, t("manager.actions.importLocal")),
-        rangeNumber(t("manager.field.scale"), "set-scale", Number(spine.scale || 1), 0.2, 2.5, 0.01),
-        rangeNumber(t("manager.field.offsetX"), "set-offset-x", Number(spine.offsetX || 0), -240, 240, 1),
-        rangeNumber(t("manager.field.offsetY"), "set-offset-y", Number(spine.offsetY || 0), -240, 240, 1),
+        rangeNumber(t("manager.field.scale"), "set-scale", Number(spine.scale || 1), 0.2, 2.5, 0.01, saveSpine),
+        rangeNumber(t("manager.field.offsetX"), "set-offset-x", Number(spine.offsetX || 0), -240, 240, 1, saveSpine),
+        rangeNumber(t("manager.field.offsetY"), "set-offset-y", Number(spine.offsetY || 0), -240, 240, 1, saveSpine),
         h("div", { class: "model-actions" },
           h("button", { class: "btn btn-primary", type: "button", onClick: saveSpine }, t("manager.actions.saveConfiguration")),
-          h("button", { class: "btn", type: "button", onClick: resetSpine }, t("manager.actions.resetDefaults"))
+          h("button", { class: "btn", type: "button", onClick: resetExperience }, t("manager.actions.resetDefaults"))
         )
       ),
       h("article", { class: "card form-card" },
@@ -336,6 +364,15 @@ function settingsView() {
         check(t("manager.field.showProgressBubble"), ui.bubbleVisible !== false, (checked) => saveUi({ bubbleVisible: checked })),
         check(t("manager.field.autoShowCodex"), ui.autoRevealOnMcp !== false, (checked) => saveUi({ autoRevealOnMcp: checked })),
         check(t("manager.field.systemNotifications"), ui.systemNotifications !== false, (checked) => saveUi({ systemNotifications: checked })),
+        check(t("manager.field.updateAutoCheck"), ui.updateAutoCheck !== false, (checked) => saveUi({ updateAutoCheck: checked })),
+        check(t("manager.field.shortcutEnabled"), ui.shortcutEnabled !== false, (checked) => saveUi({ shortcutEnabled: checked })),
+        field(t("manager.field.shortcutAccelerator"), h("input", {
+          class: "input",
+          value: ui.shortcutAccelerator || "CommandOrControl+Shift+S",
+          onChange: (e) => saveUi({ shortcutAccelerator: e.target.value })
+        })),
+        rangeNumber(t("manager.field.maxDpr"), "set-max-dpr", Number(ui.maxDevicePixelRatio || 2), 1, 3, 0.25, () => saveUi({ maxDevicePixelRatio: numeric("set-max-dpr-number") })),
+        rangeNumber(t("manager.field.hitboxPadding"), "set-hitbox-padding", Number(ui.hitboxPadding || 8), 0, 48, 1, () => saveUi({ hitboxPadding: numeric("set-hitbox-padding-number") })),
         check(t("manager.field.bubbleShadow"), ui.bubbleShadow !== false, (checked) => saveUi({ bubbleShadow: checked })),
         field(t("manager.field.bubbleTheme"), h("select", { class: "select", value: ui.bubbleBackground || "solid", onChange: (e) => saveUi({ bubbleBackground: e.target.value }) },
           ["solid", "soft", "clear", "light"].map((value) => h("option", { value, selected: (ui.bubbleBackground || "solid") === value }, value))
@@ -370,12 +407,17 @@ function settingsView() {
   );
 }
 
-function rangeNumber(label, id, value, min, max, step) {
+function rangeNumber(label, id, value, min, max, step, onCommit = null) {
   const rangeId = `${id}-range`;
   const numberId = `${id}-number`;
+  let commitTimer = 0;
   const sync = (source, target) => {
     const next = source.value;
     target.value = next;
+    if (onCommit) {
+      window.clearTimeout(commitTimer);
+      commitTimer = window.setTimeout(() => onCommit(), 240);
+    }
   };
   const range = h("input", { id: rangeId, type: "range", min, max, step, value });
   const number = h("input", { id: numberId, class: "input", type: "number", min, max, step, value });
@@ -415,6 +457,11 @@ async function diagnosticsView() {
         ...(diagnostics.configWarnings || []).map((warning) => h("p", { class: "error-text", title: warning.file }, `Config warning: ${warning.message}`)),
         row(t("manager.diagnostics.spineAssets"), diagnostics.assetDirExists && diagnostics.hasSkel && diagnostics.hasAtlas && diagnostics.hasPng, "skel / atlas / png"),
         row(t("manager.diagnostics.modelHealth"), diagnostics.modelHealth?.ok, diagnostics.modelHealth?.message),
+        row(t("manager.diagnostics.shortcut"), diagnostics.shortcut?.registered || diagnostics.shortcut?.enabled === false,
+          diagnostics.shortcut?.enabled === false
+            ? t("manager.status.disabled")
+            : diagnostics.shortcut?.error || diagnostics.shortcut?.accelerator),
+        row(t("manager.diagnostics.runtime"), !isTauri(), isTauri() ? t("manager.status.tauriExperimental") : "Electron"),
         h("div", { class: "model-actions" },
           h("button", { class: "btn", type: "button", onClick: () => window.companion?.openFolder?.(config.paths?.configDir) }, t("manager.actions.openConfigFolder")),
           h("button", { class: "btn", type: "button", onClick: async () => {

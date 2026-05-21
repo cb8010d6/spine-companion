@@ -118,7 +118,7 @@ async function updateState() {
     const update = await window.companion.checkUpdates().catch((error) => ({ error: error.message }));
     document.getElementById("update-status").textContent = update.error
       ? update.error
-      : `Current ${update.currentVersion || ""}, latest ${update.latestVersion || ""}`;
+      : `${update.channel || "stable"} | Current ${update.currentVersion || ""}, latest ${update.latestVersion || ""}`;
   }
 }
 
@@ -127,6 +127,7 @@ function applyCompanionState(state = {}) {
   const text = document.getElementById("global-status-text");
   const id = state.state || "idle";
   text.textContent = id;
+  dot.title = id;
   dot.className = "dot";
   if (id === "working" || id === "thinking" || id === "running" || id === "reviewing") dot.classList.add("working");
   if (id === "failed") dot.classList.add("failed");

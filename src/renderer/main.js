@@ -53,7 +53,8 @@ let currentUiSettings = {
   bubbleShadow: true,
   bubbleBackground: "solid",
   bubbleHoldMs: 8000,
-  dragMode: "compatible"
+  dragMode: "compatible",
+  hitboxPadding: 8
 };
 let currentBubbleAnchor = { x: 20, y: 28, scale: 1, side: "left" };
 let heldBubble = null;
@@ -138,6 +139,15 @@ function rectContains(rect, x, y) {
   return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
 }
 
+function paddedRectContains(rect, x, y, padding = 0) {
+  if (!rect) return false;
+  const inset = Math.max(0, Number(padding) || 0);
+  return x >= rect.left - inset
+    && x <= rect.right + inset
+    && y >= rect.top - inset
+    && y <= rect.bottom + inset;
+}
+
 function elementContainsPoint(element, x, y) {
   if (!element || element.hidden) return false;
   const style = window.getComputedStyle(element);
@@ -174,7 +184,7 @@ function updateMousePassthrough(event) {
 
   const x = event.clientX;
   const y = event.clientY;
-  const interactive = rectContains(player?.getInteractiveBounds?.(), x, y)
+  const interactive = paddedRectContains(player?.getInteractiveBounds?.(), x, y, currentUiSettings.hitboxPadding)
     || elementContainsPoint(document.getElementById("hud"), x, y)
     || elementContainsPoint(settingsPanel, x, y)
     || elementContainsPoint(progressBubble, x, y)
@@ -517,6 +527,14 @@ async function boot() {
     completionToast.hidden = true;
     window.clearTimeout(completionToastTimer);
     setMousePassthrough(true);
+  });
+
+  window.companion?.onUpdateAvailable?.((status) => {
+    updateBubble({
+      state: "reminder",
+      source: "update-checker",
+      message: `Spine Companion ${status.latestVersion} is available.`
+    });
   });
 
   settingsToggle.addEventListener("click", () => {
