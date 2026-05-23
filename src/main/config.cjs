@@ -108,7 +108,7 @@ const fallbackConfig = {
   },
   specialSegments: {
     review: { from: 2.6, to: 4.35, loop: true },
-    success: { from: 4.4, to: 7.2, loop: false },
+    success: { from: 4.4, to: 14.433, loop: false },
     special: { from: 0, to: 14.433, loop: true }
   }
 };

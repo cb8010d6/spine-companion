@@ -155,7 +155,7 @@ fn fallback_config() -> serde_json::Value {
         "state": { "initial": "idle", "pollMs": 1000, "sources": [{ "type": "local-http" }] },
         "specialSegments": {
             "review": { "from": 2.6, "to": 4.35, "loop": true },
-            "success": { "from": 4.4, "to": 7.2, "loop": false },
+            "success": { "from": 4.4, "to": 14.433, "loop": false },
             "special": { "from": 0, "to": 14.433, "loop": true }
         }
     })
@@ -1725,14 +1725,17 @@ fn show_manager_window(app: &AppHandle) -> Result<WebviewWindow, String> {
     } else {
         create_manager_window(app)?
     };
-    win.unminimize()
-        .map_err(|error| format!("Failed to unminimize Manager: {}", error))?;
+    if let Err(error) = win.unminimize() {
+        eprintln!("Failed to unminimize Manager: {}", error);
+    }
     win.show()
         .map_err(|error| format!("Failed to show Manager: {}", error))?;
-    win.set_always_on_top(true)
-        .map_err(|error| format!("Failed to raise Manager: {}", error))?;
-    win.set_focus()
-        .map_err(|error| format!("Failed to focus Manager: {}", error))?;
+    if let Err(error) = win.set_always_on_top(true) {
+        eprintln!("Failed to raise Manager: {}", error);
+    }
+    if let Err(error) = win.set_focus() {
+        eprintln!("Failed to focus Manager: {}", error);
+    }
     let raised = win.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(1200)).await;

@@ -68,6 +68,8 @@ let pendingMousePassthroughEvent = null;
 let mousePassthroughFrame = 0;
 let runtimeConfig = null;
 let providerErrorToastTimer = null;
+let onboardingDismissedForSession = false;
+let clickReturnTimer = 0;
 
 function applyUiSettings(settings = {}) {
   currentUiSettings = { ...currentUiSettings, ...settings };
@@ -160,7 +162,10 @@ async function openManagerFromRenderer() {
   if (!window.companion?.openManager) {
     throw new Error("Manager API is unavailable.");
   }
-  await window.companion.openManager();
+  onboardingDismissedForSession = true;
+  onboardingRoot.hidden = true;
+  onboardingRoot.replaceChildren();
+  return window.companion.openManager();
 }
 
 function scheduleMousePassthroughUpdate(event) {
@@ -316,7 +321,7 @@ function showEmptyState(error, config) {
 }
 
 function showOnboardingIfNeeded(config) {
-  if (!shouldShowOnboarding(config)) {
+  if (onboardingDismissedForSession || !shouldShowOnboarding(config)) {
     onboardingRoot.hidden = true;
     onboardingRoot.replaceChildren();
     return;
@@ -358,6 +363,9 @@ async function loadPlayer(config) {
   applyBubbleAnchor(player.getAnchor());
   player.applyState(currentState, true);
   emptyState.hidden = true;
+  onboardingDismissedForSession = true;
+  onboardingRoot.hidden = true;
+  onboardingRoot.replaceChildren();
   errorRoot.hidden = true;
   errorRoot.replaceChildren();
   setMousePassthrough(true);
@@ -394,6 +402,7 @@ function wireDragging() {
       x: event.screenX,
       y: event.screenY,
       lastX: event.screenX,
+      lastRunX: event.screenX,
       lastDirection: "",
       returnTo: currentState.state || "idle"
     };
@@ -407,8 +416,8 @@ function wireDragging() {
     if (!drag) return;
     const distance = Math.abs(event.screenX - drag.x) + Math.abs(event.screenY - drag.y);
     if (distance > 3) drag.moved = true;
-    const dx = event.screenX - drag.lastX;
-    if (drag.moved && Math.abs(dx) >= 6 && player) {
+    const dx = event.screenX - drag.lastRunX;
+    if (drag.moved && Math.abs(dx) >= 2 && player) {
       const direction = dx < 0 ? "left" : "right";
       if (direction !== drag.lastDirection) {
         drag.lastDirection = direction;
@@ -420,6 +429,7 @@ function wireDragging() {
       } else {
         player.setDirection(direction);
       }
+      drag.lastRunX = event.screenX;
       updateHud({
         state: "running",
         direction,
@@ -436,24 +446,42 @@ function wireDragging() {
     const completedDrag = drag.moved;
     const returnTo = drag.returnTo || "idle";
     window.companion?.dragEnd();
-    if (completedDrag && provider) {
-      await provider.setState({
-        state: returnTo,
-        source: "drag-end"
-      });
-    } else if (provider) {
-      await provider.setState({
-        state: "reminder",
-        source: "click",
-        message: "Interaction",
-        autoReturnMs: 2200,
-        returnTo: "idle"
-      });
+    if (completedDrag) {
+      player?.applyState({ state: returnTo, source: "drag-end" }, true);
+      updateHud({ state: returnTo, source: "drag-end" });
     }
     drag = null;
     player?.setDragActive(false);
     document.body.classList.remove("is-dragging");
     shell.releasePointerCapture(event.pointerId);
+    if (completedDrag) {
+      if (provider) {
+        await provider.setState({
+          state: returnTo,
+          source: "drag-end"
+        });
+      }
+      return;
+    }
+    const clickState = {
+      state: "reminder",
+      source: "click",
+      message: "Interaction",
+      autoReturnMs: 2200,
+      returnTo: "idle"
+    };
+    player?.applyState(clickState, true);
+    updateHud(clickState);
+    window.clearTimeout(clickReturnTimer);
+    clickReturnTimer = window.setTimeout(() => {
+      const idleState = { state: "idle", source: "click-return" };
+      player?.applyState(idleState, true);
+      updateHud(idleState);
+      provider?.setState?.(idleState).catch(() => {});
+    }, Number(clickState.autoReturnMs));
+    if (provider) {
+      await provider.setState(clickState);
+    }
   });
 }
 

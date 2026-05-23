@@ -54,7 +54,7 @@
       "segment": "success",
       "loop": false,
       "returnTo": "idle",
-      "returnAfterMs": 5200
+      "returnAfterMs": 10400
     },
     "failed": {
       "animation": "Sleep",

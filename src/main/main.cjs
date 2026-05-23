@@ -581,8 +581,9 @@ function hideCompanionWindow() {
 async function openManager() {
   if (managerWindow && !managerWindow.isDestroyed()) {
     if (!managerWindow.isVisible()) managerWindow.show();
+    if (managerWindow.isMinimized()) managerWindow.restore();
     managerWindow.focus();
-    return;
+    return { opened: true };
   }
 
   managerWindow = new BrowserWindow({
@@ -611,8 +612,15 @@ async function openManager() {
     return { action: "deny" };
   });
 
-  await managerWindow.loadURL(managerUrl());
-  managerWindow.show();
+  try {
+    await managerWindow.loadURL(managerUrl());
+    managerWindow.show();
+    managerWindow.focus();
+    return { opened: true };
+  } catch (error) {
+    logger?.error("manager.open_failed", error);
+    throw error;
+  }
 }
 
 async function openPanel(bounds) {
@@ -804,9 +812,10 @@ function registerIpc(config) {
   ipcMain.handle("companion:set-auto-launch", (_event, enabled) => setAutoLaunch(enabled));
   ipcMain.handle("companion:remove-model", (_event, id) => removeModel(validateModelId(id)));
   ipcMain.handle("companion:open-folder", (_event, p) => openCompanionFolder(validateOpenFolderPath(p)));
-  ipcMain.handle("companion:open-manager", () => {
-    openManager();
+  ipcMain.handle("companion:open-manager", async () => {
+    const result = await openManager();
     if (panelWindow && !panelWindow.isDestroyed()) panelWindow.hide();
+    return result;
   });
   ipcMain.handle("companion:set-panel-pinned", (_event, pinned) => {
     panelPinned = Boolean(pinned);
