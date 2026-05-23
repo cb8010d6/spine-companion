@@ -504,7 +504,8 @@ input::placeholder {
   flex-wrap: wrap;
 }
 
-.error-action-status:empty {
+.error-action-status:empty,
+#empty-manager-status:empty {
   display: none;
 }
 

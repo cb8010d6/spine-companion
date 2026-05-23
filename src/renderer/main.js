@@ -5,6 +5,7 @@ import { SpinePlayer } from "./spine-player.js";
 import { stateLabels } from "./state.js";
 import { createOnboarding, shouldShowOnboarding } from "./onboarding.js";
 import { createErrorCard } from "./error-boundary.js";
+import { bindManagerButton } from "./manager-action.js";
 import { defaultMessageForState, isAiSource, notificationForState, shouldNotifyState, sourceDisplayName } from "../shared/notification-policy.js";
 
 const stage = document.getElementById("stage");
@@ -38,6 +39,8 @@ const reminderDelay = document.getElementById("reminder-delay");
 const emptyState = document.getElementById("empty-state");
 const emptyStatePath = document.getElementById("empty-state-path");
 const emptyImport = document.getElementById("empty-import");
+const emptyManager = document.getElementById("empty-manager");
+const emptyManagerStatus = document.getElementById("empty-manager-status");
 const emptyRetry = document.getElementById("empty-retry");
 const onboardingRoot = document.getElementById("onboarding-root");
 const errorRoot = document.getElementById("error-root");
@@ -152,6 +155,14 @@ function setMousePassthrough(enabled) {
   window.companion.setMousePassthrough(enabled);
 }
 
+async function openManagerFromRenderer() {
+  setMousePassthrough(false);
+  if (!window.companion?.openManager) {
+    throw new Error("Manager API is unavailable.");
+  }
+  await window.companion.openManager();
+}
+
 function scheduleMousePassthroughUpdate(event) {
   pendingMousePassthroughEvent = event;
   if (mousePassthroughFrame) return;
@@ -259,6 +270,7 @@ function renderModelCatalog(config) {
   modelSelect.disabled = !hasModels;
   modelImport.disabled = !hasModels;
   emptyImport.hidden = !hasModels;
+  emptyManager.hidden = !window.companion?.openManager;
 }
 
 async function importSelectedModel(source = "settings") {
@@ -311,7 +323,7 @@ function showOnboardingIfNeeded(config) {
   }
   onboardingRoot.hidden = false;
   onboardingRoot.replaceChildren(createOnboarding({
-    onManager: () => window.companion?.openManager?.(),
+    onManager: openManagerFromRenderer,
     onDownload: () => importSelectedModel("onboarding")
   }));
 }
@@ -327,12 +339,7 @@ function showErrorBoundary(error, config) {
       errorRoot.hidden = true;
       errorRoot.replaceChildren();
     }).catch((nextError) => showErrorBoundary(nextError, runtimeConfig)),
-    onManager: async () => {
-      if (!window.companion?.openManager) {
-        throw new Error("Manager API is unavailable.");
-      }
-      await window.companion.openManager();
-    }
+    onManager: openManagerFromRenderer
   }));
 }
 
@@ -546,6 +553,7 @@ async function boot() {
   settingZoomReset.addEventListener("click", () => window.companion?.emitScale?.({ action: "reset" }));
   modelImport.addEventListener("click", () => importSelectedModel("settings"));
   emptyImport.addEventListener("click", () => importSelectedModel("empty"));
+  bindManagerButton(emptyManager, emptyManagerStatus, openManagerFromRenderer);
   emptyRetry.addEventListener("click", () => loadPlayer(runtimeConfig).catch((error) => showErrorBoundary(error, runtimeConfig)));
 
   reminderForm.addEventListener("submit", async (event) => {

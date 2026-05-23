@@ -214,6 +214,12 @@ fn local_config_candidates(root: &Path) -> Vec<PathBuf> {
     candidates
 }
 
+fn default_local_config_path(root: &Path) -> PathBuf {
+    user_config_dir()
+        .unwrap_or_else(|| root.to_path_buf())
+        .join("companion.local.json")
+}
+
 fn string_at<'a>(value: &'a serde_json::Value, path: &[&str]) -> Option<&'a str> {
     let mut current = value;
     for key in path {
@@ -545,6 +551,36 @@ struct RuntimeConfig {
     local_config_path: PathBuf,
 }
 
+#[derive(Clone, Debug)]
+struct RecoveredModel {
+    asset_dir: PathBuf,
+    skel: String,
+}
+
+fn first_recoverable_model(config_dir: &Path, config: &serde_json::Value) -> Option<RecoveredModel> {
+    let catalog = config
+        .get("models")
+        .and_then(|models| models.get("catalog"))
+        .and_then(|catalog| catalog.as_array())?;
+    for model in catalog {
+        let Some(id) = model.get("id").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        let Some(skel) = model.get("skel").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        let asset_dir = config_dir.join("models").join(id);
+        if validate_spine_asset_dir(&asset_dir, skel).is_ok() {
+            let canonical = asset_dir.canonicalize().unwrap_or(asset_dir);
+            return Some(RecoveredModel {
+                asset_dir: canonical,
+                skel: skel.to_string(),
+            });
+        }
+    }
+    None
+}
+
 fn load_runtime_config() -> RuntimeConfig {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -565,6 +601,12 @@ fn load_runtime_config() -> RuntimeConfig {
             }
         }
     }
+    let config_dir_path = user_config_dir().unwrap_or_else(|| root.clone());
+    let local_config_path = if resolved_local_config_path.is_empty() {
+        default_local_config_path(&root)
+    } else {
+        PathBuf::from(&resolved_local_config_path)
+    };
     if let Ok(asset_dir) = std::env::var("SPINE_ASSET_DIR") {
         config["spine"]["assetDir"] = serde_json::Value::String(asset_dir);
     }
@@ -583,23 +625,27 @@ fn load_runtime_config() -> RuntimeConfig {
     let port = number_at(&config, &["server", "port"], 17388);
     let origin = format!("http://{}:{}", host, port);
     let raw_asset_dir = string_at(&config, &["spine", "assetDir"]).unwrap_or("");
-    let asset_dir = resolve_asset_dir(&asset_base_dir, raw_asset_dir);
+    let mut asset_dir = resolve_asset_dir(&asset_base_dir, raw_asset_dir);
     config["spine"]["assetDir"] = serde_json::Value::String(asset_dir.clone());
-    let skel = string_at(&config, &["spine", "skel"]).unwrap_or("amiya.skel");
-    let default_local_config_path = local_config_candidates(&root)
-        .first()
-        .map(|path| path.to_string_lossy().to_string())
-        .unwrap_or_else(|| {
-            root.join("companion.local.json")
-                .to_string_lossy()
-                .to_string()
-        });
-    let config_dir_path = user_config_dir().unwrap_or_else(|| root.clone());
-    let local_config_path = if resolved_local_config_path.is_empty() {
-        PathBuf::from(&default_local_config_path)
-    } else {
-        PathBuf::from(&resolved_local_config_path)
-    };
+    let mut skel = string_at(&config, &["spine", "skel"])
+        .unwrap_or("amiya.skel")
+        .to_string();
+    if asset_dir.is_empty() {
+        if let Some(recovered) = first_recoverable_model(&config_dir_path, &config) {
+            if write_local_model_config(&local_config_path, &recovered.asset_dir, &recovered.skel)
+                .and_then(|_| {
+                    verify_local_model_config(&local_config_path, &recovered.asset_dir, &recovered.skel)
+                })
+                .is_ok()
+            {
+                asset_dir = recovered.asset_dir.to_string_lossy().to_string();
+                skel = recovered.skel;
+                config["spine"]["assetDir"] = serde_json::Value::String(asset_dir.clone());
+                config["spine"]["skel"] = serde_json::Value::String(skel.clone());
+                resolved_local_config_path = local_config_path.to_string_lossy().to_string();
+            }
+        }
+    }
     let config_dir = config_dir_path.to_string_lossy().to_string();
     let ui_settings = ui_settings_from_config(&config);
 
@@ -613,8 +659,8 @@ fn load_runtime_config() -> RuntimeConfig {
         },
         "spine": {
             "assetDir": asset_dir.clone(),
-            "skel": skel,
-            "assetUrl": format!("{}/assets/spine/{}", origin, url_encode_path_segment(skel)),
+            "skel": skel.clone(),
+            "assetUrl": format!("{}/assets/spine/{}", origin, url_encode_path_segment(&skel)),
             "assetDirConfigured": !asset_dir.is_empty(),
             "scale": config["spine"]["scale"].clone(),
             "offsetX": config["spine"]["offsetX"].clone(),
@@ -1122,6 +1168,20 @@ async fn get_diagnostics(data: State<'_, AppData>) -> Result<serde_json::Value, 
         "ok": false,
         "message": "No active asset directory."
     });
+    let recovery = first_recoverable_model(&data.config_dir, &public)
+        .map(|model| {
+            serde_json::json!({
+                "available": true,
+                "assetDir": model.asset_dir.to_string_lossy().to_string(),
+                "skel": model.skel
+            })
+        })
+        .unwrap_or_else(|| {
+            serde_json::json!({
+                "available": false,
+                "message": "No recoverable downloaded catalog model was found."
+            })
+        });
 
     if let Some(asset_root) = &*data.asset_root.read().await {
         asset_dir_exists = asset_root.exists();
@@ -1263,6 +1323,7 @@ async fn get_diagnostics(data: State<'_, AppData>) -> Result<serde_json::Value, 
         "hasAtlas": has_atlas,
         "hasPng": has_png,
         "modelHealth": model_health,
+        "modelRecovery": recovery,
         "logsDir": data.config_dir.join("logs").to_string_lossy().to_string(),
         "shortcut": {
             "enabled": current_ui_settings(&data).shortcut_enabled,
@@ -1409,10 +1470,11 @@ async fn set_active_model(
         })
         .ok_or_else(|| "No .skel file found".to_string())?;
     validate_spine_asset_dir(&model_dir, &skel)?;
-    write_local_model_config(&data.local_config_path, &model_dir, &skel)?;
     let canonical_model_dir = model_dir
         .canonicalize()
         .map_err(|error| error.to_string())?;
+    write_local_model_config(&data.local_config_path, &canonical_model_dir, &skel)?;
+    verify_local_model_config(&data.local_config_path, &canonical_model_dir, &skel)?;
     if let Ok(mut public) = data.public_config.lock() {
         merge_json(
             &mut public,
@@ -1420,7 +1482,7 @@ async fn set_active_model(
                 "spine": {
                     "assetDir": canonical_model_dir.to_string_lossy().to_string(),
                     "assetDirConfigured": true,
-                    "skel": skel
+                    "skel": skel.clone()
                 }
             }),
         );
@@ -1667,8 +1729,15 @@ fn show_manager_window(app: &AppHandle) -> Result<WebviewWindow, String> {
         .map_err(|error| format!("Failed to unminimize Manager: {}", error))?;
     win.show()
         .map_err(|error| format!("Failed to show Manager: {}", error))?;
+    win.set_always_on_top(true)
+        .map_err(|error| format!("Failed to raise Manager: {}", error))?;
     win.set_focus()
         .map_err(|error| format!("Failed to focus Manager: {}", error))?;
+    let raised = win.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+        let _ = raised.set_always_on_top(false);
+    });
     Ok(win)
 }
 
@@ -2391,6 +2460,55 @@ mod tests {
                 .and_then(|value| value.as_str()),
             Some(expected_asset_dir.as_str())
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn defaults_new_local_config_to_user_config_dir() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis())
+            .unwrap_or(0);
+        let root = std::env::temp_dir().join(format!("spine-companion-root-test-{}", suffix));
+        let user_config = root.join("user-config");
+        let old = std::env::var("SPINE_COMPANION_CONFIG_DIR").ok();
+        std::env::set_var("SPINE_COMPANION_CONFIG_DIR", &user_config);
+        assert_eq!(
+            default_local_config_path(&root),
+            user_config.join("companion.local.json")
+        );
+        match old {
+            Some(value) => std::env::set_var("SPINE_COMPANION_CONFIG_DIR", value),
+            None => std::env::remove_var("SPINE_COMPANION_CONFIG_DIR"),
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn recovers_first_valid_downloaded_catalog_model() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis())
+            .unwrap_or(0);
+        let root = std::env::temp_dir().join(format!("spine-companion-recovery-test-{}", suffix));
+        let invalid_dir = root.join("models").join("invalid-model");
+        let valid_dir = root.join("models").join("valid-model");
+        std::fs::create_dir_all(&invalid_dir).unwrap();
+        std::fs::create_dir_all(&valid_dir).unwrap();
+        std::fs::write(valid_dir.join("valid.skel"), b"").unwrap();
+        std::fs::write(valid_dir.join("valid.png"), b"").unwrap();
+        std::fs::write(valid_dir.join("valid.atlas"), "valid.png\nsize: 1,1\n").unwrap();
+        let config = serde_json::json!({
+            "models": {
+                "catalog": [
+                    { "id": "invalid-model", "skel": "invalid.skel" },
+                    { "id": "valid-model", "skel": "valid.skel" }
+                ]
+            }
+        });
+        let recovered = first_recoverable_model(&root, &config).unwrap();
+        assert_eq!(recovered.skel, "valid.skel");
+        assert_eq!(recovered.asset_dir, valid_dir.canonicalize().unwrap());
         let _ = std::fs::remove_dir_all(root);
     }
 
