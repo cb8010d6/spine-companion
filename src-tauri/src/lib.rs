@@ -8,6 +8,7 @@ use state::{
 };
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -747,7 +748,12 @@ async fn import_model(
         .and_then(|value| value.as_array())
         .ok_or_else(|| "Model catalog entry is missing files".to_string())?;
     let model_dir = data.config_dir.join("models").join(&input.id);
-    tokio::fs::create_dir_all(&model_dir)
+    let temp_model_dir = data
+        .config_dir
+        .join("models")
+        .join(format!("{}.download", &input.id));
+    remove_dir_if_exists(&temp_model_dir).await?;
+    tokio::fs::create_dir_all(&temp_model_dir)
         .await
         .map_err(|error| error.to_string())?;
     let client = reqwest::Client::builder()
@@ -761,10 +767,7 @@ async fn import_model(
             .get("name")
             .and_then(|value| value.as_str())
             .ok_or_else(|| "Model file is missing name".to_string())?;
-        let url = file
-            .get("url")
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| "Model file is missing url".to_string())?;
+        let urls = download_url_candidates(file)?;
 
         let _ = app.emit(
             "companion:download-progress",
@@ -777,37 +780,130 @@ async fn import_model(
             }),
         );
 
-        let bytes = match client
-            .get(url)
-            .send()
+        let bytes = download_model_file(&client, file_name, &urls)
             .await
-        {
-            Ok(response) => match response.error_for_status() {
-                Ok(response) => response.bytes().await.map_err(|error| error.to_string()),
-                Err(error) => Err(error.to_string()),
-            },
-            Err(error) => Err(error.to_string()),
-        }
-        .map_err(|error| {
-            let message = format!("Failed to download {}: {}", file_name, error);
-            let _ = app.emit(
-                "companion:download-progress",
-                serde_json::json!({
-                    "id": input.id,
-                    "file": file_name,
-                    "current": i + 1,
-                    "total": total_files,
-                    "status": "failed",
-                    "error": message
-                }),
-            );
-            message
-        })?;
-        tokio::fs::write(model_dir.join(file_name), bytes)
+            .map_err(|error| {
+                let _ = remove_dir_if_exists_blocking(&temp_model_dir);
+                let message = format!("Failed to download {}", error);
+                let _ = app.emit(
+                    "companion:download-progress",
+                    serde_json::json!({
+                        "id": input.id,
+                        "file": file_name,
+                        "current": i + 1,
+                        "total": total_files,
+                        "status": "failed",
+                        "error": message
+                    }),
+                );
+                message
+            })?;
+        tokio::fs::write(temp_model_dir.join(file_name), bytes)
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| {
+                let _ = remove_dir_if_exists_blocking(&temp_model_dir);
+                error.to_string()
+            })?;
     }
-    validate_spine_asset_dir(&model_dir, &skel)?;
+    validate_spine_asset_dir(&temp_model_dir, &skel).map_err(|error| {
+        let _ = remove_dir_if_exists_blocking(&temp_model_dir);
+        let _ = app.emit(
+            "companion:download-progress",
+            serde_json::json!({
+                "id": input.id,
+                "file": "Validation",
+                "current": total_files,
+                "total": total_files,
+                "status": "failed",
+                "error": error
+            }),
+        );
+        error
+    })?;
+    replace_model_dir(&temp_model_dir, &model_dir).await.map_err(|error| {
+        let _ = app.emit(
+            "companion:download-progress",
+            serde_json::json!({
+                "id": input.id,
+                "file": "Activation",
+                "current": total_files,
+                "total": total_files,
+                "status": "failed",
+                "error": error
+            }),
+        );
+        error
+    })?;
+    let canonical_model_dir = model_dir
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    write_local_model_config(&data.local_config_path, &canonical_model_dir, &skel).map_err(|error| {
+        let message = format!("Failed to activate downloaded model: {}", error);
+        let _ = app.emit(
+            "companion:download-progress",
+            serde_json::json!({
+                "id": input.id,
+                "file": "Activation",
+                "current": total_files,
+                "total": total_files,
+                "status": "failed",
+                "error": message
+            }),
+        );
+        message
+    })?;
+    verify_local_model_config(&data.local_config_path, &canonical_model_dir, &skel).map_err(|error| {
+        let message = format!("Downloaded model was not activated: {}", error);
+        let _ = app.emit(
+            "companion:download-progress",
+            serde_json::json!({
+                "id": input.id,
+                "file": "Activation",
+                "current": total_files,
+                "total": total_files,
+                "status": "failed",
+                "error": message
+            }),
+        );
+        message
+    })?;
+    if let Ok(mut public) = data.public_config.lock() {
+        merge_json(
+            &mut public,
+            serde_json::json!({
+                "spine": {
+                    "assetDir": canonical_model_dir.to_string_lossy().to_string(),
+                    "assetDirConfigured": true,
+                    "skel": skel.clone()
+                }
+            }),
+        );
+    }
+    {
+        let mut asset_root = data.asset_root.write().await;
+        *asset_root = Some(canonical_model_dir.clone());
+    }
+    let public = public_config_with_ui(&data);
+    if !public
+        .get("spine")
+        .and_then(|spine| spine.get("assetDirConfigured"))
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+    {
+        let message = "Downloaded model was not activated in public config".to_string();
+        let _ = app.emit(
+            "companion:download-progress",
+            serde_json::json!({
+                "id": input.id,
+                "file": "Activation",
+                "current": total_files,
+                "total": total_files,
+                "status": "failed",
+                "error": message
+            }),
+        );
+        return Err(message);
+    }
     let _ = app.emit(
         "companion:download-progress",
         serde_json::json!({
@@ -819,27 +915,6 @@ async fn import_model(
         }),
     );
 
-    write_local_model_config(&data.local_config_path, &model_dir, &skel)?;
-    let canonical_model_dir = model_dir
-        .canonicalize()
-        .map_err(|error| error.to_string())?;
-    if let Ok(mut public) = data.public_config.lock() {
-        merge_json(
-            &mut public,
-            serde_json::json!({
-                "spine": {
-                    "assetDir": canonical_model_dir.to_string_lossy().to_string(),
-                    "assetDirConfigured": true,
-                    "skel": skel
-                }
-            }),
-        );
-    }
-    {
-        let mut asset_root = data.asset_root.write().await;
-        *asset_root = Some(canonical_model_dir.clone());
-    }
-    let public = public_config_with_ui(&data);
     let origin = public
         .get("server")
         .and_then(|server| server.get("origin"))
@@ -860,6 +935,143 @@ async fn import_model(
     let _ = app.emit("companion:config-changed", public_config_with_ui(&data));
 
     Ok(result)
+}
+
+fn github_raw_to_jsdelivr_url(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("https://raw.githubusercontent.com/")?;
+    let mut parts = rest.splitn(4, '/');
+    let owner = parts.next()?;
+    let repo = parts.next()?;
+    let branch = parts.next()?;
+    let path = parts.next()?;
+    if owner.is_empty() || repo.is_empty() || branch.is_empty() || path.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "https://cdn.jsdelivr.net/gh/{}@{}/{}",
+        format!("{}/{}", owner, repo),
+        branch,
+        path
+    ))
+}
+
+fn download_url_candidates(file: &serde_json::Value) -> Result<Vec<String>, String> {
+    let primary = file
+        .get("url")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| "Model file is missing url".to_string())?;
+    let mut urls = vec![primary.to_string()];
+    if let Some(fallbacks) = file.get("fallbackUrls").and_then(|value| value.as_array()) {
+        for fallback in fallbacks {
+            if let Some(url) = fallback.as_str() {
+                urls.push(url.to_string());
+            }
+        }
+    }
+    if let Some(url) = github_raw_to_jsdelivr_url(primary) {
+        urls.push(url);
+    }
+    let mut deduped = Vec::new();
+    for url in urls {
+        if !deduped.iter().any(|candidate| candidate == &url) {
+            deduped.push(url);
+        }
+    }
+    Ok(deduped)
+}
+
+async fn download_model_file(
+    client: &reqwest::Client,
+    file_name: &str,
+    urls: &[String],
+) -> Result<Vec<u8>, String> {
+    let mut attempts = Vec::new();
+    for url in urls {
+        match client.get(url).send().await {
+            Ok(response) => {
+                let status = response.status();
+                if !status.is_success() {
+                    attempts.push(format!("{} (HTTP {})", url, status.as_u16()));
+                    continue;
+                }
+                match response.bytes().await {
+                    Ok(bytes) => return Ok(bytes.to_vec()),
+                    Err(error) => attempts.push(format!("{} ({})", url, error)),
+                }
+            }
+            Err(error) => attempts.push(format!("{} ({})", url, error)),
+        }
+    }
+    Err(format!("{}; tried {}", file_name, attempts.join("; ")))
+}
+
+async fn remove_dir_if_exists(path: &Path) -> Result<(), String> {
+    match tokio::fs::remove_dir_all(path).await {
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn remove_dir_if_exists_blocking(path: &Path) -> Result<(), String> {
+    match std::fs::remove_dir_all(path) {
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+async fn replace_model_dir(temp_dir: &Path, final_dir: &Path) -> Result<(), String> {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    let backup_dir = final_dir.with_extension(format!("previous-{}", suffix));
+    remove_dir_if_exists(&backup_dir).await?;
+    if tokio::fs::try_exists(final_dir)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        tokio::fs::rename(final_dir, &backup_dir)
+            .await
+            .map_err(|error| format!("Failed to stage previous model directory: {}", error))?;
+    }
+    if let Err(error) = tokio::fs::rename(temp_dir, final_dir).await {
+        if tokio::fs::try_exists(&backup_dir).await.unwrap_or(false) {
+            let _ = tokio::fs::rename(&backup_dir, final_dir).await;
+        }
+        return Err(format!("Failed to activate downloaded model directory: {}", error));
+    }
+    remove_dir_if_exists(&backup_dir).await?;
+    Ok(())
+}
+
+fn verify_local_model_config(path: &Path, expected_asset_dir: &Path, expected_skel: &str) -> Result<(), String> {
+    let config = read_json_if_exists(path)
+        .ok_or_else(|| format!("{} was not written", path.to_string_lossy()))?;
+    let spine = config
+        .get("spine")
+        .ok_or_else(|| "spine config section is missing".to_string())?;
+    let asset_dir = spine
+        .get("assetDir")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| "spine.assetDir is missing".to_string())?;
+    let skel = spine
+        .get("skel")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| "spine.skel is missing".to_string())?;
+    if skel != expected_skel {
+        return Err(format!("spine.skel is {}, expected {}", skel, expected_skel));
+    }
+    let written = PathBuf::from(asset_dir);
+    if written != expected_asset_dir {
+        return Err(format!(
+            "spine.assetDir is {}, expected {}",
+            asset_dir,
+            expected_asset_dir.to_string_lossy()
+        ));
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1451,22 +1663,21 @@ fn show_manager_window(app: &AppHandle) -> Result<WebviewWindow, String> {
     } else {
         create_manager_window(app)?
     };
-    let _ = win.unminimize();
-    let _ = win.show();
-    let _ = win.set_focus();
+    win.unminimize()
+        .map_err(|error| format!("Failed to unminimize Manager: {}", error))?;
+    win.show()
+        .map_err(|error| format!("Failed to show Manager: {}", error))?;
+    win.set_focus()
+        .map_err(|error| format!("Failed to focus Manager: {}", error))?;
     Ok(win)
 }
 
 fn open_manager_from_tray(app: &AppHandle) {
-    if let Some(win) = app.get_webview_window("manager") {
-        let _ = win.unminimize();
-        let _ = win.show();
-        let _ = win.set_focus();
-        return;
-    }
     let handle = app.clone();
     std::thread::spawn(move || {
-        let _ = show_manager_window(&handle);
+        if let Err(error) = show_manager_window(&handle) {
+            eprintln!("Failed to open Manager from tray: {}", error);
+        }
     });
 }
 
@@ -2127,6 +2338,60 @@ mod tests {
             url_encode_path_segment("build_char_1001_amiya2_sale#16.skel"),
             "build_char_1001_amiya2_sale%2316.skel"
         );
+    }
+
+    #[test]
+    fn derives_jsdelivr_fallback_from_github_raw_url() {
+        let raw = "https://raw.githubusercontent.com/isHarryh/Ark-Models/main/models/1001_amiya2_sale%2316/build_char_1001_amiya2_sale%2316.skel";
+        assert_eq!(
+            github_raw_to_jsdelivr_url(raw).as_deref(),
+            Some("https://cdn.jsdelivr.net/gh/isHarryh/Ark-Models@main/models/1001_amiya2_sale%2316/build_char_1001_amiya2_sale%2316.skel")
+        );
+    }
+
+    #[test]
+    fn download_candidates_keep_primary_then_explicit_then_derived_fallback() {
+        let file = serde_json::json!({
+            "name": "amiya.skel",
+            "url": "https://raw.githubusercontent.com/isHarryh/Ark-Models/main/models/amiya.skel",
+            "fallbackUrls": [
+                "https://example.test/amiya.skel",
+                "https://example.test/amiya.skel"
+            ]
+        });
+        let urls = download_url_candidates(&file).unwrap();
+        assert_eq!(
+            urls,
+            vec![
+                "https://raw.githubusercontent.com/isHarryh/Ark-Models/main/models/amiya.skel",
+                "https://example.test/amiya.skel",
+                "https://cdn.jsdelivr.net/gh/isHarryh/Ark-Models@main/models/amiya.skel"
+            ]
+        );
+    }
+
+    #[test]
+    fn verifies_written_local_model_config() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis())
+            .unwrap_or(0);
+        let root = std::env::temp_dir().join(format!("spine-companion-config-test-{}", suffix));
+        let config_path = root.join("companion.local.json");
+        let asset_dir = root.join("models").join("ark-1001-amiya2-sale-16");
+        std::fs::create_dir_all(&asset_dir).unwrap();
+        write_local_model_config(&config_path, &asset_dir, "amiya.skel").unwrap();
+        verify_local_model_config(&config_path, &asset_dir, "amiya.skel").unwrap();
+        let public = read_json_if_exists(&config_path).unwrap();
+        let expected_asset_dir = asset_dir.to_string_lossy().to_string();
+        assert_eq!(
+            public
+                .get("spine")
+                .and_then(|spine| spine.get("assetDir"))
+                .and_then(|value| value.as_str()),
+            Some(expected_asset_dir.as_str())
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

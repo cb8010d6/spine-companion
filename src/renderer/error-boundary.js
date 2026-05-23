@@ -12,12 +12,33 @@ export function friendlyError(error, config = {}) {
 }
 
 export function createErrorCard({ title = "Something went wrong", error, config, onRetry, onManager }) {
+  const managerStatus = h("span", { class: "error-action-status", role: "status" });
+  const managerButton = h("button", {
+    type: "button",
+    class: "btn",
+    onClick: async () => {
+      if (!onManager) return;
+      managerButton.disabled = true;
+      managerButton.textContent = "Opening Manager...";
+      managerStatus.textContent = "";
+      try {
+        await onManager();
+        managerButton.textContent = "Open Manager";
+      } catch (nextError) {
+        managerButton.textContent = "Unable to open Manager";
+        managerStatus.textContent = nextError?.message || String(nextError || "Unable to open Manager.");
+      } finally {
+        managerButton.disabled = false;
+      }
+    }
+  }, "Open Manager");
   return h("section", { class: "error-card", role: "alert" },
     h("strong", {}, title),
     h("span", {}, friendlyError(error, config)),
     h("div", { class: "error-actions" },
       h("button", { type: "button", class: "btn btn-primary", onClick: onRetry }, "Retry"),
-      h("button", { type: "button", class: "btn", onClick: onManager }, "Open Manager")
-    )
+      managerButton
+    ),
+    managerStatus
   );
 }

@@ -327,7 +327,12 @@ function showErrorBoundary(error, config) {
       errorRoot.hidden = true;
       errorRoot.replaceChildren();
     }).catch((nextError) => showErrorBoundary(nextError, runtimeConfig)),
-    onManager: () => window.companion?.openManager?.()
+    onManager: async () => {
+      if (!window.companion?.openManager) {
+        throw new Error("Manager API is unavailable.");
+      }
+      await window.companion.openManager();
+    }
   }));
 }
 

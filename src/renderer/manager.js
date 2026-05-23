@@ -3,6 +3,7 @@ import { initTauriBridge, isTauri } from "./tauri-bridge.js";
 import { h, render } from "./lib/dom.js";
 import { createI18n, t } from "../shared/i18n.js";
 import { modelPreview } from "./model-preview.js";
+import { renderSpinePreview } from "./spine-preview.js";
 
 const viewContainer = document.getElementById("view-container");
 const navButtons = document.querySelectorAll("nav button");
@@ -96,9 +97,15 @@ function previewNode(model) {
       }
     }));
   }
-  return h("div", { class: `model-preview ${preview.imageUrl ? "has-image" : ""}`, style: preview.style, "aria-label": `Preview for ${preview.label}` },
+  const node = h("div", { class: `model-preview ${preview.imageUrl ? "has-image" : ""}`, style: preview.style, "aria-label": `Preview for ${preview.label}` },
     children
   );
+  if (!preview.imageUrl && preview.canRenderSpinePreview) {
+    window.requestAnimationFrame(() => {
+      if (node.isConnected) renderSpinePreview(node, preview);
+    });
+  }
+  return node;
 }
 
 function badge(label, tone = "") {
