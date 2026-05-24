@@ -1,13 +1,24 @@
 const path = require("node:path");
 const fs = require("node:fs");
-const { Menu, Tray, nativeImage, app, shell, BrowserWindow, ipcMain, Notification, globalShortcut } = require("electron");
+const { Menu, Tray, nativeImage, app, shell, BrowserWindow, ipcMain, Notification, globalShortcut, dialog, screen } = require("electron");
 const os = require("os");
-const { loadConfig, getPublicConfig } = require("./config.cjs");
+const { loadConfig, getPublicConfig, readJsonIfExists } = require("./config.cjs");
 const { createCompanionServer } = require("./state-server.cjs");
 const { applyUiSettingsPatch: applySharedUiPatch, normalizeUiSettings } = require("../shared/ui-settings.cjs");
 const { mcpConfigCandidates, detectMcpReferences } = require("../shared/diagnostics-paths.cjs");
 const { trayMenuModel } = require("../shared/tray-menu-model.cjs");
 const { checkGitHubRelease } = require("../shared/update-checker.cjs");
+const { validateSpineAssetDir, validateSpineAssetSelection } = require("../shared/spine-assets.cjs");
+const { isAiSource, notificationForState, shouldNotifyState } = require("../shared/notification-policy.cjs");
+const {
+  validateImportModel,
+  validateModelId,
+  validateOpenFolderPath,
+  validateReminder,
+  validateSaveSettings,
+  validateSetState
+} = require("./ipc-schema.cjs");
+const { createFileLogger } = require("./logger.cjs");
 const pkg = require("../../package.json");
 
 const isDev = !app.isPackaged;
@@ -28,11 +39,24 @@ let uiSettings = {
   bubbleShadow: true,
   bubbleBackground: "solid",
   bubbleHoldMs: 8000,
-  dragMode: "compatible"
+  dragMode: "compatible",
+  autoRevealOnMcp: true,
+  systemNotifications: true,
+  shortcutEnabled: true,
+  shortcutAccelerator: "CommandOrControl+Shift+S",
+  updateAutoCheck: true,
+  maxDevicePixelRatio: 2,
+  hitboxPadding: 8
 };
 let alwaysOnTop = true;
 let isQuitting = false;
 let panelWindow = null;
+let panelPinned = false;
+let windowBoundsTimer = null;
+let logger = null;
+let shortcutStatus = { enabled: true, registered: false, accelerator: "CommandOrControl+Shift+S", error: "" };
+let updateStatusCache = null;
+let updateCheckTimer = null;
 
 function rendererUrl() {
   if (isDev) return process.env.VITE_DEV_SERVER_URL || "http://127.0.0.1:17389";
@@ -56,6 +80,33 @@ function applyUiSettingsPatch(patch = {}) {
   return uiSettings;
 }
 
+function isFiniteNumber(value) {
+  return Number.isFinite(Number(value));
+}
+
+function intersectsWorkArea(bounds, workArea) {
+  const minVisible = 40;
+  const left = Math.max(bounds.x, workArea.x);
+  const right = Math.min(bounds.x + bounds.width, workArea.x + workArea.width);
+  const top = Math.max(bounds.y, workArea.y);
+  const bottom = Math.min(bounds.y + bounds.height, workArea.y + workArea.height);
+  return right - left >= minVisible && bottom - top >= minVisible;
+}
+
+function initialWindowBounds(config) {
+  const bounds = {
+    width: Number(config.window.width || 360),
+    height: Number(config.window.height || 460)
+  };
+  if (isFiniteNumber(config.window.x) && isFiniteNumber(config.window.y)) {
+    const saved = { ...bounds, x: Math.round(Number(config.window.x)), y: Math.round(Number(config.window.y)) };
+    if (screen.getAllDisplays().some((display) => intersectsWorkArea(saved, display.workArea))) {
+      return saved;
+    }
+  }
+  return bounds;
+}
+
 function mergeDeepMutable(base, patch) {
   for (const [key, value] of Object.entries(patch || {})) {
     if (value && typeof value === "object" && !Array.isArray(value)) {
@@ -68,7 +119,23 @@ function mergeDeepMutable(base, patch) {
   return base;
 }
 
+async function fetchArrayBufferWithTimeout(url, timeoutMs = 30000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return Buffer.from(await response.arrayBuffer());
+  } catch (error) {
+    if (error?.name === "AbortError") throw new Error(`Timed out after ${Math.round(timeoutMs / 1000)}s`);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function importModel(input = {}) {
+  input = validateImportModel(input);
   const model = publicConfigCache?.models?.catalog?.find((item) => item.id === input.id);
   if (!model) throw new Error(`Unknown model id: ${input.id}`);
   const configDir = publicConfigCache.paths?.configDir || path.join(app.getPath("appData"), "spine-companion");
@@ -77,17 +144,31 @@ async function importModel(input = {}) {
   fs.mkdirSync(modelDir, { recursive: true });
   const files = model.files || [];
   const total = files.length;
-  for (let i = 0; i < total; i++) {
-    const file = files[i];
-    sendToRenderer("companion:download-progress", { id: model.id, file: file.name, current: i + 1, total, status: "downloading" });
-    const response = await fetch(file.url);
-    if (!response.ok) throw new Error(`Failed to download ${file.name}: HTTP ${response.status}`);
-    const bytes = Buffer.from(await response.arrayBuffer());
-    fs.writeFileSync(path.join(modelDir, file.name), bytes);
+  logger?.info("download.start", { id: model.id, total });
+  try {
+    for (let i = 0; i < total; i++) {
+      const file = files[i];
+      sendToRenderer("companion:download-progress", { id: model.id, file: file.name, current: i + 1, total, status: "downloading" });
+      const bytes = await fetchArrayBufferWithTimeout(file.url, 30000).catch((error) => {
+        throw new Error(`Failed to download ${file.name}: ${error.message || String(error)}`);
+      });
+      fs.writeFileSync(path.join(modelDir, file.name), bytes);
+      logger?.info("download.file", { id: model.id, file: file.name, bytes: bytes.length });
+    }
+    validateSpineAssetDir(modelDir, model.skel);
+  } catch (error) {
+    logger?.error("download.failed", { id: model.id, error });
+    sendToRenderer("companion:download-progress", {
+      id: model.id,
+      file: "",
+      current: 0,
+      total,
+      status: "failed",
+      error: error.message || String(error)
+    });
+    throw error;
   }
-  const current = fs.existsSync(localConfigPath)
-    ? JSON.parse(fs.readFileSync(localConfigPath, "utf8"))
-    : {};
+  const current = readJsonIfExists(localConfigPath);
   mergeDeepMutable(current, {
     spine: {
       assetDir: modelDir,
@@ -106,6 +187,8 @@ async function importModel(input = {}) {
       assetUrl: `${origin}/assets/spine/${encodeURIComponent(model.skel)}`
     }
   });
+  sendToRenderer("companion:download-progress", { id: model.id, file: "Done", current: total, total, status: "succeeded" });
+  logger?.info("download.succeeded", { id: model.id, modelDir });
   return {
     id: model.id,
     name: model.name,
@@ -117,29 +200,87 @@ async function importModel(input = {}) {
   };
 }
 
-async function saveSettings(patch) {
+async function importLocalModel() {
+  try {
+    const result = await dialog.showOpenDialog({
+      title: "Import local Spine model",
+      properties: ["openFile"],
+      filters: [
+        { name: "Spine skeleton", extensions: ["skel"] },
+        { name: "All files", extensions: ["*"] }
+      ]
+    });
+    if (result.canceled || !result.filePaths?.[0]) return { canceled: true };
+
+    const { assetDir, skel } = validateSpineAssetSelection(result.filePaths[0]);
+    const localConfigPath = publicConfigCache.paths?.localConfigPath || path.join(app.getPath("appData"), "spine-companion", "companion.local.json");
+    await saveSettings({
+      spine: {
+        assetDir,
+        skel
+      }
+    }, { notify: false });
+    serverRuntime?.setAssetRoot(assetDir);
+    const origin = publicConfigCache?.server?.origin || `http://${publicConfigCache?.server?.host || "127.0.0.1"}:17388`;
+    mergeDeepMutable(publicConfigCache, {
+      spine: {
+        assetDir,
+        assetDirConfigured: true,
+        skel,
+        assetUrl: `${origin}/assets/spine/${encodeURIComponent(skel)}`
+      }
+    });
+    const payload = {
+      id: `local-${path.basename(assetDir)}`,
+      name: skel,
+      assetDir,
+      skel,
+      assetUrl: `${origin}/assets/spine/${encodeURIComponent(skel)}`,
+      localConfigPath,
+      requiresRestart: false
+    };
+    sendToRenderer("companion:model-imported", payload);
+    sendToRenderer("companion:config-changed", publicConfigCache);
+    return payload;
+  } catch (error) {
+    dialog.showErrorBox("Unable to import Spine model", error.message || String(error));
+    throw error;
+  }
+}
+
+async function saveSettings(patch, options = {}) {
+  const notify = options.notify !== false;
   const localConfigPath = publicConfigCache.paths?.localConfigPath || path.join(app.getPath("appData"), "spine-companion", "companion.local.json");
-  const current = fs.existsSync(localConfigPath)
-    ? JSON.parse(fs.readFileSync(localConfigPath, "utf8"))
-    : {};
+  const current = readJsonIfExists(localConfigPath);
   mergeDeepMutable(current, patch);
   fs.mkdirSync(path.dirname(localConfigPath), { recursive: true });
   fs.writeFileSync(localConfigPath, `${JSON.stringify(current, null, 2)}\n`);
 
   mergeDeepMutable(publicConfigCache, patch);
   if (patch.ui) updateUiSettingsPatch(patch.ui);
-  sendToRenderer("companion:config-changed", publicConfigCache);
+  logger?.info("settings.saved", { keys: Object.keys(patch) });
+  if (notify) sendToRenderer("companion:config-changed", publicConfigCache);
   return true;
 }
 
 function updateUiSettingsPatch(patch) {
+  uiSettings = applySharedUiPatch(uiSettings, patch);
   if (publicConfigCache) {
     publicConfigCache = {
       ...publicConfigCache,
-      ui: { ...(publicConfigCache.ui || {}), ...patch }
+      ui: { ...(publicConfigCache.ui || {}), ...uiSettings }
     };
   }
   sendToRenderer("companion:ui", publicConfigCache.ui);
+  if (
+    Object.prototype.hasOwnProperty.call(patch, "shortcutEnabled")
+    || Object.prototype.hasOwnProperty.call(patch, "shortcutAccelerator")
+  ) {
+    registerStateShortcut();
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, "updateAutoCheck")) {
+    scheduleBackgroundUpdateCheck();
+  }
   updateTrayMenu();
 }
 
@@ -158,6 +299,7 @@ async function getDiagnostics() {
   let hasSkel = false;
   let hasAtlas = false;
   let hasPng = false;
+  let modelHealth = { ok: false, message: "No active asset directory." };
 
   let rootDir = null;
   if (serverRuntime && serverRuntime.getAssetRoot) {
@@ -170,6 +312,21 @@ async function getDiagnostics() {
     hasSkel = files.some(f => f.endsWith(".skel"));
     hasAtlas = files.some(f => f.endsWith(".atlas"));
     hasPng = files.some(f => f.endsWith(".png"));
+    try {
+      const validation = validateSpineAssetDir(rootDir, publicConfigCache?.spine?.skel || files.find((f) => f.endsWith(".skel")) || "");
+      modelHealth = {
+        ok: true,
+        message: "Spine asset set is healthy.",
+        atlasFiles: validation.atlasFiles,
+        pngFiles: validation.pngFiles,
+        atlasTextureRefs: validation.atlasTextureRefs
+      };
+    } catch (error) {
+      modelHealth = {
+        ok: false,
+        message: error.message || String(error)
+      };
+    }
   }
 
   const home = os.homedir();
@@ -178,7 +335,22 @@ async function getDiagnostics() {
     mcpConfigCandidates(home, process.platform, process.env)
   );
 
-  return { apiOk, localConfigExists, assetDirExists, hasSkel, hasAtlas, hasPng, mcpConfigured: mcp.configured, mcpMatches: mcp.matches };
+  return {
+    apiOk,
+    localConfigPath,
+    localConfigExists,
+    configWarnings: publicConfigCache?.paths?.warnings || [],
+    assetDirExists,
+    hasSkel,
+    hasAtlas,
+    hasPng,
+    modelHealth,
+    logsDir: logger?.logsDir || path.join(publicConfigCache?.paths?.configDir || "", "logs"),
+    shortcut: shortcutStatus,
+    updateStatus: updateStatusCache,
+    mcpConfigured: mcp.configured,
+    mcpMatches: mcp.matches
+  };
 }
 
 function getInstalledModels() {
@@ -197,15 +369,25 @@ function findCatalogModelBySkel(skel) {
 }
 
 async function setActiveModel(id) {
+  id = validateModelId(id);
   const installed = getInstalledModels().find((model) => model.id === id);
   if (!installed) throw new Error(`Model is not installed: ${id}`);
   const model = publicConfigCache?.models?.catalog?.find((item) => item.id === id) || {};
   const files = fs.readdirSync(installed.dir);
   const skel = model.skel || files.find((file) => file.endsWith(".skel"));
   if (!skel) throw new Error(`No .skel file found for ${id}`);
-  await saveSettings({ spine: { assetDir: installed.dir, skel } });
+  validateSpineAssetDir(installed.dir, skel);
+  await saveSettings({ spine: { assetDir: installed.dir, skel } }, { notify: false });
   serverRuntime?.setAssetRoot(installed.dir);
   const origin = publicConfigCache?.server?.origin || "http://127.0.0.1:17388";
+  mergeDeepMutable(publicConfigCache, {
+    spine: {
+      assetDir: installed.dir,
+      assetDirConfigured: true,
+      skel,
+      assetUrl: `${origin}/assets/spine/${encodeURIComponent(skel)}`
+    }
+  });
   const result = {
     id,
     name: model.name || id,
@@ -216,6 +398,7 @@ async function setActiveModel(id) {
     requiresRestart: false
   };
   sendToRenderer("companion:model-imported", result);
+  sendToRenderer("companion:config-changed", publicConfigCache);
   return result;
 }
 
@@ -231,8 +414,65 @@ function getCurrentModel() {
   };
 }
 
-function getUpdateStatus() {
-  return checkGitHubRelease({ currentVersion: pkg.version });
+function listReminders() {
+  return serverRuntime?.store.listReminders() || [];
+}
+
+function deleteReminder(id) {
+  return {
+    id,
+    deleted: Boolean(serverRuntime?.store.deleteReminder(String(id || "")))
+  };
+}
+
+function exportLogs() {
+  const file = logger?.exportLogs();
+  if (file) shell.showItemInFolder(file);
+  return { file, logsDir: logger?.logsDir };
+}
+
+async function getUpdateStatus({ background = false } = {}) {
+  try {
+    const status = await checkGitHubRelease({ currentVersion: pkg.version });
+    updateStatusCache = { ...status, checkedAt: new Date().toISOString() };
+    logger?.info("updates.checked", {
+      background,
+      channel: updateStatusCache.channel,
+      latestVersion: updateStatusCache.latestVersion,
+      updateAvailable: updateStatusCache.updateAvailable
+    });
+    if (background && updateStatusCache.updateAvailable) {
+      sendToRenderer("companion:update-available", updateStatusCache);
+      sendToRenderer("companion:notification", {
+        id: `update:${updateStatusCache.latestVersion}`,
+        title: "Spine Companion update available",
+        body: `Version ${updateStatusCache.latestVersion} is available.`,
+        state: "reminder",
+        source: "update-checker"
+      });
+    }
+    return updateStatusCache;
+  } catch (error) {
+    updateStatusCache = {
+      currentVersion: pkg.version,
+      latestVersion: pkg.version,
+      updateAvailable: false,
+      error: error.message || String(error),
+      checkedAt: new Date().toISOString(),
+      channel: pkg.version.includes("-") ? "prerelease" : "stable"
+    };
+    logger?.warn("updates.failed", { background, error: updateStatusCache.error });
+    if (!background) throw error;
+    return updateStatusCache;
+  }
+}
+
+function scheduleBackgroundUpdateCheck() {
+  clearTimeout(updateCheckTimer);
+  if (uiSettings.updateAutoCheck === false) return;
+  updateCheckTimer = setTimeout(() => {
+    getUpdateStatus({ background: true }).catch(() => {});
+  }, 5 * 60 * 1000);
 }
 
 function setAutoLaunch(enabled) {
@@ -248,7 +488,16 @@ function openExternalUrl(url) {
   return shell.openExternal(parsed.toString());
 }
 
+function openExternalUrlFromWindow(url) {
+  try {
+    openExternalUrl(url);
+  } catch (error) {
+    console.warn("[spine-companion] Blocked external URL", url, error);
+  }
+}
+
 function removeModel(id) {
+  id = validateModelId(id);
   if (typeof id !== "string" || id.includes("..") || id.includes("/") || id.includes("\\")) {
     throw new Error("Invalid model ID");
   }
@@ -275,6 +524,7 @@ function openConfigDir() {
 }
 
 function openCompanionFolder(targetPath) {
+  targetPath = validateOpenFolderPath(targetPath);
   const configDir = publicConfigCache?.paths?.configDir || path.join(app.getPath("appData"), "spine-companion");
   const resolvedConfigDir = fs.realpathSync.native?.(configDir) || fs.realpathSync(configDir);
   const resolvedTarget = fs.realpathSync.native?.(targetPath) || fs.realpathSync(targetPath);
@@ -306,7 +556,21 @@ function setAlwaysOnTop(enabled) {
 function focusWindow() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   if (!mainWindow.isVisible()) mainWindow.show();
+  if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.focus();
+}
+
+function showCompanionWindowInactive() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  if (!mainWindow.isVisible()) {
+    if (typeof mainWindow.showInactive === "function") mainWindow.showInactive();
+    else mainWindow.show();
+  }
+}
+
+function shouldRevealForState(state = {}) {
+  return uiSettings.autoRevealOnMcp !== false && isAiSource(state.source) && state.state && state.state !== "idle";
 }
 
 function hideCompanionWindow() {
@@ -317,8 +581,9 @@ function hideCompanionWindow() {
 async function openManager() {
   if (managerWindow && !managerWindow.isDestroyed()) {
     if (!managerWindow.isVisible()) managerWindow.show();
+    if (managerWindow.isMinimized()) managerWindow.restore();
     managerWindow.focus();
-    return;
+    return { opened: true };
   }
 
   managerWindow = new BrowserWindow({
@@ -343,12 +608,19 @@ async function openManager() {
   });
 
   managerWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    openExternalUrlFromWindow(url);
     return { action: "deny" };
   });
 
-  await managerWindow.loadURL(managerUrl());
-  managerWindow.show();
+  try {
+    await managerWindow.loadURL(managerUrl());
+    managerWindow.show();
+    managerWindow.focus();
+    return { opened: true };
+  } catch (error) {
+    logger?.error("manager.open_failed", error);
+    throw error;
+  }
 }
 
 async function openPanel(bounds) {
@@ -373,7 +645,7 @@ async function openPanel(bounds) {
     });
 
     panelWindow.on("blur", () => {
-      panelWindow.hide();
+      if (!panelPinned) panelWindow.hide();
     });
 
     const panelUrl = isDev
@@ -382,10 +654,19 @@ async function openPanel(bounds) {
     await panelWindow.loadURL(panelUrl);
   }
 
-  // Calculate position (bottom right generally)
-  const x = Math.round(bounds.x - (320 / 2));
-  let y = Math.round(bounds.y - 480 - 10);
-  if (y < 0) y = Math.round(bounds.y + bounds.height + 10); // if taskbar on top
+  const panelBounds = panelWindow.getBounds();
+  const anchor = {
+    x: Math.round((bounds.x || 0) + ((bounds.width || 0) / 2)),
+    y: Math.round((bounds.y || 0) + ((bounds.height || 0) / 2))
+  };
+  const display = screen.getDisplayNearestPoint(anchor);
+  const area = display.workArea;
+  const preferredX = Math.round((bounds.x || 0) - (panelBounds.width / 2));
+  const preferredY = Math.round((bounds.y || 0) - panelBounds.height - 10);
+  const fallbackY = Math.round((bounds.y || 0) + (bounds.height || 0) + 10);
+  const x = Math.max(area.x, Math.min(preferredX, area.x + area.width - panelBounds.width));
+  const yCandidate = preferredY < area.y ? fallbackY : preferredY;
+  const y = Math.max(area.y, Math.min(yCandidate, area.y + area.height - panelBounds.height));
 
   panelWindow.setPosition(x, y);
   panelWindow.show();
@@ -431,18 +712,40 @@ function updateTrayMenu() {
   if (tray) tray.setContextMenu(buildTrayMenu());
 }
 
+function saveMainWindowBoundsSoon(delayMs = 400) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  clearTimeout(windowBoundsTimer);
+  windowBoundsTimer = setTimeout(() => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    const bounds = mainWindow.getBounds();
+    saveSettings({
+      window: {
+        x: bounds.x,
+        y: bounds.y,
+        width: bounds.width,
+        height: bounds.height
+      }
+    }, { notify: false }).catch((error) => {
+      console.warn("[spine-companion] Unable to save window bounds", error);
+    });
+  }, delayMs);
+}
+
 function createTray() {
   if (tray) return;
   tray = new Tray(createTrayIcon());
   tray.setToolTip("Spine Companion");
   tray.on("click", (e, bounds) => openPanel(bounds));
+  tray.on("right-click", () => {
+    if (panelWindow && !panelWindow.isDestroyed()) panelWindow.hide();
+  });
   updateTrayMenu();
 }
 
 async function createWindow(config) {
+  const bounds = initialWindowBounds(config);
   mainWindow = new BrowserWindow({
-    width: Number(config.window.width || 360),
-    height: Number(config.window.height || 460),
+    ...bounds,
     minWidth: 260,
     minHeight: 320,
     frame: false,
@@ -464,13 +767,15 @@ async function createWindow(config) {
   alwaysOnTop = config.window.alwaysOnTop !== false;
   mainWindow.setAlwaysOnTop(alwaysOnTop, "floating");
   mainWindow.once("ready-to-show", () => mainWindow.show());
+  mainWindow.on("move", () => saveMainWindowBoundsSoon());
+  mainWindow.on("resize", () => saveMainWindowBoundsSoon());
   mainWindow.on("close", (event) => {
     if (isQuitting) return;
     event.preventDefault();
     mainWindow.hide();
   });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    openExternalUrlFromWindow(url);
     return { action: "deny" };
   });
 
@@ -480,9 +785,11 @@ async function createWindow(config) {
 function registerIpc(config) {
   ipcMain.handle("companion:get-config", () => publicConfigCache);
   ipcMain.handle("companion:get-state", () => serverRuntime.store.snapshot());
-  ipcMain.handle("companion:set-state", (_event, state) => serverRuntime.store.setState(state));
-  ipcMain.handle("companion:create-reminder", (_event, reminder) => serverRuntime.store.createReminder(reminder));
-  ipcMain.handle("companion:set-ui-settings", (_event, settings) => applyUiSettingsPatch(settings));
+  ipcMain.handle("companion:set-state", (_event, state) => serverRuntime.store.setState(validateSetState(state)));
+  ipcMain.handle("companion:create-reminder", (_event, reminder) => serverRuntime.store.createReminder(validateReminder(reminder)));
+  ipcMain.handle("companion:list-reminders", () => listReminders());
+  ipcMain.handle("companion:delete-reminder", (_event, id) => deleteReminder(id));
+  ipcMain.handle("companion:set-ui-settings", (_event, settings) => applyUiSettingsPatch(validateSaveSettings({ ui: settings }).ui));
   ipcMain.handle("companion:emit-scale", (_event, payload) => {
     sendToRenderer("companion:scale", payload);
     return true;
@@ -492,35 +799,56 @@ function registerIpc(config) {
     sendToRenderer("companion:model-imported", result);
     return result;
   });
-  ipcMain.handle("companion:save-settings", (_event, patch) => saveSettings(patch));
+  ipcMain.handle("companion:import-local-model", () => importLocalModel());
+  ipcMain.handle("companion:save-settings", (_event, patch) => saveSettings(validateSaveSettings(patch)));
   ipcMain.handle("companion:get-diagnostics", () => getDiagnostics());
+  ipcMain.handle("companion:export-logs", () => exportLogs());
   ipcMain.handle("companion:get-installed-models", () => getInstalledModels());
   ipcMain.handle("companion:get-history", () => serverRuntime.store.listHistory());
   ipcMain.handle("companion:get-current-model", () => getCurrentModel());
-  ipcMain.handle("companion:set-active-model", (_event, id) => setActiveModel(id));
+  ipcMain.handle("companion:set-active-model", (_event, id) => setActiveModel(validateModelId(id)));
   ipcMain.handle("companion:check-updates", () => getUpdateStatus());
   ipcMain.handle("companion:open-external", (_event, url) => openExternalUrl(url));
   ipcMain.handle("companion:set-auto-launch", (_event, enabled) => setAutoLaunch(enabled));
-  ipcMain.handle("companion:remove-model", (_event, id) => removeModel(id));
-  ipcMain.handle("companion:open-folder", (_event, p) => openCompanionFolder(p));
-  ipcMain.handle("companion:open-manager", () => {
-    openManager();
+  ipcMain.handle("companion:remove-model", (_event, id) => removeModel(validateModelId(id)));
+  ipcMain.handle("companion:open-folder", (_event, p) => openCompanionFolder(validateOpenFolderPath(p)));
+  ipcMain.handle("companion:open-manager", async () => {
+    const result = await openManager();
     if (panelWindow && !panelWindow.isDestroyed()) panelWindow.hide();
+    return result;
+  });
+  ipcMain.handle("companion:set-panel-pinned", (_event, pinned) => {
+    panelPinned = Boolean(pinned);
+    return panelPinned;
   });
   ipcMain.handle("companion:quit-app", () => app.quit());
 
   serverRuntime.store.emitter.on("state", (state) => {
+    logger?.info("state.changed", { state: state.state, source: state.source, message: state.message, notify: state.notify });
+    if (shouldRevealForState(state)) showCompanionWindowInactive();
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send("companion:state", state);
     }
+    if (shouldNotifyState(state)) {
+      const notification = notificationForState(state);
+      if (notification) {
+        sendToRenderer("companion:notification", notification);
+        if (uiSettings.systemNotifications !== false && Notification.isSupported()) {
+          const systemNotification = new Notification({
+            title: notification.title,
+            body: notification.body
+          });
+          systemNotification.on("click", () => {
+            focusWindow();
+            sendToRenderer("companion:notification-dismiss", notification);
+          });
+          systemNotification.show();
+        }
+      }
+    }
   });
   serverRuntime.store.emitter.on("reminder", (reminder) => {
-    if (Notification.isSupported()) {
-      new Notification({
-        title: "Spine Companion Reminder",
-        body: reminder.text || "Reminder"
-      }).show();
-    }
+    logger?.info("reminder.fired", { id: reminder.id, text: reminder.text });
   });
 
   ipcMain.on("companion:drag-start", (event, point) => {
@@ -540,7 +868,7 @@ function registerIpc(config) {
     if (!dragState) return;
     pendingDragPoint = point;
     if (dragFrame) return;
-    const dragFrameMs = uiSettings.dragMode === "smooth" ? 16 : 34;
+    const dragFrameMs = uiSettings.dragMode === "smooth" ? 16 : 24;
     dragFrame = setTimeout(() => {
       dragFrame = null;
       if (!dragState || !pendingDragPoint) return;
@@ -560,6 +888,7 @@ function registerIpc(config) {
       const dy = Math.round(Number(pendingDragPoint.screenY) - dragState.startY);
       dragState.win.setPosition(dragState.bounds.x + dx, dragState.bounds.y + dy, false);
     }
+    saveMainWindowBoundsSoon(50);
     dragState = null;
     pendingDragPoint = null;
   });
@@ -578,24 +907,90 @@ function setMousePassthrough(enabled, win = mainWindow) {
   updateTrayMenu();
 }
 
+function registerStateShortcut() {
+  const accelerator = uiSettings.shortcutAccelerator || "CommandOrControl+Shift+S";
+  globalShortcut.unregisterAll();
+  shortcutStatus = {
+    enabled: uiSettings.shortcutEnabled !== false,
+    registered: false,
+    accelerator,
+    error: ""
+  };
+  if (uiSettings.shortcutEnabled === false) {
+    logger?.info("shortcut.disabled", { accelerator });
+    return shortcutStatus;
+  }
+  try {
+    const registered = globalShortcut.register(accelerator, () => {
+      const state = serverRuntime.store.snapshot().state === "working" ? "idle" : "working";
+      serverRuntime.store.setState({ state, source: "global-shortcut", message: state === "working" ? "Working" : "" });
+    });
+    shortcutStatus.registered = registered;
+    if (!registered) shortcutStatus.error = "Shortcut is already in use by another application.";
+    logger?.[registered ? "info" : "warn"]("shortcut.register", shortcutStatus);
+  } catch (error) {
+    shortcutStatus.error = error.message || String(error);
+    logger?.warn("shortcut.register_failed", shortcutStatus);
+  }
+  return shortcutStatus;
+}
+
 async function boot() {
   const config = loadConfig();
   uiSettings = normalizeUiSettings(config.ui);
   const origin = `http://${config.server.host}:${config.server.port}`;
   publicConfigCache = getPublicConfig(config, origin);
+  logger = createFileLogger(publicConfigCache.paths?.configDir || path.dirname(config.localConfigPath) || app.getPath("appData"));
+  logger.info("app.start", { version: pkg.version, packaged: app.isPackaged });
+  if (config.configWarnings?.length) logger.warn("config.warnings", config.configWarnings);
   serverRuntime = createCompanionServer(config, () => publicConfigCache);
   await serverRuntime.listen();
   registerIpc(config);
-  globalShortcut.register("CommandOrControl+Shift+S", () => {
-    const state = serverRuntime.store.snapshot().state === "working" ? "idle" : "working";
-    serverRuntime.store.setState({ state, source: "global-shortcut", message: state === "working" ? "Working" : "" });
-  });
+  registerStateShortcut();
+  scheduleBackgroundUpdateCheck();
   createTray();
   await createWindow(config);
+  if (!config.spine.assetDir) {
+    await openManager();
+  }
+}
+
+function handleFatalStartup(error) {
+  console.error("[spine-companion] startup failed", error);
+  logger?.error("app.start_failed", error);
+  const message = error?.code === "EADDRINUSE"
+    ? "Spine Companion could not start because its local API port is already in use. Another instance may already be running."
+    : (error?.message || String(error));
+  if (app.isReady()) {
+    dialog.showErrorBox("Spine Companion failed to start", message);
+  }
+  app.quit();
+}
+
+function registerProcessErrorHandlers() {
+  process.on("uncaughtException", (error) => {
+    console.error("[spine-companion] uncaught exception", error);
+    logger?.error("process.uncaught_exception", error);
+    if (app.isReady()) dialog.showErrorBox("Spine Companion error", error?.message || String(error));
+  });
+  process.on("unhandledRejection", (reason) => {
+    console.error("[spine-companion] unhandled rejection", reason);
+    logger?.error("process.unhandled_rejection", reason);
+  });
 }
 
 app.setAppUserModelId("dev.spine-companion.desktop");
-app.whenReady().then(boot);
+registerProcessErrorHandlers();
+
+const singleInstanceLock = app.requestSingleInstanceLock();
+if (!singleInstanceLock) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    focusWindow();
+  });
+  app.whenReady().then(boot).catch(handleFatalStartup);
+}
 
 app.on("window-all-closed", () => {
   if (process.platform === "darwin") return;
@@ -607,6 +1002,7 @@ app.on("activate", () => {
 
 app.on("before-quit", () => {
   isQuitting = true;
+  if (windowBoundsTimer) clearTimeout(windowBoundsTimer);
   globalShortcut.unregisterAll();
   if (serverRuntime) serverRuntime.close();
 });

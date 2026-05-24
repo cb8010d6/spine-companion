@@ -1,6 +1,6 @@
 {
   "name": "spine-companion",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Open-source desktop companion shell for local Spine 3.8 models.",
   "license": "MIT",
   "packageManager": "bun@1.3.13",
@@ -24,6 +24,7 @@
     "capture:preview": "electron scripts/capture-preview.cjs",
     "mcp:server": "bun scripts/mcp-companion-server.mjs",
     "mcp:install:codex": "bun scripts/install-codex-mcp.cjs",
+    "status:report": "bun scripts/report-status.cjs",
     "ai:configure": "bun skills/spine-companion-status/scripts/configure-ai-tools.cjs --repo .",
     "skill:install": "bun scripts/install-status-skill.cjs",
     "check:mcp": "bun scripts/check-mcp-bridge.mjs",

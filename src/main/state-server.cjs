@@ -5,6 +5,7 @@ const { WebSocketServer } = require("ws");
 
 const stateMachine = require("../shared/state-machine.json");
 const { createStateStore, createStateMachine } = require("../shared/state-store.cjs");
+const { validateReminder, validateSetState } = require("./ipc-schema.cjs");
 
 const { normalizeStateId } = createStateMachine(stateMachine);
 
@@ -55,7 +56,7 @@ function sendJson(res, status, value, req) {
   res.writeHead(status, {
     "Access-Control-Allow-Origin": corsOrigin(req),
     "Access-Control-Allow-Headers": "content-type",
-    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+    "Access-Control-Allow-Methods": "GET,POST,DELETE,OPTIONS",
     "Content-Type": "application/json; charset=utf-8",
     "Content-Length": Buffer.byteLength(body)
   });
@@ -66,7 +67,7 @@ function sendText(res, status, body, req, contentType = "text/plain; charset=utf
   res.writeHead(status, {
     "Access-Control-Allow-Origin": corsOrigin(req),
     "Access-Control-Allow-Headers": "content-type",
-    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+    "Access-Control-Allow-Methods": "GET,POST,DELETE,OPTIONS",
     "Content-Type": contentType,
     "Content-Length": Buffer.byteLength(body)
   });
@@ -136,12 +137,12 @@ function createCompanionServer(config, publicConfig) {
       }
 
       if (req.method === "POST" && url.pathname === "/state") {
-        sendJson(res, 200, store.setState(await readBody(req)), req);
+        sendJson(res, 200, store.setState(validateSetState(await readBody(req))), req);
         return;
       }
 
       if (req.method === "POST" && url.pathname.startsWith("/state/")) {
-        const body = await readBody(req);
+        const body = validateSetState(await readBody(req));
         body.state = decodeURIComponent(url.pathname.slice("/state/".length));
         sendJson(res, 200, store.setState(body), req);
         return;
@@ -158,7 +159,14 @@ function createCompanionServer(config, publicConfig) {
       }
 
       if (req.method === "POST" && url.pathname === "/reminders") {
-        sendJson(res, 201, store.createReminder(await readBody(req)), req);
+        sendJson(res, 201, store.createReminder(validateReminder(await readBody(req))), req);
+        return;
+      }
+
+      if (req.method === "DELETE" && url.pathname.startsWith("/reminders/")) {
+        const id = decodeURIComponent(url.pathname.slice("/reminders/".length));
+        const deleted = store.deleteReminder(id);
+        sendJson(res, deleted ? 200 : 404, { deleted, id }, req);
         return;
       }
 
@@ -254,7 +262,14 @@ function createCompanionServer(config, publicConfig) {
     },
     close() {
       for (const client of wss.clients) client.close();
+      for (const res of sseClients) {
+        try {
+          res.end();
+        } catch {}
+      }
+      sseClients.clear();
       server.close();
+      store.destroy();
     },
     setAssetRoot(nextAssetRoot) {
       assetRootState.current = nextAssetRoot ? path.resolve(nextAssetRoot) : "";

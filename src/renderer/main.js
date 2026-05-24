@@ -5,6 +5,8 @@ import { SpinePlayer } from "./spine-player.js";
 import { stateLabels } from "./state.js";
 import { createOnboarding, shouldShowOnboarding } from "./onboarding.js";
 import { createErrorCard } from "./error-boundary.js";
+import { bindManagerButton } from "./manager-action.js";
+import { defaultMessageForState, isAiSource, notificationForState, shouldNotifyState, sourceDisplayName } from "../shared/notification-policy.js";
 
 const stage = document.getElementById("stage");
 const shell = document.getElementById("stage-shell");
@@ -37,6 +39,8 @@ const reminderDelay = document.getElementById("reminder-delay");
 const emptyState = document.getElementById("empty-state");
 const emptyStatePath = document.getElementById("empty-state-path");
 const emptyImport = document.getElementById("empty-import");
+const emptyManager = document.getElementById("empty-manager");
+const emptyManagerStatus = document.getElementById("empty-manager-status");
 const emptyRetry = document.getElementById("empty-retry");
 const onboardingRoot = document.getElementById("onboarding-root");
 const errorRoot = document.getElementById("error-root");
@@ -52,7 +56,8 @@ let currentUiSettings = {
   bubbleShadow: true,
   bubbleBackground: "solid",
   bubbleHoldMs: 8000,
-  dragMode: "compatible"
+  dragMode: "compatible",
+  hitboxPadding: 8
 };
 let currentBubbleAnchor = { x: 20, y: 28, scale: 1, side: "left" };
 let heldBubble = null;
@@ -62,6 +67,9 @@ let mousePassthrough = false;
 let pendingMousePassthroughEvent = null;
 let mousePassthroughFrame = 0;
 let runtimeConfig = null;
+let providerErrorToastTimer = null;
+let onboardingDismissedForSession = false;
+let clickReturnTimer = 0;
 
 function applyUiSettings(settings = {}) {
   currentUiSettings = { ...currentUiSettings, ...settings };
@@ -72,8 +80,10 @@ function applyUiSettings(settings = {}) {
   document.body.dataset.bubbleBackground = currentUiSettings.bubbleBackground || "solid";
   player?.setHudVisible(currentUiSettings.hudVisible !== false);
   player?.setDragMode(currentUiSettings.dragMode || "compatible");
+  player?.setHitboxPadding(currentUiSettings.hitboxPadding);
   syncSettingsPanel();
   updateBubble(currentState);
+  refreshMousePassthroughSoon();
 }
 
 function syncSettingsPanel() {
@@ -143,10 +153,28 @@ function elementContainsPoint(element, x, y) {
   return rectContains(element.getBoundingClientRect(), x, y);
 }
 
-function setMousePassthrough(enabled) {
-  if (!window.companion?.setMousePassthrough || mousePassthrough === enabled) return;
+function setMousePassthrough(enabled, force = false) {
+  if (!window.companion?.setMousePassthrough || (!force && mousePassthrough === enabled)) return;
   mousePassthrough = enabled;
-  window.companion.setMousePassthrough(enabled);
+  window.companion.setMousePassthrough(enabled, player?.getInteractiveBounds?.());
+}
+
+function refreshMousePassthroughSoon() {
+  window.requestAnimationFrame(() => {
+    if (pendingMousePassthroughEvent) scheduleMousePassthroughUpdate(pendingMousePassthroughEvent);
+    if (mousePassthrough) setMousePassthrough(true, true);
+  });
+}
+
+async function openManagerFromRenderer() {
+  setMousePassthrough(false);
+  if (!window.companion?.openManager) {
+    throw new Error("Manager API is unavailable.");
+  }
+  onboardingDismissedForSession = true;
+  onboardingRoot.hidden = true;
+  onboardingRoot.replaceChildren();
+  return window.companion.openManager();
 }
 
 function scheduleMousePassthroughUpdate(event) {
@@ -211,8 +239,8 @@ function updateBubble(state) {
   const shouldShow = currentUiSettings.bubbleVisible !== false && displayMessage && displayId !== "idle";
   progressBubble.hidden = !shouldShow;
   if (!shouldShow) return;
-  bubbleTitle.textContent = displayState?.source === "codex-mcp"
-    ? "Codex"
+  bubbleTitle.textContent = isAiSource(displayState?.source)
+    ? sourceDisplayName(displayState?.source)
     : displayId[0].toUpperCase() + displayId.slice(1);
   bubbleMessage.textContent = displayMessage;
   progressBubble.dataset.state = displayId;
@@ -222,23 +250,10 @@ function updateBubble(state) {
   });
 }
 
-function defaultMessageForState(id, source) {
-  if (source !== "codex-mcp") return "";
-  const messages = {
-    working: "Working on it",
-    reviewing: "Reviewing changes",
-    running: "Running checks",
-    waiting: "Waiting",
-    success: "Task complete",
-    failed: "Task failed",
-    reminder: "Reminder"
-  };
-  return messages[id] || "";
-}
-
 function updateCompletionToast(state) {
   const id = state?.state || "idle";
   if (id !== "success" && id !== "failed") return;
+  if (!shouldNotifyState(state)) return;
   const key = `${id}:${state.updatedAt || ""}`;
   if (key === lastCompletionKey) return;
   lastCompletionKey = key;
@@ -246,12 +261,24 @@ function updateCompletionToast(state) {
   setMousePassthrough(false);
   window.clearTimeout(completionToastTimer);
   completionToast.dataset.state = id;
-  completionTitle.textContent = id === "success" ? "Task complete" : "Task failed";
-  completionMessage.textContent = String(state.message || (id === "success" ? "Finished successfully" : "Needs attention"));
+  const notification = notificationForState(state);
+  completionTitle.textContent = notification?.title || (id === "success" ? "Task complete" : "Task failed");
+  completionMessage.textContent = notification?.body || String(state.message || (id === "success" ? "Finished successfully" : "Needs attention"));
   completionToastTimer = window.setTimeout(() => {
     completionToast.hidden = true;
     setMousePassthrough(true);
   }, 10000);
+}
+
+async function returnToIdle(source = "user") {
+  const idleState = { state: "idle", source };
+  window.clearTimeout(clickReturnTimer);
+  player?.applyState(idleState, true);
+  updateHud(idleState);
+  completionToast.hidden = true;
+  window.clearTimeout(completionToastTimer);
+  setMousePassthrough(true);
+  await provider?.setState?.(idleState).catch(() => {});
 }
 
 function renderModelCatalog(config) {
@@ -268,6 +295,7 @@ function renderModelCatalog(config) {
   modelSelect.disabled = !hasModels;
   modelImport.disabled = !hasModels;
   emptyImport.hidden = !hasModels;
+  emptyManager.hidden = !window.companion?.openManager;
 }
 
 async function importSelectedModel(source = "settings") {
@@ -313,14 +341,14 @@ function showEmptyState(error, config) {
 }
 
 function showOnboardingIfNeeded(config) {
-  if (!shouldShowOnboarding(config)) {
+  if (onboardingDismissedForSession || !shouldShowOnboarding(config)) {
     onboardingRoot.hidden = true;
     onboardingRoot.replaceChildren();
     return;
   }
   onboardingRoot.hidden = false;
   onboardingRoot.replaceChildren(createOnboarding({
-    onManager: () => window.companion?.openManager?.(),
+    onManager: openManagerFromRenderer,
     onDownload: () => importSelectedModel("onboarding")
   }));
 }
@@ -336,7 +364,7 @@ function showErrorBoundary(error, config) {
       errorRoot.hidden = true;
       errorRoot.replaceChildren();
     }).catch((nextError) => showErrorBoundary(nextError, runtimeConfig)),
-    onManager: () => window.companion?.openManager?.()
+    onManager: openManagerFromRenderer
   }));
 }
 
@@ -352,22 +380,54 @@ async function loadPlayer(config) {
   };
   player.setHudVisible(currentUiSettings.hudVisible !== false);
   player.setDragMode(currentUiSettings.dragMode || "compatible");
+  player.setHitboxPadding(currentUiSettings.hitboxPadding);
   applyBubbleAnchor(player.getAnchor());
   player.applyState(currentState, true);
   emptyState.hidden = true;
+  onboardingDismissedForSession = true;
+  onboardingRoot.hidden = true;
+  onboardingRoot.replaceChildren();
   errorRoot.hidden = true;
   errorRoot.replaceChildren();
   setMousePassthrough(true);
 }
 
+function showProviderError(error, context = {}) {
+  if ((context.consecutiveErrors || 0) < 3) return;
+  window.clearTimeout(providerErrorToastTimer);
+  const message = `State source connection issue: ${error.message || error}`;
+  updateBubble({
+    state: "waiting",
+    source: context.provider || "provider",
+    message
+  });
+  providerErrorToastTimer = window.setTimeout(() => updateBubble(currentState), 7000);
+}
+
+async function hotReloadPlayer(nextConfig, statusText = "") {
+  try {
+    await loadPlayer(nextConfig);
+    if (statusText && modelStatus) modelStatus.textContent = statusText;
+  } catch (error) {
+    showEmptyState(error, nextConfig);
+    showErrorBoundary(error, nextConfig);
+    if (modelStatus) modelStatus.textContent = error.message;
+  }
+}
+
 function wireDragging() {
   shell.addEventListener("pointerdown", (event) => {
     if (event.button !== 0 || event.target.closest(".hud")) return;
+    if (currentState.state === "success") {
+      returnToIdle("success-click");
+      return;
+    }
     drag = {
       moved: false,
       x: event.screenX,
       y: event.screenY,
       lastX: event.screenX,
+      lastRunX: event.screenX,
       lastDirection: "",
       returnTo: currentState.state || "idle"
     };
@@ -381,8 +441,8 @@ function wireDragging() {
     if (!drag) return;
     const distance = Math.abs(event.screenX - drag.x) + Math.abs(event.screenY - drag.y);
     if (distance > 3) drag.moved = true;
-    const dx = event.screenX - drag.lastX;
-    if (drag.moved && Math.abs(dx) >= 6 && player) {
+    const dx = event.screenX - drag.lastRunX;
+    if (drag.moved && Math.abs(dx) >= 2 && player) {
       const direction = dx < 0 ? "left" : "right";
       if (direction !== drag.lastDirection) {
         drag.lastDirection = direction;
@@ -394,6 +454,7 @@ function wireDragging() {
       } else {
         player.setDirection(direction);
       }
+      drag.lastRunX = event.screenX;
       updateHud({
         state: "running",
         direction,
@@ -410,24 +471,42 @@ function wireDragging() {
     const completedDrag = drag.moved;
     const returnTo = drag.returnTo || "idle";
     window.companion?.dragEnd();
-    if (completedDrag && provider) {
-      await provider.setState({
-        state: returnTo,
-        source: "drag-end"
-      });
-    } else if (provider) {
-      await provider.setState({
-        state: "reminder",
-        source: "click",
-        message: "Interaction",
-        autoReturnMs: 2200,
-        returnTo: "idle"
-      });
+    if (completedDrag) {
+      player?.applyState({ state: returnTo, source: "drag-end" }, true);
+      updateHud({ state: returnTo, source: "drag-end" });
     }
     drag = null;
     player?.setDragActive(false);
     document.body.classList.remove("is-dragging");
     shell.releasePointerCapture(event.pointerId);
+    if (completedDrag) {
+      if (provider) {
+        await provider.setState({
+          state: returnTo,
+          source: "drag-end"
+        });
+      }
+      return;
+    }
+    const clickState = {
+      state: "reminder",
+      source: "click",
+      message: "Interaction",
+      autoReturnMs: 2200,
+      returnTo: "idle"
+    };
+    player?.applyState(clickState, true);
+    updateHud(clickState);
+    window.clearTimeout(clickReturnTimer);
+    clickReturnTimer = window.setTimeout(() => {
+      const idleState = { state: "idle", source: "click-return" };
+      player?.applyState(idleState, true);
+      updateHud(idleState);
+      provider?.setState?.(idleState).catch(() => {});
+    }, Number(clickState.autoReturnMs));
+    if (provider) {
+      await provider.setState(clickState);
+    }
   });
 }
 
@@ -444,6 +523,7 @@ async function boot() {
   runtimeConfig = config;
   applyUiSettings(config.ui);
   provider = createStateProvider(config);
+  provider.onError = showProviderError;
   renderStateControls((state) => provider.setState(state));
   renderModelCatalog(config);
   showOnboardingIfNeeded(config);
@@ -469,9 +549,11 @@ async function boot() {
   window.companion?.onScale((payload) => {
     if (payload?.action === "reset") {
       player?.resetUserScale();
+      refreshMousePassthroughSoon();
       return;
     }
     player?.adjustUserScale(Number(payload?.delta || 0));
+    refreshMousePassthroughSoon();
   });
 
   window.companion?.onModelImported?.(async (result) => {
@@ -484,7 +566,7 @@ async function boot() {
         assetDirConfigured: true
       }
     };
-    await loadPlayer(runtimeConfig);
+    await hotReloadPlayer(runtimeConfig, `Imported and loaded from ${result.assetDir}.`);
   });
 
   window.companion?.onConfigChanged?.(async (config) => {
@@ -496,7 +578,21 @@ async function boot() {
         ...(config.spine || {})
       }
     };
-    await loadPlayer(runtimeConfig);
+    await hotReloadPlayer(runtimeConfig);
+  });
+
+  window.companion?.onNotificationDismiss?.(() => {
+    completionToast.hidden = true;
+    window.clearTimeout(completionToastTimer);
+    setMousePassthrough(true);
+  });
+
+  window.companion?.onUpdateAvailable?.((status) => {
+    updateBubble({
+      state: "reminder",
+      source: "update-checker",
+      message: `Spine Companion ${status.latestVersion} is available.`
+    });
   });
 
   settingsToggle.addEventListener("click", () => {
@@ -512,6 +608,7 @@ async function boot() {
   settingZoomReset.addEventListener("click", () => window.companion?.emitScale?.({ action: "reset" }));
   modelImport.addEventListener("click", () => importSelectedModel("settings"));
   emptyImport.addEventListener("click", () => importSelectedModel("empty"));
+  bindManagerButton(emptyManager, emptyManagerStatus, openManagerFromRenderer);
   emptyRetry.addEventListener("click", () => loadPlayer(runtimeConfig).catch((error) => showErrorBoundary(error, runtimeConfig)));
 
   reminderForm.addEventListener("submit", async (event) => {
@@ -524,11 +621,21 @@ async function boot() {
   });
 
   completionToast.addEventListener("click", () => {
-    completionToast.hidden = true;
-    window.clearTimeout(completionToastTimer);
-    setMousePassthrough(true);
+    returnToIdle("completion-toast");
   });
 }
+
+window.addEventListener("error", (event) => {
+  const error = event.error || new Error(event.message || "Renderer error");
+  console.error("[spine-companion] renderer error", error);
+  showErrorBoundary(error, runtimeConfig);
+});
+
+window.addEventListener("unhandledrejection", (event) => {
+  const reason = event.reason instanceof Error ? event.reason : new Error(String(event.reason || "Unhandled rejection"));
+  console.error("[spine-companion] renderer rejection", reason);
+  showErrorBoundary(reason, runtimeConfig);
+});
 
 boot().catch((error) => {
   emptyState.hidden = false;

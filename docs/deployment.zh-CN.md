@@ -186,5 +186,12 @@ release/Spine Companion Portable.zip
 - 模型缺失：重新运行 `bun run setup:assets -- "C:\path\to\spine_model_folder"`。
 - 端口冲突：设置 `COMPANION_PORT`，并同步更新 MCP 的 `COMPANION_API`。
 - Codex 看不到 MCP 工具：确认 `~/.codex/config.toml` 有 `[mcp_servers.spine_companion]`，然后重启 Codex。
-- macOS arm64 无法打开：GitHub Actions 生成的未签名 macOS 包可能被 Gatekeeper 拦截，Apple Silicon 上更常见。正式公开发布时，在 GitHub secrets 配置 `MACOS_CERTIFICATE`、`MACOS_CERTIFICATE_PASSWORD`、`APPLE_API_KEY`、`APPLE_API_KEY_ID`、`APPLE_API_ISSUER`、`APPLE_TEAM_ID`，让 release workflow 自动签名和公证。
+- macOS arm64 无法打开：GitHub Actions 生成的未签名 macOS 包可能被 Gatekeeper 拦截，Apple Silicon 上更常见。只对你信任来源下载的包使用下面方法：
+  - 方法 1：把 `Spine Companion.app` 拖到 `/Applications`，右键点 App，选择“打开”，弹窗里再次点“打开”。
+  - 方法 2：打开 Terminal 执行：
+    ```bash
+    xattr -dr com.apple.quarantine "/Applications/Spine Companion.app"
+    open "/Applications/Spine Companion.app"
+    ```
+  - 正式签名和公证暂时不做。后续公开发布时，再在 GitHub secrets 配置 `MACOS_CERTIFICATE`、`MACOS_CERTIFICATE_PASSWORD`、`APPLE_API_KEY`、`APPLE_API_KEY_ID`、`APPLE_API_ISSUER`、`APPLE_TEAM_ID`。
 - 动画大小不一致：调整 `companion.config.json` 中的 `spine.scale`、`spine.framePadding`、`spine.stageBottomInset`、`spine.fitStates`、`spine.mixDurationMs`。

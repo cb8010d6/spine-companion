@@ -1,14 +1,4 @@
-function encodedAssetUrl(origin, fileName) {
-  if (!origin || !fileName) return "";
-  return `${String(origin).replace(/\/$/, "")}/assets/spine/${encodeURIComponent(fileName)}`;
-}
-
-function modelPngFile(model = {}) {
-  return (model.files || []).find((file) => {
-    const name = String(file?.name || file?.url || "").toLowerCase();
-    return name.endsWith(".png");
-  }) || null;
-}
+import { spineAssetUrl } from "../shared/asset-url.js";
 
 function activeModelMatches(model = {}, config = {}) {
   const activeSkel = String(config.spine?.skel || "");
@@ -21,11 +11,19 @@ function activeModelMatches(model = {}, config = {}) {
 
 export function modelPreview(model = {}, config = {}) {
   const label = model.name || model.id || model.skel || "Spine";
-  const png = modelPngFile(model);
-  const localImageUrl = activeModelMatches(model, config)
-    ? encodedAssetUrl(config.server?.origin, png?.name)
+  const isActiveModel = activeModelMatches(model, config);
+  const previewSkel = model.skel || config.spine?.skel || "";
+  const spineConfig = {
+    ...config,
+    spine: {
+      ...(config.spine || {}),
+      skel: previewSkel
+    }
+  };
+  const spinePreviewUrl = isActiveModel && previewSkel
+    ? spineAssetUrl(spineConfig)
     : "";
-  const imageUrl = model.previewUrl || model.thumbnailUrl || localImageUrl || png?.url || "";
+  const imageUrl = model.previewUrl || model.thumbnailUrl || "";
   const initials = label
     .split(/[\s_-]+/)
     .filter(Boolean)
@@ -37,6 +35,8 @@ export function modelPreview(model = {}, config = {}) {
     initials,
     label,
     imageUrl,
+    spinePreviewUrl,
+    canRenderSpinePreview: Boolean(spinePreviewUrl),
     style: {
       background: `linear-gradient(135deg, hsl(${hue} 56% 24%), hsl(${(hue + 42) % 360} 52% 36%))`
     }

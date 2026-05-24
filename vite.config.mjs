@@ -13,6 +13,16 @@ export default defineConfig({
         manager: resolve(__dirname, "manager.html"),
         panel: resolve(__dirname, "panel.html"),
       },
+      output: {
+        manualChunks(id) {
+          if (id.includes("node_modules/pixi.js") || id.includes("node_modules/pixi-spine")) {
+            return "pixi-spine-runtime";
+          }
+          if (id.includes("node_modules/@tauri-apps")) {
+            return "tauri-api";
+          }
+        }
+      }
     },
   },
   server: {

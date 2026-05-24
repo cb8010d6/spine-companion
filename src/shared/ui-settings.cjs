@@ -4,7 +4,14 @@ const DEFAULT_UI_SETTINGS = Object.freeze({
   bubbleShadow: true,
   bubbleBackground: "solid",
   bubbleHoldMs: 8000,
-  dragMode: "compatible"
+  dragMode: "compatible",
+  autoRevealOnMcp: true,
+  systemNotifications: true,
+  shortcutEnabled: true,
+  shortcutAccelerator: "CommandOrControl+Shift+S",
+  updateAutoCheck: true,
+  maxDevicePixelRatio: 2,
+  hitboxPadding: 8
 });
 
 const BUBBLE_BACKGROUNDS = new Set(["solid", "soft", "clear", "light"]);
@@ -22,7 +29,20 @@ function normalizeUiSettings(input = {}, defaults = DEFAULT_UI_SETTINGS) {
     bubbleHoldMs: Number.isFinite(Number(source.bubbleHoldMs))
       ? Math.min(60000, Math.max(1500, Number(source.bubbleHoldMs)))
       : defaults.bubbleHoldMs,
-    dragMode: DRAG_MODES.has(source.dragMode) ? source.dragMode : defaults.dragMode
+    dragMode: DRAG_MODES.has(source.dragMode) ? source.dragMode : defaults.dragMode,
+    autoRevealOnMcp: typeof source.autoRevealOnMcp === "boolean" ? source.autoRevealOnMcp : defaults.autoRevealOnMcp,
+    systemNotifications: typeof source.systemNotifications === "boolean" ? source.systemNotifications : defaults.systemNotifications,
+    shortcutEnabled: typeof source.shortcutEnabled === "boolean" ? source.shortcutEnabled : defaults.shortcutEnabled,
+    shortcutAccelerator: typeof source.shortcutAccelerator === "string" && source.shortcutAccelerator.trim()
+      ? source.shortcutAccelerator.trim()
+      : defaults.shortcutAccelerator,
+    updateAutoCheck: typeof source.updateAutoCheck === "boolean" ? source.updateAutoCheck : defaults.updateAutoCheck,
+    maxDevicePixelRatio: Number.isFinite(Number(source.maxDevicePixelRatio))
+      ? Math.min(3, Math.max(1, Number(source.maxDevicePixelRatio)))
+      : defaults.maxDevicePixelRatio,
+    hitboxPadding: Number.isFinite(Number(source.hitboxPadding))
+      ? Math.min(48, Math.max(0, Number(source.hitboxPadding)))
+      : defaults.hitboxPadding
   };
 }
 
@@ -36,6 +56,19 @@ function applyUiSettingsPatch(current = DEFAULT_UI_SETTINGS, patch = {}) {
     next.bubbleHoldMs = Math.min(60000, Math.max(1500, Number(patch.bubbleHoldMs)));
   }
   if (DRAG_MODES.has(patch.dragMode)) next.dragMode = patch.dragMode;
+  if (typeof patch.autoRevealOnMcp === "boolean") next.autoRevealOnMcp = patch.autoRevealOnMcp;
+  if (typeof patch.systemNotifications === "boolean") next.systemNotifications = patch.systemNotifications;
+  if (typeof patch.shortcutEnabled === "boolean") next.shortcutEnabled = patch.shortcutEnabled;
+  if (typeof patch.shortcutAccelerator === "string" && patch.shortcutAccelerator.trim()) {
+    next.shortcutAccelerator = patch.shortcutAccelerator.trim();
+  }
+  if (typeof patch.updateAutoCheck === "boolean") next.updateAutoCheck = patch.updateAutoCheck;
+  if (Number.isFinite(Number(patch.maxDevicePixelRatio))) {
+    next.maxDevicePixelRatio = Math.min(3, Math.max(1, Number(patch.maxDevicePixelRatio)));
+  }
+  if (Number.isFinite(Number(patch.hitboxPadding))) {
+    next.hitboxPadding = Math.min(48, Math.max(0, Number(patch.hitboxPadding)));
+  }
   return normalizeUiSettings(next, current);
 }
 

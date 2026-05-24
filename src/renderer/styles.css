@@ -504,6 +504,11 @@ input::placeholder {
   flex-wrap: wrap;
 }
 
+.error-action-status:empty,
+#empty-manager-status:empty {
+  display: none;
+}
+
 @media (max-height: 390px), (max-width: 300px) {
   .progress-bubble {
     left: 12px;

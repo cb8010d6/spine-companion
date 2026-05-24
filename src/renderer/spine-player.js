@@ -31,15 +31,21 @@ export class SpinePlayer {
     this.resizeTimer = null;
     this.handleResize = null;
     this.handleWheel = null;
+    this.hitboxPadding = Number.isFinite(Number(config.ui?.hitboxPadding))
+      ? Math.min(48, Math.max(0, Number(config.ui.hitboxPadding)))
+      : 8;
   }
 
   async init() {
+    const dprLimit = Number.isFinite(Number(this.config.ui?.maxDevicePixelRatio))
+      ? Math.min(3, Math.max(1, Number(this.config.ui.maxDevicePixelRatio)))
+      : 2;
     this.app = new PIXI.Application({
       resizeTo: this.stageElement,
       backgroundAlpha: 0,
       antialias: true,
       autoDensity: true,
-      resolution: Math.min(window.devicePixelRatio || 1, 2)
+      resolution: Math.min(window.devicePixelRatio || 1, dprLimit)
     });
     this.stageElement.appendChild(this.app.view);
     this.model = new PIXI.Container();
@@ -140,6 +146,12 @@ export class SpinePlayer {
     this.applyTickerMode();
   }
 
+  setHitboxPadding(value) {
+    this.hitboxPadding = Number.isFinite(Number(value))
+      ? Math.min(48, Math.max(0, Number(value)))
+      : 8;
+  }
+
   setDragActive(active) {
     this.dragActive = Boolean(active);
     this.applyTickerMode();
@@ -147,7 +159,7 @@ export class SpinePlayer {
 
   applyTickerMode() {
     if (!this.app) return;
-    this.app.ticker.maxFPS = this.dragActive && this.dragMode !== "smooth" ? 30 : 0;
+    this.app.ticker.maxFPS = this.dragActive && this.dragMode !== "smooth" ? 42 : 0;
   }
 
   setDirection(direction) {
@@ -338,21 +350,21 @@ export class SpinePlayer {
   }
 
   getInteractiveBounds() {
-    if (!this.model || !this.stableBounds) return null;
-    const width = this.stableBounds.width * this.screenScale;
-    const height = this.stableBounds.height * this.screenScale;
+    if (!this.model || !this.spine) return null;
+    const sourceBounds = this.spine.getLocalBounds?.() || this.stableBounds;
+    if (!sourceBounds) return null;
+    const width = Math.max(1, sourceBounds.width * this.screenScale);
+    const height = Math.max(1, sourceBounds.height * this.screenScale);
     const zoomRange = Math.max(0.01, this.maxUserScale - this.minUserScale);
     const zoomRatio = Math.max(0, Math.min(1, (this.userScale - this.minUserScale) / zoomRange));
-    const hitWidth = width * (0.62 + zoomRatio * 0.18);
-    const hitHeight = height * (0.72 + zoomRatio * 0.16);
-    const paddingX = Math.max(3, width * (0.012 + zoomRatio * 0.025));
-    const paddingTop = Math.max(2, height * (0.006 + zoomRatio * 0.018));
-    const paddingBottom = Math.max(8, height * (0.018 + zoomRatio * 0.028));
+    const hitWidth = width * (0.46 + zoomRatio * 0.16);
+    const hitHeight = height * (0.58 + zoomRatio * 0.18);
+    const top = this.model.y - height + Math.max(0, height - hitHeight) * 0.45;
     return {
-      left: this.model.x - hitWidth / 2 - paddingX,
-      right: this.model.x + hitWidth / 2 + paddingX,
-      top: this.model.y - hitHeight - paddingTop,
-      bottom: this.model.y + paddingBottom
+      left: this.model.x - hitWidth / 2 - this.hitboxPadding,
+      right: this.model.x + hitWidth / 2 + this.hitboxPadding,
+      top: top - this.hitboxPadding,
+      bottom: this.model.y + this.hitboxPadding
     };
   }
 

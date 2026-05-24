@@ -36,6 +36,8 @@ const fallbackConfig = {
   window: {
     width: 360,
     height: 460,
+    x: null,
+    y: null,
     alwaysOnTop: true,
     transparent: true
   },
@@ -69,7 +71,14 @@ const fallbackConfig = {
     bubbleShadow: true,
     bubbleBackground: "solid",
     bubbleHoldMs: 8000,
-    dragMode: "compatible"
+    dragMode: "compatible",
+    autoRevealOnMcp: true,
+    systemNotifications: true,
+    shortcutEnabled: true,
+    shortcutAccelerator: "CommandOrControl+Shift+S",
+    updateAutoCheck: true,
+    maxDevicePixelRatio: 2,
+    hitboxPadding: 8
   },
   models: {
     catalog: [
@@ -99,7 +108,7 @@ const fallbackConfig = {
   },
   specialSegments: {
     review: { from: 2.6, to: 4.35, loop: true },
-    success: { from: 4.4, to: 7.2, loop: false },
+    success: { from: 4.4, to: 14.433, loop: false },
     special: { from: 0, to: 14.433, loop: true }
   }
 };
@@ -120,10 +129,20 @@ function mergeDeep(base, patch) {
   return output;
 }
 
-function readJsonIfExists(file) {
+function readJsonIfExists(file, warnings = []) {
   if (!fs.existsSync(file)) return {};
-  const text = fs.readFileSync(file, "utf8");
-  return JSON.parse(text);
+  try {
+    const text = fs.readFileSync(file, "utf8");
+    return JSON.parse(text);
+  } catch (error) {
+    warnings.push({
+      type: "json-parse",
+      file,
+      message: error.message || String(error)
+    });
+    console.warn(`[spine-companion] Ignoring invalid JSON config: ${file}`, error);
+    return {};
+  }
 }
 
 function resolveMaybeRelative(value) {
@@ -133,12 +152,16 @@ function resolveMaybeRelative(value) {
 }
 
 function loadConfig() {
-  let config = mergeDeep(fallbackConfig, readJsonIfExists(committedConfigPath));
+  const warnings = [];
+  let config = mergeDeep(fallbackConfig, readJsonIfExists(committedConfigPath, warnings));
   let resolvedLocalConfigPath = "";
   let assetBaseDir = rootDir;
   for (const candidate of localConfigCandidates()) {
     if (!fs.existsSync(candidate)) continue;
-    config = mergeDeep(config, readJsonIfExists(candidate));
+    const beforeWarnings = warnings.length;
+    const localConfig = readJsonIfExists(candidate, warnings);
+    if (warnings.length !== beforeWarnings) continue;
+    config = mergeDeep(config, localConfig);
     resolvedLocalConfigPath = candidate;
     assetBaseDir = path.dirname(candidate);
   }
@@ -155,6 +178,7 @@ function loadConfig() {
 
   config.rootDir = rootDir;
   config.localConfigPath = resolvedLocalConfigPath || localConfigCandidates()[0];
+  config.configWarnings = warnings;
   config.spine.assetDir = config.spine.assetDir
     ? path.resolve(assetBaseDir, config.spine.assetDir)
     : "";
@@ -191,8 +215,10 @@ function getPublicConfig(config, serverOrigin) {
     models: config.models,
     paths: {
       configDir: userConfigDir(),
+      logsDir: path.join(userConfigDir(), "logs"),
       localConfigPath: config.localConfigPath,
-      hasLocalConfig: config.hasLocalConfig
+      hasLocalConfig: config.hasLocalConfig,
+      warnings: config.configWarnings || []
     },
     state: config.state,
     specialSegments: config.specialSegments
@@ -206,5 +232,6 @@ module.exports = {
   localConfigPath,
   localConfigCandidates,
   mergeDeep,
-  userConfigDir
+  userConfigDir,
+  readJsonIfExists
 };

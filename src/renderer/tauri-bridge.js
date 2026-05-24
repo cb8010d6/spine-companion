@@ -31,9 +31,12 @@ export async function initTauriBridge() {
     getState: () => _tauriInvoke("get_state"),
     setState: (state) => _tauriInvoke("set_companion_state", { input: state }),
     createReminder: (reminder) => _tauriInvoke("create_reminder_cmd", { input: reminder }),
+    listReminders: () => _tauriInvoke("list_reminders_cmd"),
+    deleteReminder: (id) => _tauriInvoke("delete_reminder_cmd", { id }),
     setUiSettings: (settings) => _tauriInvoke("set_ui_settings", { input: settings }),
     saveSettings: (patch) => _tauriInvoke("save_settings", { input: { patch } }),
     getDiagnostics: () => _tauriInvoke("get_diagnostics"),
+    exportLogs: () => _tauriInvoke("export_logs"),
     getInstalledModels: () => _tauriInvoke("get_installed_models"),
     getHistory: () => _tauriInvoke("get_history"),
     getCurrentModel: () => _tauriInvoke("get_current_model"),
@@ -44,6 +47,7 @@ export async function initTauriBridge() {
     removeModel: (id) => _tauriInvoke("remove_model", { id }),
     openFolder: (p) => _tauriInvoke("open_folder", { p }),
     openManager: () => _tauriInvoke("open_manager_window"),
+    setPanelPinned: () => Promise.resolve(false),
     closePanel: () => _tauriInvoke("hide_panel_window"),
     quitApp: () => _tauriInvoke("quit_app"),
     emitScale: (payload) => _tauriInvoke("emit_scale_event", { input: payload }),
@@ -91,11 +95,15 @@ export async function initTauriBridge() {
       }).then((fn) => { unlisten = fn; });
       return () => { if (unlisten) unlisten(); };
     },
-    dragStart: () => _tauriInvoke("start_drag"),
-    dragMove: () => { /* Tauri handles drag natively */ },
-    dragEnd: () => { /* Tauri handles drag natively */ },
+    onNotificationDismiss: () => () => {},
+    dragStart: (point) => _tauriInvoke("start_drag", { point }),
+    dragMove: (point) => _tauriInvoke("move_drag", { point }).catch(() => {}),
+    dragEnd: () => _tauriInvoke("end_drag").catch(() => {}),
     revealWindow: () => _tauriInvoke("reveal_window"),
     rendererReady: () => _tauriInvoke("reveal_window"),
-    setMousePassthrough: (enabled) => _tauriInvoke("set_mouse_passthrough", { enabled: Boolean(enabled) })
+    setMousePassthrough: (enabled, bounds) => _tauriInvoke("set_mouse_passthrough", {
+      enabled: Boolean(enabled),
+      bounds: bounds || null
+    })
   };
 }

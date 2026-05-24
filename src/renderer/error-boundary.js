@@ -1,4 +1,5 @@
 import { h } from "./lib/dom.js";
+import { bindManagerButton } from "./manager-action.js";
 
 export function friendlyError(error, config = {}) {
   const message = error?.message || String(error || "Unknown error");
@@ -12,12 +13,19 @@ export function friendlyError(error, config = {}) {
 }
 
 export function createErrorCard({ title = "Something went wrong", error, config, onRetry, onManager }) {
+  const managerStatus = h("span", { class: "error-action-status", role: "status" });
+  const managerButton = bindManagerButton(
+    h("button", { type: "button", class: "btn" }, "Open Manager"),
+    managerStatus,
+    onManager
+  );
   return h("section", { class: "error-card", role: "alert" },
     h("strong", {}, title),
     h("span", {}, friendlyError(error, config)),
     h("div", { class: "error-actions" },
       h("button", { type: "button", class: "btn btn-primary", onClick: onRetry }, "Retry"),
-      h("button", { type: "button", class: "btn", onClick: onManager }, "Open Manager")
-    )
+      managerButton
+    ),
+    managerStatus
   );
 }

@@ -16,4 +16,13 @@ describe("i18n", () => {
     setLocale("en");
     expect(t("manager.library.title")).toBe("Library");
   });
+
+  it("covers diagnostics and quick panel labels in English", () => {
+    setLocale("en");
+    expect(t("manager.status.disabled")).toBe("Disabled");
+    expect(t("manager.status.tauriExperimental")).toBe("Tauri experimental runtime");
+    expect(t("panel.reminders.none")).toBe("No reminders");
+    expect(t("panel.pin.pinned")).toBe("Pinned");
+    expect(t("state.reviewing")).toBe("Reviewing");
+  });
 });
