@@ -313,9 +313,9 @@ export class SpinePlayer {
     const side = this.direction === "left" ? 1 : -1;
     const smallModel = this.userScale < 0.82;
     const tinyModel = this.userScale < 0.68;
-    const horizontalFactor = tinyModel ? 0.72 : smallModel ? 0.58 : 0.38;
-    const verticalFactor = tinyModel ? 0.92 : smallModel ? 0.86 : 0.8;
-    const anchorScale = Math.max(0.74, Math.min(1.08, 0.82 + this.userScale * 0.14));
+    const horizontalFactor = tinyModel ? 1.05 : smallModel ? 0.78 : 0.38;
+    const verticalFactor = tinyModel ? 0.78 : smallModel ? 0.84 : 0.8;
+    const anchorScale = Math.max(0.62, Math.min(1.08, 0.56 + this.userScale * 0.38));
     const x = this.model.x + side * bounds.width * this.screenScale * horizontalFactor;
     const modelTop = this.model.y - bounds.height * this.screenScale;
     const modelShoulder = this.model.y - bounds.height * this.screenScale * verticalFactor;
@@ -357,14 +357,15 @@ export class SpinePlayer {
     const height = Math.max(1, sourceBounds.height * this.screenScale);
     const zoomRange = Math.max(0.01, this.maxUserScale - this.minUserScale);
     const zoomRatio = Math.max(0, Math.min(1, (this.userScale - this.minUserScale) / zoomRange));
-    const hitWidth = width * (0.46 + zoomRatio * 0.16);
-    const hitHeight = height * (0.58 + zoomRatio * 0.18);
-    const top = this.model.y - height + Math.max(0, height - hitHeight) * 0.45;
+    const hitWidth = width * (0.28 + zoomRatio * 0.22);
+    const hitHeight = height * (0.42 + zoomRatio * 0.22);
+    const scaledPadding = Math.min(this.hitboxPadding, Math.max(2, this.hitboxPadding * this.userScale));
+    const bottom = this.model.y - height * 0.02;
     return {
-      left: this.model.x - hitWidth / 2 - this.hitboxPadding,
-      right: this.model.x + hitWidth / 2 + this.hitboxPadding,
-      top: top - this.hitboxPadding,
-      bottom: this.model.y + this.hitboxPadding
+      left: this.model.x - hitWidth / 2 - scaledPadding,
+      right: this.model.x + hitWidth / 2 + scaledPadding,
+      top: bottom - hitHeight - scaledPadding,
+      bottom: bottom + scaledPadding
     };
   }
 

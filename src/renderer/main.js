@@ -224,6 +224,10 @@ function updateHud(state) {
 
 function updateBubble(state) {
   const id = state?.state || "idle";
+  if (state?.source === "drag") {
+    progressBubble.hidden = true;
+    return;
+  }
   const message = String(state?.message || defaultMessageForState(id, state?.source)).trim();
   if (message && id !== "idle") {
     heldBubble = { ...state, state: id, message };
@@ -427,21 +431,39 @@ function wireDragging() {
       x: event.screenX,
       y: event.screenY,
       lastX: event.screenX,
+      lastY: event.screenY,
       lastRunX: event.screenX,
+      totalX: 0,
+      totalY: 0,
       lastDirection: "",
       returnTo: currentState.state || "idle"
     };
     document.body.classList.add("is-dragging");
     player?.setDragActive(true);
-    window.companion?.dragStart({ screenX: event.screenX, screenY: event.screenY });
+    progressBubble.hidden = true;
+    window.clearTimeout(bubbleHoldTimer);
+    heldBubble = null;
+    window.companion?.dragStart({
+      screenX: event.screenX,
+      screenY: event.screenY,
+      totalX: 0,
+      totalY: 0,
+      scaleFactor: window.devicePixelRatio || 1
+    });
     shell.setPointerCapture(event.pointerId);
   });
 
   shell.addEventListener("pointermove", (event) => {
     if (!drag) return;
-    const distance = Math.abs(event.screenX - drag.x) + Math.abs(event.screenY - drag.y);
+    const fallbackDx = event.screenX - drag.lastX;
+    const fallbackDy = event.screenY - drag.lastY;
+    const movementX = Number.isFinite(event.movementX) && event.movementX !== 0 ? event.movementX : fallbackDx;
+    const movementY = Number.isFinite(event.movementY) && event.movementY !== 0 ? event.movementY : fallbackDy;
+    drag.totalX += movementX;
+    drag.totalY += movementY;
+    const distance = Math.abs(drag.totalX) + Math.abs(drag.totalY);
     if (distance > 3) drag.moved = true;
-    const dx = event.screenX - drag.lastRunX;
+    const dx = Math.abs(movementX) >= 0.5 ? movementX : event.screenX - drag.lastRunX;
     if (drag.moved && Math.abs(dx) >= 2 && player) {
       const direction = dx < 0 ? "left" : "right";
       if (direction !== drag.lastDirection) {
@@ -458,12 +480,18 @@ function wireDragging() {
       updateHud({
         state: "running",
         direction,
-        source: "drag",
-        message: "Moving"
+        source: "drag"
       });
     }
     drag.lastX = event.screenX;
-    window.companion?.dragMove({ screenX: event.screenX, screenY: event.screenY });
+    drag.lastY = event.screenY;
+    window.companion?.dragMove({
+      screenX: event.screenX,
+      screenY: event.screenY,
+      totalX: drag.totalX,
+      totalY: drag.totalY,
+      scaleFactor: window.devicePixelRatio || 1
+    });
   });
 
   shell.addEventListener("pointerup", async (event) => {

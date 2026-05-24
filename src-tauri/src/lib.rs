@@ -84,6 +84,9 @@ struct ScalePayload {
 struct DragPoint {
     screen_x: f64,
     screen_y: f64,
+    total_x: Option<f64>,
+    total_y: Option<f64>,
+    scale_factor: Option<f64>,
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]
@@ -1744,8 +1747,22 @@ async fn move_drag(
 ) -> Result<(), String> {
     let drag_state = data.drag_state.lock().unwrap().clone();
     if let Some(drag) = drag_state {
-        let dx = (point.screen_x - drag.start_x).round() as i32;
-        let dy = (point.screen_y - drag.start_y).round() as i32;
+        let scale_factor = window
+            .scale_factor()
+            .ok()
+            .or(point.scale_factor)
+            .unwrap_or(1.0)
+            .clamp(0.5, 4.0);
+        let dx = point
+            .total_x
+            .map(|value| value * scale_factor)
+            .unwrap_or(point.screen_x - drag.start_x)
+            .round() as i32;
+        let dy = point
+            .total_y
+            .map(|value| value * scale_factor)
+            .unwrap_or(point.screen_y - drag.start_y)
+            .round() as i32;
         window
             .set_position(tauri::PhysicalPosition::new(
                 drag.window_x + dx,
