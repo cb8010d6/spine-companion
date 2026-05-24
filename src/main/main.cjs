@@ -30,7 +30,6 @@ let serverRuntime = null;
 let publicConfigCache = null;
 let dragState = null;
 let pendingDragPoint = null;
-let dragFrame = null;
 let tray = null;
 let mousePassthrough = false;
 let uiSettings = {
@@ -867,25 +866,23 @@ function registerIpc(config) {
   ipcMain.on("companion:drag-move", (_event, point) => {
     if (!dragState) return;
     pendingDragPoint = point;
-    if (dragFrame) return;
-    const dragFrameMs = uiSettings.dragMode === "smooth" ? 16 : 24;
-    dragFrame = setTimeout(() => {
-      dragFrame = null;
-      if (!dragState || !pendingDragPoint) return;
-      const dx = Math.round(Number(pendingDragPoint.screenX) - dragState.startX);
-      const dy = Math.round(Number(pendingDragPoint.screenY) - dragState.startY);
-      dragState.win.setPosition(dragState.bounds.x + dx, dragState.bounds.y + dy, false);
-    }, dragFrameMs);
+    const dx = Number.isFinite(Number(point.totalX))
+      ? Math.round(Number(point.totalX))
+      : Math.round(Number(point.screenX) - dragState.startX);
+    const dy = Number.isFinite(Number(point.totalY))
+      ? Math.round(Number(point.totalY))
+      : Math.round(Number(point.screenY) - dragState.startY);
+    dragState.win.setPosition(dragState.bounds.x + dx, dragState.bounds.y + dy, false);
   });
 
   ipcMain.on("companion:drag-end", () => {
-    if (dragFrame) {
-      clearTimeout(dragFrame);
-      dragFrame = null;
-    }
     if (dragState && pendingDragPoint) {
-      const dx = Math.round(Number(pendingDragPoint.screenX) - dragState.startX);
-      const dy = Math.round(Number(pendingDragPoint.screenY) - dragState.startY);
+      const dx = Number.isFinite(Number(pendingDragPoint.totalX))
+        ? Math.round(Number(pendingDragPoint.totalX))
+        : Math.round(Number(pendingDragPoint.screenX) - dragState.startX);
+      const dy = Number.isFinite(Number(pendingDragPoint.totalY))
+        ? Math.round(Number(pendingDragPoint.totalY))
+        : Math.round(Number(pendingDragPoint.screenY) - dragState.startY);
       dragState.win.setPosition(dragState.bounds.x + dx, dragState.bounds.y + dy, false);
     }
     saveMainWindowBoundsSoon(50);

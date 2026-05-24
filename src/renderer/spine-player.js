@@ -170,11 +170,18 @@ export class SpinePlayer {
   applyState(state, force = false) {
     if (!this.spine) return;
 
-    const motion = animationForState(state, this.config);
+    let motion = animationForState(state, this.config);
+    if (motion.state === "running") {
+      motion = state?.source === "drag"
+        ? { ...motion, animation: "Move", loop: true, segment: null, tailSegment: null, repeatSegment: false }
+        : { ...motion, animation: "Relax", loop: true, segment: null, tailSegment: null, repeatSegment: false };
+    }
     const segment = motion.segment ? this.config.specialSegments?.[motion.segment] : null;
+    const tailSegment = motion.tailSegment ? this.config.specialSegments?.[motion.tailSegment] : null;
     const nextDirection = motion.state === "running" ? (state.direction || "right") : "right";
     const segmentKey = segment ? `${segment.from || 0}-${segment.to || "end"}` : "full";
-    const motionKey = `${motion.animation}:${segmentKey}:${segment?.loop ?? motion.loop ?? true}`;
+    const tailKey = tailSegment ? `>${tailSegment.from || 0}-${tailSegment.to || "end"}:${tailSegment.loop ?? true}` : "";
+    const motionKey = `${motion.animation}:${segmentKey}:${segment?.loop ?? motion.loop ?? true}${tailKey}`;
     const key = `${motionKey}:${nextDirection}`;
 
     this.direction = nextDirection;
@@ -195,6 +202,31 @@ export class SpinePlayer {
       entry.animationStart = Number(segment.from || 0);
       entry.animationEnd = Number(segment.to || entry.animation.duration);
       entry.trackTime = 0;
+    }
+
+    if (tailSegment && !(segment?.loop ?? motion.loop ?? true)) {
+      const tailShouldRepeat = tailSegment.loop !== false;
+      const tailRepeatCount = tailShouldRepeat ? Math.max(1, Number(tailSegment.repeatCount || 240)) : 1;
+      const tailMixDuration = Number(tailSegment.mixDurationMs || this.config.spine.mixDurationMs || 280) / 1000;
+      for (let index = 0; index < tailRepeatCount; index += 1) {
+        const tailEntry = this.spine.state.addAnimation(0, motion.animation, !tailShouldRepeat && (tailSegment.loop ?? false), 0);
+        tailEntry.mixDuration = tailMixDuration;
+        tailEntry.animationStart = Number(tailSegment.from || 0);
+        tailEntry.animationEnd = Number(tailSegment.to || tailEntry.animation.duration);
+        tailEntry.trackTime = 0;
+      }
+    }
+
+    if (motion.repeatSegment && segment && !(segment.loop ?? motion.loop ?? true)) {
+      const repeatCount = Math.max(1, Number(motion.repeatCount || 480));
+      const mixDuration = Number(motion.repeatMixDurationMs || this.config.spine.mixDurationMs || 280) / 1000;
+      for (let index = 0; index < repeatCount; index += 1) {
+        const repeatEntry = this.spine.state.addAnimation(0, motion.animation, false, 0);
+        repeatEntry.mixDuration = mixDuration;
+        repeatEntry.animationStart = Number(segment.from || 0);
+        repeatEntry.animationEnd = Number(segment.to || repeatEntry.animation.duration);
+        repeatEntry.trackTime = 0;
+      }
     }
 
     if (motion.returnTo && motion.returnAfterMs && !force) {
@@ -313,11 +345,13 @@ export class SpinePlayer {
     const side = this.direction === "left" ? 1 : -1;
     const smallModel = this.userScale < 0.82;
     const tinyModel = this.userScale < 0.68;
-    const horizontalFactor = tinyModel ? 0.72 : smallModel ? 0.58 : 0.38;
-    const verticalFactor = tinyModel ? 0.92 : smallModel ? 0.86 : 0.8;
-    const anchorScale = Math.max(0.74, Math.min(1.08, 0.82 + this.userScale * 0.14));
+    const horizontalFactor = tinyModel ? 1.05 : smallModel ? 0.78 : 0.38;
+    const verticalFactor = tinyModel ? 0.78 : smallModel ? 0.84 : 0.8;
+    const anchorScale = Math.max(0.62, Math.min(1.08, 0.56 + this.userScale * 0.38));
     const x = this.model.x + side * bounds.width * this.screenScale * horizontalFactor;
     const modelTop = this.model.y - bounds.height * this.screenScale;
+    const modelWidth = bounds.width * this.screenScale;
+    const modelHeight = bounds.height * this.screenScale;
     const modelShoulder = this.model.y - bounds.height * this.screenScale * verticalFactor;
     const minY = Math.max(10, modelTop + 8 * anchorScale);
     const maxY = Math.max(minY, stageHeight - 86 * anchorScale);
@@ -325,7 +359,13 @@ export class SpinePlayer {
       x: Math.max(12, Math.min(stageWidth - 48, x)),
       y: Math.max(minY, Math.min(maxY, modelShoulder)),
       scale: anchorScale,
-      side: this.direction === "left" ? "right" : "left"
+      side: this.direction === "left" ? "right" : "left",
+      avoid: {
+        left: this.model.x - modelWidth * 0.34,
+        right: this.model.x + modelWidth * 0.34,
+        top: this.model.y - modelHeight * 0.72,
+        bottom: this.model.y - modelHeight * 0.06
+      }
     };
 
     const canSmooth = this.anchorTarget
@@ -339,7 +379,8 @@ export class SpinePlayer {
       x: this.anchor.x + (target.x - this.anchor.x) * mix,
       y: this.anchor.y + (target.y - this.anchor.y) * mix,
       scale: target.scale,
-      side: target.side
+      side: target.side,
+      avoid: target.avoid
     };
     this.anchorTarget = target;
     this.onAnchorChange?.(this.anchor);
@@ -357,14 +398,15 @@ export class SpinePlayer {
     const height = Math.max(1, sourceBounds.height * this.screenScale);
     const zoomRange = Math.max(0.01, this.maxUserScale - this.minUserScale);
     const zoomRatio = Math.max(0, Math.min(1, (this.userScale - this.minUserScale) / zoomRange));
-    const hitWidth = width * (0.46 + zoomRatio * 0.16);
-    const hitHeight = height * (0.58 + zoomRatio * 0.18);
-    const top = this.model.y - height + Math.max(0, height - hitHeight) * 0.45;
+    const hitWidth = width * (0.16 + zoomRatio * 0.18);
+    const hitHeight = height * (0.2 + zoomRatio * 0.18);
+    const scaledPadding = Math.min(this.hitboxPadding * 0.65, Math.max(1, this.hitboxPadding * this.userScale * 0.55));
+    const bottom = this.model.y - height * 0.04;
     return {
-      left: this.model.x - hitWidth / 2 - this.hitboxPadding,
-      right: this.model.x + hitWidth / 2 + this.hitboxPadding,
-      top: top - this.hitboxPadding,
-      bottom: this.model.y + this.hitboxPadding
+      left: this.model.x - hitWidth / 2 - scaledPadding,
+      right: this.model.x + hitWidth / 2 + scaledPadding,
+      top: bottom - hitHeight - scaledPadding,
+      bottom: bottom + scaledPadding
     };
   }
 

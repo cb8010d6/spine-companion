@@ -43,7 +43,8 @@
     "reviewing": {
       "animation": "Special",
       "segment": "review",
-      "loop": true
+      "loop": false,
+      "repeatSegment": true
     },
     "running": {
       "animation": "Move",
@@ -52,6 +53,7 @@
     "success": {
       "animation": "Special",
       "segment": "success",
+      "tailSegment": "successLoop",
       "loop": false
     },
     "failed": {

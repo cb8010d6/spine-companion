@@ -120,12 +120,43 @@ function applyBubbleAnchor(anchor = currentBubbleAnchor) {
     : currentBubbleAnchor.x;
   const maxX = Math.max(inset, window.innerWidth - visualWidth - inset);
   const maxY = Math.max(inset, window.innerHeight - visualHeight - inset);
-  const x = Math.max(inset, Math.min(maxX, rawX));
-  const y = Math.max(inset, Math.min(maxY, currentBubbleAnchor.y));
+  let side = currentBubbleAnchor.side || "left";
+  let x = Math.max(inset, Math.min(maxX, rawX));
+  let y = Math.max(inset, Math.min(maxY, currentBubbleAnchor.y));
+  const avoid = currentBubbleAnchor.avoid;
+  if (avoid) {
+    const gap = Math.max(8, 16 * scale);
+    const overlaps = () => (
+      x < avoid.right + gap
+      && x + visualWidth > avoid.left - gap
+      && y < avoid.bottom + gap
+      && y + visualHeight > avoid.top - gap
+    );
+    if (overlaps()) {
+      const rightX = avoid.right + gap;
+      const leftX = avoid.left - visualWidth - gap;
+      const roomRight = window.innerWidth - rightX - inset;
+      const roomLeft = leftX - inset;
+      if (roomRight >= visualWidth || roomRight >= roomLeft) {
+        x = Math.max(inset, Math.min(maxX, rightX));
+        side = "left";
+      } else {
+        x = Math.max(inset, Math.min(maxX, leftX));
+        side = "right";
+      }
+    }
+    if (overlaps()) {
+      const aboveY = avoid.top - visualHeight - gap;
+      const belowY = avoid.bottom + gap;
+      y = aboveY >= inset
+        ? aboveY
+        : Math.max(inset, Math.min(maxY, belowY));
+    }
+  }
   progressBubble.style.left = `${Math.round(x)}px`;
   progressBubble.style.top = `${Math.round(y)}px`;
   progressBubble.style.setProperty("--bubble-scale", String(scale));
-  progressBubble.dataset.side = currentBubbleAnchor.side || "left";
+  progressBubble.dataset.side = side;
 }
 
 function renderStateControls(sendState) {
@@ -224,6 +255,10 @@ function updateHud(state) {
 
 function updateBubble(state) {
   const id = state?.state || "idle";
+  if (state?.source === "drag" || state?.source === "click") {
+    progressBubble.hidden = true;
+    return;
+  }
   const message = String(state?.message || defaultMessageForState(id, state?.source)).trim();
   if (message && id !== "idle") {
     heldBubble = { ...state, state: id, message };
@@ -279,6 +314,10 @@ async function returnToIdle(source = "user") {
   window.clearTimeout(completionToastTimer);
   setMousePassthrough(true);
   await provider?.setState?.(idleState).catch(() => {});
+}
+
+function isDismissibleTaskState(state = currentState) {
+  return state?.state === "success" || state?.state === "failed";
 }
 
 function renderModelCatalog(config) {
@@ -418,30 +457,49 @@ async function hotReloadPlayer(nextConfig, statusText = "") {
 function wireDragging() {
   shell.addEventListener("pointerdown", (event) => {
     if (event.button !== 0 || event.target.closest(".hud")) return;
-    if (currentState.state === "success") {
-      returnToIdle("success-click");
+    if (isDismissibleTaskState(currentState)) {
+      returnToIdle("task-result-click");
       return;
     }
+    const returnState = { ...currentState };
     drag = {
       moved: false,
       x: event.screenX,
       y: event.screenY,
       lastX: event.screenX,
+      lastY: event.screenY,
       lastRunX: event.screenX,
+      totalX: 0,
+      totalY: 0,
       lastDirection: "",
-      returnTo: currentState.state || "idle"
+      returnState
     };
     document.body.classList.add("is-dragging");
     player?.setDragActive(true);
-    window.companion?.dragStart({ screenX: event.screenX, screenY: event.screenY });
+    window.companion?.dragStart({
+      screenX: event.screenX,
+      screenY: event.screenY,
+      totalX: 0,
+      totalY: 0,
+      scaleFactor: window.devicePixelRatio || 1
+    });
     shell.setPointerCapture(event.pointerId);
   });
 
   shell.addEventListener("pointermove", (event) => {
     if (!drag) return;
-    const distance = Math.abs(event.screenX - drag.x) + Math.abs(event.screenY - drag.y);
-    if (distance > 3) drag.moved = true;
-    const dx = event.screenX - drag.lastRunX;
+    const fallbackDx = event.screenX - drag.lastX;
+    const fallbackDy = event.screenY - drag.lastY;
+    const movementX = Number.isFinite(event.movementX) && event.movementX !== 0 ? event.movementX : fallbackDx;
+    const movementY = Number.isFinite(event.movementY) && event.movementY !== 0 ? event.movementY : fallbackDy;
+    drag.totalX += movementX;
+    drag.totalY += movementY;
+    const distance = Math.abs(drag.totalX) + Math.abs(drag.totalY);
+    if (distance > 3 && !drag.moved) {
+      drag.moved = true;
+      progressBubble.hidden = true;
+    }
+    const dx = Math.abs(movementX) >= 0.5 ? movementX : event.screenX - drag.lastRunX;
     if (drag.moved && Math.abs(dx) >= 2 && player) {
       const direction = dx < 0 ? "left" : "right";
       if (direction !== drag.lastDirection) {
@@ -458,22 +516,29 @@ function wireDragging() {
       updateHud({
         state: "running",
         direction,
-        source: "drag",
-        message: "Moving"
+        source: "drag"
       });
     }
     drag.lastX = event.screenX;
-    window.companion?.dragMove({ screenX: event.screenX, screenY: event.screenY });
+    drag.lastY = event.screenY;
+    window.companion?.dragMove({
+      screenX: event.screenX,
+      screenY: event.screenY,
+      totalX: drag.totalX,
+      totalY: drag.totalY,
+      scaleFactor: window.devicePixelRatio || 1
+    });
   });
 
   shell.addEventListener("pointerup", async (event) => {
     if (!drag) return;
     const completedDrag = drag.moved;
-    const returnTo = drag.returnTo || "idle";
+    const returnState = drag.returnState || { state: "idle", source: "drag-end" };
     window.companion?.dragEnd();
     if (completedDrag) {
-      player?.applyState({ state: returnTo, source: "drag-end" }, true);
-      updateHud({ state: returnTo, source: "drag-end" });
+      player?.applyState(returnState, true);
+      updateHud(returnState);
+      updateBubble(returnState);
     }
     drag = null;
     player?.setDragActive(false);
@@ -481,32 +546,26 @@ function wireDragging() {
     shell.releasePointerCapture(event.pointerId);
     if (completedDrag) {
       if (provider) {
-        await provider.setState({
-          state: returnTo,
-          source: "drag-end"
-        });
+        await provider.setState(returnState);
       }
       return;
     }
+    const previousState = { ...currentState };
     const clickState = {
       state: "reminder",
       source: "click",
-      message: "Interaction",
-      autoReturnMs: 2200,
+      message: "",
+      autoReturnMs: 5600,
       returnTo: "idle"
     };
     player?.applyState(clickState, true);
-    updateHud(clickState);
+    updateBubble(previousState);
     window.clearTimeout(clickReturnTimer);
     clickReturnTimer = window.setTimeout(() => {
-      const idleState = { state: "idle", source: "click-return" };
-      player?.applyState(idleState, true);
-      updateHud(idleState);
-      provider?.setState?.(idleState).catch(() => {});
+      player?.applyState(previousState, true);
+      updateHud(previousState);
+      updateBubble(previousState);
     }, Number(clickState.autoReturnMs));
-    if (provider) {
-      await provider.setState(clickState);
-    }
   });
 }
 
