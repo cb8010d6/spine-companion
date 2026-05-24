@@ -96,6 +96,20 @@ export async function initTauriBridge() {
       return () => { if (unlisten) unlisten(); };
     },
     onNotificationDismiss: () => () => {},
+    onNotification: (callback) => {
+      let unlisten = null;
+      _tauriListen("companion:notification", (event) => {
+        callback(event.payload);
+      }).then((fn) => { unlisten = fn; });
+      return () => { if (unlisten) unlisten(); };
+    },
+    onReminders: (callback) => {
+      let unlisten = null;
+      _tauriListen("companion:reminders", (event) => {
+        callback(event.payload);
+      }).then((fn) => { unlisten = fn; });
+      return () => { if (unlisten) unlisten(); };
+    },
     dragStart: (point) => _tauriInvoke("start_drag", { point }),
     dragMove: (point) => _tauriInvoke("move_drag", { point }).catch(() => {}),
     dragEnd: () => _tauriInvoke("end_drag").catch(() => {}),

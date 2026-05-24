@@ -8,6 +8,7 @@ import { defaultMessageForState, sourceDisplayName } from "../shared/notificatio
 let config = null;
 let panelPinned = false;
 let currentDiagnostics = null;
+let unsubscribeReminders = null;
 const quickStates = ["idle", "working", "running", "reviewing", "success", "failed"];
 
 function stateLabel(id) {
@@ -113,11 +114,16 @@ function renderReminderList(reminders = []) {
     remove.textContent = t("manager.actions.delete");
     remove.addEventListener("click", async () => {
       await window.companion?.deleteReminder?.(reminder.id);
-      renderReminderList(await window.companion?.listReminders?.() || []);
+      await refreshReminders();
     });
     item.append(info, remove);
     return item;
   }));
+}
+
+async function refreshReminders() {
+  if (!window.companion?.listReminders) return;
+  renderReminderList(await window.companion.listReminders());
 }
 
 async function updateState() {
@@ -178,9 +184,7 @@ async function updateState() {
     updateBridgeSummary(diag);
   }
 
-  if (window.companion?.listReminders) {
-    renderReminderList(await window.companion.listReminders());
-  }
+  await refreshReminders();
 
   if (window.companion?.checkUpdates) {
     const update = await window.companion.checkUpdates().catch((error) => ({ error: error.message }));
@@ -238,6 +242,10 @@ async function boot() {
     config = newConfig;
     updateState();
   });
+  unsubscribeReminders?.();
+  unsubscribeReminders = window.companion?.onReminders?.((reminders) => {
+    renderReminderList(reminders || []);
+  }) || null;
 
   document.getElementById("panel-pin").addEventListener("click", async (event) => {
     panelPinned = !panelPinned;
@@ -280,10 +288,14 @@ async function boot() {
   window.addEventListener("keydown", (event) => {
     if (event.key === "Escape") closePanel();
   });
+  window.addEventListener("focus", () => {
+    refreshReminders().catch(console.warn);
+  });
 
-  // Close panel on blur so it behaves like a tray flyout.
+  // Electron owns blur-to-close in the main process. Tauri keeps the panel open
+  // here because native select menus can briefly blur the WebView.
   window.addEventListener("blur", () => {
-    if (isTauri() && !panelPinned) {
+    if (!isTauri() && !panelPinned) {
       closePanel();
     }
   });

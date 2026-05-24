@@ -66,6 +66,11 @@ contextBridge.exposeInMainWorld("companion", {
     ipcRenderer.on("companion:notification-dismiss", handler);
     return () => ipcRenderer.off("companion:notification-dismiss", handler);
   },
+  onReminders: (callback) => {
+    const handler = (_event, reminders) => callback(reminders);
+    ipcRenderer.on("companion:reminders", handler);
+    return () => ipcRenderer.off("companion:reminders", handler);
+  },
   onUpdateAvailable: (callback) => {
     const handler = (_event, payload) => callback(payload);
     ipcRenderer.on("companion:update-available", handler);

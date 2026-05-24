@@ -2,9 +2,9 @@ mod server;
 mod state;
 
 use state::{
-    create_reminder, create_reminder_store, create_state_store, delete_reminder, list_reminders,
-    set_state, CompanionState, CreateReminderInput, Reminder, ReminderStore, SetStateInput,
-    StateBroadcast, StateStore,
+    create_reminder, create_reminder_broadcast, create_reminder_store, create_state_store,
+    delete_reminder, list_reminders, set_state, CompanionState, CreateReminderInput, Reminder,
+    ReminderBroadcast, ReminderStore, SetStateInput, StateBroadcast, StateStore,
 };
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -14,6 +14,7 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
+use tauri_plugin_notification::NotificationExt;
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::{Foundation::POINT, UI::WindowsAndMessaging::GetCursorPos};
 
@@ -21,6 +22,7 @@ struct AppData {
     store: StateStore,
     tx: StateBroadcast,
     reminders: ReminderStore,
+    reminder_tx: ReminderBroadcast,
     public_config: Arc<Mutex<serde_json::Value>>,
     ui_settings: Arc<Mutex<UiSettings>>,
     config_dir: PathBuf,
@@ -795,7 +797,14 @@ async fn create_reminder_cmd(
     data: State<'_, AppData>,
     input: CreateReminderInput,
 ) -> Result<Reminder, String> {
-    Ok(create_reminder(&data.store, &data.tx, &data.reminders, input).await)
+    Ok(create_reminder(
+        &data.store,
+        &data.tx,
+        &data.reminders,
+        &data.reminder_tx,
+        input,
+    )
+    .await)
 }
 
 #[tauri::command]
@@ -808,7 +817,7 @@ async fn delete_reminder_cmd(
     data: State<'_, AppData>,
     id: String,
 ) -> Result<serde_json::Value, String> {
-    let deleted = delete_reminder(&data.reminders, &id).await;
+    let deleted = delete_reminder(&data.reminders, &data.reminder_tx, &id).await;
     Ok(serde_json::json!({ "deleted": deleted, "id": id }))
 }
 
@@ -1877,6 +1886,94 @@ fn is_ai_source(source: &str) -> bool {
         || source.ends_with("-mcp")
 }
 
+fn source_display_name(source: &str) -> String {
+    let normalized = source.trim().to_lowercase();
+    if normalized.starts_with("codex") {
+        "Codex".to_string()
+    } else if normalized.starts_with("claude") {
+        "Claude".to_string()
+    } else if normalized.starts_with("cursor") {
+        "Cursor".to_string()
+    } else if normalized.starts_with("cline") {
+        "Cline".to_string()
+    } else if normalized.starts_with("roo") {
+        "Roo".to_string()
+    } else if normalized.starts_with("gemini") {
+        "Gemini".to_string()
+    } else if normalized.starts_with("antigravity") {
+        "Antigravity".to_string()
+    } else if normalized.starts_with("local-ai") {
+        "Local AI".to_string()
+    } else if is_ai_source(&normalized) {
+        "AI".to_string()
+    } else if source.trim().is_empty() {
+        "Local".to_string()
+    } else {
+        source.to_string()
+    }
+}
+
+fn should_notify_state(state: &CompanionState) -> bool {
+    if state.state == "reminder" {
+        return true;
+    }
+    if state.state != "success" && state.state != "failed" {
+        return false;
+    }
+    state.notify == Some(true) || is_ai_source(&state.source)
+}
+
+fn notification_for_state(state: &CompanionState) -> Option<(String, String)> {
+    match state.state.as_str() {
+        "reminder" => Some((
+            "Spine Companion Reminder".to_string(),
+            if state.message.is_empty() {
+                "Reminder".to_string()
+            } else {
+                state.message.clone()
+            },
+        )),
+        "success" => Some((
+            format!("{} task complete", source_display_name(&state.source)),
+            if state.message.is_empty() {
+                "Finished successfully".to_string()
+            } else {
+                state.message.clone()
+            },
+        )),
+        "failed" => Some((
+            format!("{} task failed", source_display_name(&state.source)),
+            if state.message.is_empty() {
+                "Needs attention".to_string()
+            } else {
+                state.message.clone()
+            },
+        )),
+        _ => None,
+    }
+}
+
+fn maybe_show_system_notification(app: &AppHandle, settings: &UiSettings, state: &CompanionState) {
+    if !settings.system_notifications || !should_notify_state(state) {
+        return;
+    }
+    let Some((title, body)) = notification_for_state(state) else {
+        return;
+    };
+    let _ = app.emit(
+        "companion:notification",
+        serde_json::json!({
+            "title": title,
+            "body": body,
+            "state": state.state,
+            "source": state.source,
+        }),
+    );
+    if let Err(error) = app.notification().builder().title(title).body(body).show() {
+        eprintln!("Failed to show system notification: {}", error);
+    }
+}
+
 #[tauri::command]
 async fn reveal_window(window: WebviewWindow) -> Result<(), String> {
     show_companion_window(&window);
@@ -2271,9 +2368,11 @@ pub fn run() {
     let runtime_config = load_runtime_config();
     let (store, tx) = create_state_store(&runtime_config.initial_state);
     let reminders = create_reminder_store();
+    let reminder_tx = create_reminder_broadcast();
     let store_for_server = store.clone();
     let tx_for_server = tx.clone();
     let reminders_for_server = reminders.clone();
+    let reminder_tx_for_server = reminder_tx.clone();
     let host_for_server = runtime_config.host.clone();
     let port_for_server = runtime_config.port;
     let asset_root_store: server::AssetRootStore = Arc::new(tokio::sync::RwLock::new(
@@ -2287,6 +2386,7 @@ pub fn run() {
         Arc::new(Mutex::new(vec![store.blocking_read().clone()]));
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(win) = app.get_webview_window("main") {
                 show_companion_window(&win);
@@ -2296,6 +2396,7 @@ pub fn run() {
             store: store.clone(),
             tx: tx.clone(),
             reminders: reminders.clone(),
+            reminder_tx: reminder_tx.clone(),
             public_config: Arc::new(Mutex::new(runtime_config.public.clone())),
             ui_settings: Arc::new(Mutex::new(runtime_config.ui_settings.clone())),
             config_dir: runtime_config.config_dir.clone(),
@@ -2313,6 +2414,7 @@ pub fn run() {
                 store_for_server,
                 tx_for_server,
                 reminders_for_server,
+                reminder_tx_for_server,
                 asset_root_for_server,
                 &host_for_server,
                 port_for_server,
@@ -2336,7 +2438,16 @@ pub fn run() {
                             show_companion_window(&win);
                         }
                     }
+                    let settings = current_ui_settings(&data);
+                    maybe_show_system_notification(&app_handle, &settings, &state);
                     let _ = app_handle.emit("companion:state", state);
+                }
+            });
+            let app_handle = app.handle().clone();
+            let mut reminder_rx = reminder_tx.subscribe();
+            tauri::async_runtime::spawn(async move {
+                while let Ok(reminders) = reminder_rx.recv().await {
+                    let _ = app_handle.emit("companion:reminders", reminders);
                 }
             });
 
@@ -2357,7 +2468,7 @@ pub fn run() {
                 None::<&str>,
             )?;
             let hud_item =
-                MenuItem::with_id(app, "toggle_hud", "Toggle Status Panel", true, None::<&str>)?;
+                MenuItem::with_id(app, "toggle_hud", "Toggle Debug HUD", true, None::<&str>)?;
             let diagnostics_item =
                 MenuItem::with_id(app, "diagnostics", "Diagnostics", true, None::<&str>)?;
             let config_item = MenuItem::with_id(

@@ -1,6 +1,7 @@
 export class IpcStateProvider {
   constructor() {
     this.unsubscribe = null;
+    this.unsubscribeReminders = null;
   }
 
   async start(onState) {
@@ -11,6 +12,7 @@ export class IpcStateProvider {
 
   stop() {
     if (this.unsubscribe) this.unsubscribe();
+    if (this.unsubscribeReminders) this.unsubscribeReminders();
   }
 
   setState(state) {
@@ -28,6 +30,11 @@ export class IpcStateProvider {
   deleteReminder(id) {
     return window.companion.deleteReminder?.(id);
   }
+
+  onReminders(callback) {
+    this.unsubscribeReminders = window.companion.onReminders?.(callback) || null;
+    return this.unsubscribeReminders || (() => {});
+  }
 }
 
 export class HttpStateProvider {
@@ -37,6 +44,8 @@ export class HttpStateProvider {
     this.timer = null;
     this.onError = null;
     this.consecutiveErrors = 0;
+    this.reminderEventSource = null;
+    this.reminderPollTimer = null;
   }
 
   async start(onState) {
@@ -61,6 +70,8 @@ export class HttpStateProvider {
 
   stop() {
     if (this.timer) clearInterval(this.timer);
+    if (this.reminderPollTimer) clearInterval(this.reminderPollTimer);
+    if (this.reminderEventSource) this.reminderEventSource.close();
   }
 
   async setState(state) {
@@ -90,6 +101,26 @@ export class HttpStateProvider {
   async deleteReminder(id) {
     const response = await fetch(`${this.baseUrl}/reminders/${encodeURIComponent(id)}`, { method: "DELETE" });
     return response.json();
+  }
+
+  onReminders(callback) {
+    if (typeof EventSource === "function") {
+      this.reminderEventSource = new EventSource(`${this.baseUrl}/events`);
+      this.reminderEventSource.addEventListener("reminders", (event) => {
+        try {
+          callback(JSON.parse(event.data));
+        } catch (error) {
+          console.warn("Ignoring invalid reminder event", error);
+        }
+      });
+      return () => this.reminderEventSource?.close();
+    }
+    const poll = async () => callback(await this.listReminders());
+    poll().catch((error) => this.onError?.(error, { provider: "http-reminders" }));
+    this.reminderPollTimer = setInterval(() => {
+      poll().catch((error) => this.onError?.(error, { provider: "http-reminders" }));
+    }, Math.max(1000, this.pollMs));
+    return () => clearInterval(this.reminderPollTimer);
   }
 }
 
@@ -134,6 +165,7 @@ export class WebSocketStateProvider {
     this.reconnectAttempt = 0;
     this.maxReconnectDelay = 30000;
     this.destroyed = false;
+    this.onRemindersCallback = null;
   }
 
   start(onState) {
@@ -150,7 +182,11 @@ export class WebSocketStateProvider {
     this.socket.addEventListener("message", (event) => {
       try {
         const parsed = JSON.parse(event.data);
-        this.onState?.(parsed.payload || parsed);
+        if (parsed.type === "reminders") {
+          this.onRemindersCallback?.(parsed.payload || []);
+        } else {
+          this.onState?.(parsed.payload || parsed);
+        }
       } catch (error) {
         console.warn("Ignoring invalid WebSocket state message", error);
       }
@@ -181,6 +217,13 @@ export class WebSocketStateProvider {
     if (this.socket?.readyState === WebSocket.OPEN) {
       this.socket.send(JSON.stringify({ type: "state", payload: state }));
     }
+  }
+
+  onReminders(callback) {
+    this.onRemindersCallback = callback;
+    return () => {
+      if (this.onRemindersCallback === callback) this.onRemindersCallback = null;
+    };
   }
 }
 

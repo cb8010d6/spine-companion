@@ -158,6 +158,7 @@ pub struct CreateReminderInput {
 pub type StateStore = Arc<RwLock<CompanionState>>;
 pub type StateBroadcast = broadcast::Sender<CompanionState>;
 pub type ReminderStore = Arc<RwLock<Vec<Reminder>>>;
+pub type ReminderBroadcast = broadcast::Sender<Vec<Reminder>>;
 
 pub fn create_state_store(initial: &str) -> (StateStore, StateBroadcast) {
     let state = CompanionState {
@@ -172,6 +173,11 @@ pub fn create_state_store(initial: &str) -> (StateStore, StateBroadcast) {
 
 pub fn create_reminder_store() -> ReminderStore {
     Arc::new(RwLock::new(Vec::new()))
+}
+
+pub fn create_reminder_broadcast() -> ReminderBroadcast {
+    let (tx, _) = broadcast::channel(64);
+    tx
 }
 
 pub async fn set_state(
@@ -300,6 +306,7 @@ pub async fn create_reminder(
     store: &StateStore,
     tx: &StateBroadcast,
     reminders: &ReminderStore,
+    reminder_tx: &ReminderBroadcast,
     input: CreateReminderInput,
 ) -> Reminder {
     let now = chrono::Utc::now();
@@ -325,23 +332,31 @@ pub async fn create_reminder(
         snooze_after_ms: input.snooze_after_ms.unwrap_or(5 * 60 * 1000),
     };
 
-    reminders.write().await.push(reminder.clone());
+    let snapshot = {
+        let mut list = reminders.write().await;
+        list.push(reminder.clone());
+        list.clone()
+    };
+    let _ = reminder_tx.send(snapshot);
 
     let store_for_fire = store.clone();
     let tx_for_fire = tx.clone();
     let reminders_for_fire = reminders.clone();
+    let reminder_tx_for_fire = reminder_tx.clone();
     let duration_ms = input.duration_ms.unwrap_or(5000);
     let return_to = input.return_to.unwrap_or_else(|| "idle".to_string());
     tokio::spawn(async move {
         let delay = (due_ms - chrono::Utc::now().timestamp_millis()).max(0) as u64;
         tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
-        {
+        let snapshot = {
             let mut list = reminders_for_fire.write().await;
             if let Some(item) = list.iter_mut().find(|item| item.id == id) {
                 item.fired = true;
                 item.fired_at = Some(chrono::Utc::now().to_rfc3339());
             }
-        }
+            list.clone()
+        };
+        let _ = reminder_tx_for_fire.send(snapshot);
         let fired = apply_state(
             &store_for_fire,
             &tx_for_fire,
@@ -372,11 +387,19 @@ pub async fn create_reminder(
     reminder
 }
 
-pub async fn delete_reminder(reminders: &ReminderStore, id: &str) -> bool {
+pub async fn delete_reminder(
+    reminders: &ReminderStore,
+    reminder_tx: &ReminderBroadcast,
+    id: &str,
+) -> bool {
     let mut list = reminders.write().await;
     let before = list.len();
     list.retain(|item| item.id != id);
-    list.len() != before
+    let deleted = list.len() != before;
+    if deleted {
+        let _ = reminder_tx.send(list.clone());
+    }
+    deleted
 }
 
 #[cfg(test)]
@@ -441,10 +464,13 @@ mod tests {
     async fn creates_lists_and_fires_reminders() {
         let (store, tx) = create_state_store("idle");
         let reminders = create_reminder_store();
+        let reminder_tx = create_reminder_broadcast();
+        let mut reminder_rx = reminder_tx.subscribe();
         let reminder = create_reminder(
             &store,
             &tx,
             &reminders,
+            &reminder_tx,
             CreateReminderInput {
                 text: Some("Check".to_string()),
                 delay_ms: Some(10),
@@ -455,8 +481,13 @@ mod tests {
         .await;
         assert_eq!(reminder.text, "Check");
         assert_eq!(list_reminders(&reminders).await.len(), 1);
+        let created = reminder_rx.recv().await.unwrap();
+        assert_eq!(created.len(), 1);
+        assert!(!created[0].fired);
         tokio::time::sleep(std::time::Duration::from_millis(30)).await;
         assert_eq!(store.read().await.state, "reminder");
         assert!(list_reminders(&reminders).await[0].fired);
+        let fired = reminder_rx.recv().await.unwrap();
+        assert!(fired[0].fired);
     }
 }

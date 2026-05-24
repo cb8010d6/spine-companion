@@ -239,6 +239,17 @@ export class SpinePlayer {
     this.layout();
   }
 
+  stateDurationMs(state = {}) {
+    if (!this.spine) return 0;
+    const motion = animationForState(state, this.config);
+    const animation = this.spine.spineData.animations.find((item) => item.name === motion.animation);
+    if (!animation) return 0;
+    const segment = motion.segment ? this.config.specialSegments?.[motion.segment] : null;
+    const from = Number(segment?.from ?? 0);
+    const to = Number(segment?.to ?? animation.duration ?? 0);
+    return Math.max(0, to - from) * 1000;
+  }
+
   measureStableBounds(stateIds) {
     if (!this.spine) return;
     const sampleCount = Math.max(3, Number(this.config.spine.boundsSamples || 10));
@@ -398,10 +409,10 @@ export class SpinePlayer {
     const height = Math.max(1, sourceBounds.height * this.screenScale);
     const zoomRange = Math.max(0.01, this.maxUserScale - this.minUserScale);
     const zoomRatio = Math.max(0, Math.min(1, (this.userScale - this.minUserScale) / zoomRange));
-    const hitWidth = width * (0.16 + zoomRatio * 0.18);
-    const hitHeight = height * (0.2 + zoomRatio * 0.18);
-    const scaledPadding = Math.min(this.hitboxPadding * 0.65, Math.max(1, this.hitboxPadding * this.userScale * 0.55));
-    const bottom = this.model.y - height * 0.04;
+    const hitWidth = width * (0.2 + zoomRatio * 0.2);
+    const hitHeight = height * (0.26 + zoomRatio * 0.22);
+    const scaledPadding = Math.min(this.hitboxPadding * 0.75, Math.max(2, this.hitboxPadding * this.userScale * 0.65));
+    const bottom = this.model.y - height * 0.035;
     return {
       left: this.model.x - hitWidth / 2 - scaledPadding,
       right: this.model.x + hitWidth / 2 + scaledPadding,

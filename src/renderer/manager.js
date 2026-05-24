@@ -545,6 +545,10 @@ async function boot() {
     createI18n(config);
     if (activeView === "settings" || activeView === "installed" || activeView === "library") renderView(activeView);
   });
+  window.companion?.onReminders?.((nextReminders) => {
+    reminders = Array.isArray(nextReminders) ? nextReminders : [];
+    if (activeView === "settings") renderView("settings");
+  });
   navTo("library");
 }
 

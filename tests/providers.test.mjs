@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { HttpStateProvider, JsonStateProvider, WebSocketStateProvider } from "../src/renderer/providers.js";
+import { HttpStateProvider, IpcStateProvider, JsonStateProvider, WebSocketStateProvider } from "../src/renderer/providers.js";
 
 describe("state providers", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
     vi.useRealTimers();
   });
 
@@ -94,6 +95,52 @@ describe("state providers", () => {
     expect(fetchMock).toHaveBeenNthCalledWith(2, "http://127.0.0.1:17388/reminders/r1", { method: "DELETE" });
   });
 
+  it("subscribes to IPC reminder updates", () => {
+    const unsubscribe = vi.fn();
+    const onReminders = vi.fn(() => unsubscribe);
+    vi.stubGlobal("window", { companion: { onReminders } });
+
+    const provider = new IpcStateProvider();
+    const callback = vi.fn();
+    const returned = provider.onReminders(callback);
+    provider.stop();
+
+    expect(onReminders).toHaveBeenCalledWith(callback);
+    expect(returned).toBe(unsubscribe);
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+  });
+
+  it("subscribes to HTTP reminder events over SSE", () => {
+    class FakeEventSource {
+      static instances = [];
+      constructor(url) {
+        this.url = url;
+        this.handlers = {};
+        this.closed = false;
+        FakeEventSource.instances.push(this);
+      }
+      addEventListener(type, handler) {
+        this.handlers[type] = handler;
+      }
+      close() {
+        this.closed = true;
+      }
+    }
+    vi.stubGlobal("EventSource", FakeEventSource);
+
+    const provider = new HttpStateProvider("http://127.0.0.1:17388", 1000);
+    const callback = vi.fn();
+    const unsubscribe = provider.onReminders(callback);
+    const source = FakeEventSource.instances[0];
+
+    source.handlers.reminders({ data: JSON.stringify([{ id: "r2", text: "Live" }]) });
+    unsubscribe();
+
+    expect(source.url).toBe("http://127.0.0.1:17388/events");
+    expect(callback).toHaveBeenCalledWith([{ id: "r2", text: "Live" }]);
+    expect(source.closed).toBe(true);
+  });
+
   it("ignores malformed WebSocket messages", () => {
     let messageHandler = null;
     class FakeWebSocket {
@@ -115,6 +162,34 @@ describe("state providers", () => {
     messageHandler({ data: JSON.stringify({ payload: { state: "working" } }) });
     provider.stop();
 
+    expect(states).toEqual([{ state: "working" }]);
+  });
+
+  it("routes WebSocket reminder messages separately from state updates", () => {
+    let messageHandler = null;
+    class FakeWebSocket {
+      static OPEN = 1;
+      constructor() {
+        this.readyState = FakeWebSocket.OPEN;
+      }
+      addEventListener(type, handler) {
+        if (type === "message") messageHandler = handler;
+      }
+      close() {}
+    }
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+
+    const provider = new WebSocketStateProvider("ws://127.0.0.1:17388/ws");
+    const states = [];
+    const reminders = [];
+    provider.start((state) => states.push(state));
+    provider.onReminders((items) => reminders.push(items));
+
+    messageHandler({ data: JSON.stringify({ type: "reminders", payload: [{ id: "r3" }] }) });
+    messageHandler({ data: JSON.stringify({ payload: { state: "working" } }) });
+    provider.stop();
+
+    expect(reminders).toEqual([[{ id: "r3" }]]);
     expect(states).toEqual([{ state: "working" }]);
   });
 });

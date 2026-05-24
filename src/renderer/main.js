@@ -555,14 +555,14 @@ function wireDragging() {
       state: "reminder",
       source: "click",
       message: "",
-      autoReturnMs: 5600,
+      autoReturnMs: Math.max(7000, Math.ceil(player?.stateDurationMs?.({ state: "reminder" }) || 0) + 420),
       returnTo: "idle"
     };
     player?.applyState(clickState, true);
     updateBubble(previousState);
     window.clearTimeout(clickReturnTimer);
     clickReturnTimer = window.setTimeout(() => {
-      player?.applyState(previousState, true);
+      player?.applyState(previousState);
       updateHud(previousState);
       updateBubble(previousState);
     }, Number(clickState.autoReturnMs));

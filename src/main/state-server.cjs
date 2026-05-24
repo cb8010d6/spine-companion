@@ -179,6 +179,7 @@ function createCompanionServer(config, publicConfig) {
         });
         sseClients.add(res);
         res.write(`event: state\ndata: ${JSON.stringify(store.snapshot())}\n\n`);
+        res.write(`event: reminders\ndata: ${JSON.stringify(store.listReminders())}\n\n`);
         req.on("close", () => sseClients.delete(res));
         return;
       }
@@ -220,6 +221,7 @@ function createCompanionServer(config, publicConfig) {
   const wss = new WebSocketServer({ noServer: true });
   wss.on("connection", (socket) => {
     socket.send(JSON.stringify({ type: "state", payload: store.snapshot() }));
+    socket.send(JSON.stringify({ type: "reminders", payload: store.listReminders() }));
     socket.on("message", (raw) => {
       try {
         const parsed = JSON.parse(String(raw));
@@ -243,6 +245,13 @@ function createCompanionServer(config, publicConfig) {
   store.emitter.on("state", (state) => {
     broadcastSse("state", state);
     const message = JSON.stringify({ type: "state", payload: state });
+    for (const client of wss.clients) {
+      if (client.readyState === client.OPEN) client.send(message);
+    }
+  });
+  store.emitter.on("reminders", (reminders) => {
+    broadcastSse("reminders", reminders);
+    const message = JSON.stringify({ type: "reminders", payload: reminders });
     for (const client of wss.clients) {
       if (client.readyState === client.OPEN) client.send(message);
     }
