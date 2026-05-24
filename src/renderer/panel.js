@@ -1,6 +1,7 @@
 import "./panel.css";
 import { initTauriBridge, isTauri } from "./tauri-bridge.js";
 import { modelPreview } from "./model-preview.js";
+import { renderSpinePreview } from "./spine-preview.js";
 import { createI18n, t } from "../shared/i18n.js";
 
 let config = null;
@@ -22,6 +23,7 @@ function updateStaticLabels() {
 function renderPreview(previewEl, preview) {
   previewEl.replaceChildren();
   previewEl.classList.toggle("has-image", Boolean(preview.imageUrl));
+  previewEl.classList.remove("has-spine-preview");
   Object.assign(previewEl.style, preview.style);
 
   const fallback = document.createElement("span");
@@ -37,6 +39,11 @@ function renderPreview(previewEl, preview) {
     previewEl.appendChild(image);
   }
   previewEl.appendChild(fallback);
+  if (!preview.imageUrl && preview.canRenderSpinePreview) {
+    window.requestAnimationFrame(() => {
+      if (previewEl.isConnected) renderSpinePreview(previewEl, preview, { width: 74, height: 74 });
+    });
+  }
 }
 
 async function closePanel(force = false) {
@@ -100,7 +107,10 @@ async function updateState() {
   // Active Model Info
   if (spine.skel) {
     const catalog = config.models?.catalog || [];
-    const activeModel = catalog.find(m => spine.skel.includes(m.skel)) || { name: spine.skel.split('/').pop() };
+    const activeModel = catalog.find(m => m.skel && spine.skel.includes(m.skel)) || {
+      name: spine.skel.split(/[\\/]/).pop(),
+      skel: spine.skel
+    };
     document.getElementById("panel-model-name").textContent = activeModel.name;
     document.getElementById("panel-model-skel").textContent = spine.skel;
     const preview = modelPreview(activeModel, config);

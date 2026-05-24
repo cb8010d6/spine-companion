@@ -96,7 +96,11 @@ async fn delete_reminder_route(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let deleted = delete_reminder(&app.reminders, &id).await;
-    let status = if deleted { StatusCode::OK } else { StatusCode::NOT_FOUND };
+    let status = if deleted {
+        StatusCode::OK
+    } else {
+        StatusCode::NOT_FOUND
+    };
     (status, Json(json!({ "deleted": deleted, "id": id })))
 }
 

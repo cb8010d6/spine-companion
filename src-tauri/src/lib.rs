@@ -8,7 +8,7 @@ use state::{
 };
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -25,6 +25,15 @@ struct AppData {
     local_config_path: PathBuf,
     asset_root: server::AssetRootStore,
     history: Arc<Mutex<Vec<CompanionState>>>,
+    drag_state: Arc<Mutex<Option<DragState>>>,
+}
+
+#[derive(Clone, Debug)]
+struct DragState {
+    start_x: f64,
+    start_y: f64,
+    window_x: i32,
+    window_y: i32,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -68,6 +77,22 @@ struct UiSettingsPatch {
 struct ScalePayload {
     delta: Option<f64>,
     action: Option<String>,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DragPoint {
+    screen_x: f64,
+    screen_y: f64,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PointerBounds {
+    left: f64,
+    right: f64,
+    top: f64,
+    bottom: f64,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -353,14 +378,20 @@ fn validate_spine_asset_dir(asset_dir: &Path, skel: &str) -> Result<(), String> 
             if !asset_dir.join(&texture).is_file() {
                 missing.push(format!(
                     "{} -> {}",
-                    atlas.file_name().and_then(|value| value.to_str()).unwrap_or("atlas"),
+                    atlas
+                        .file_name()
+                        .and_then(|value| value.to_str())
+                        .unwrap_or("atlas"),
                     texture
                 ));
             }
         }
     }
     if !missing.is_empty() {
-        return Err(format!("Missing atlas texture file(s): {}", missing.join(", ")));
+        return Err(format!(
+            "Missing atlas texture file(s): {}",
+            missing.join(", ")
+        ));
     }
     Ok(())
 }
@@ -557,7 +588,10 @@ struct RecoveredModel {
     skel: String,
 }
 
-fn first_recoverable_model(config_dir: &Path, config: &serde_json::Value) -> Option<RecoveredModel> {
+fn first_recoverable_model(
+    config_dir: &Path,
+    config: &serde_json::Value,
+) -> Option<RecoveredModel> {
     let catalog = config
         .get("models")
         .and_then(|models| models.get("catalog"))
@@ -634,7 +668,11 @@ fn load_runtime_config() -> RuntimeConfig {
         if let Some(recovered) = first_recoverable_model(&config_dir_path, &config) {
             if write_local_model_config(&local_config_path, &recovered.asset_dir, &recovered.skel)
                 .and_then(|_| {
-                    verify_local_model_config(&local_config_path, &recovered.asset_dir, &recovered.skel)
+                    verify_local_model_config(
+                        &local_config_path,
+                        &recovered.asset_dir,
+                        &recovered.skel,
+                    )
                 })
                 .is_ok()
             {
@@ -733,7 +771,10 @@ async fn list_reminders_cmd(data: State<'_, AppData>) -> Result<Vec<Reminder>, S
 }
 
 #[tauri::command]
-async fn delete_reminder_cmd(data: State<'_, AppData>, id: String) -> Result<serde_json::Value, String> {
+async fn delete_reminder_cmd(
+    data: State<'_, AppData>,
+    id: String,
+) -> Result<serde_json::Value, String> {
     let deleted = delete_reminder(&data.reminders, &id).await;
     Ok(serde_json::json!({ "deleted": deleted, "id": id }))
 }
@@ -866,53 +907,59 @@ async fn import_model(
         );
         error
     })?;
-    replace_model_dir(&temp_model_dir, &model_dir).await.map_err(|error| {
-        let _ = app.emit(
-            "companion:download-progress",
-            serde_json::json!({
-                "id": input.id,
-                "file": "Activation",
-                "current": total_files,
-                "total": total_files,
-                "status": "failed",
-                "error": error
-            }),
-        );
-        error
-    })?;
+    replace_model_dir(&temp_model_dir, &model_dir)
+        .await
+        .map_err(|error| {
+            let _ = app.emit(
+                "companion:download-progress",
+                serde_json::json!({
+                    "id": input.id,
+                    "file": "Activation",
+                    "current": total_files,
+                    "total": total_files,
+                    "status": "failed",
+                    "error": error
+                }),
+            );
+            error
+        })?;
     let canonical_model_dir = model_dir
         .canonicalize()
         .map_err(|error| error.to_string())?;
-    write_local_model_config(&data.local_config_path, &canonical_model_dir, &skel).map_err(|error| {
-        let message = format!("Failed to activate downloaded model: {}", error);
-        let _ = app.emit(
-            "companion:download-progress",
-            serde_json::json!({
-                "id": input.id,
-                "file": "Activation",
-                "current": total_files,
-                "total": total_files,
-                "status": "failed",
-                "error": message
-            }),
-        );
-        message
-    })?;
-    verify_local_model_config(&data.local_config_path, &canonical_model_dir, &skel).map_err(|error| {
-        let message = format!("Downloaded model was not activated: {}", error);
-        let _ = app.emit(
-            "companion:download-progress",
-            serde_json::json!({
-                "id": input.id,
-                "file": "Activation",
-                "current": total_files,
-                "total": total_files,
-                "status": "failed",
-                "error": message
-            }),
-        );
-        message
-    })?;
+    write_local_model_config(&data.local_config_path, &canonical_model_dir, &skel).map_err(
+        |error| {
+            let message = format!("Failed to activate downloaded model: {}", error);
+            let _ = app.emit(
+                "companion:download-progress",
+                serde_json::json!({
+                    "id": input.id,
+                    "file": "Activation",
+                    "current": total_files,
+                    "total": total_files,
+                    "status": "failed",
+                    "error": message
+                }),
+            );
+            message
+        },
+    )?;
+    verify_local_model_config(&data.local_config_path, &canonical_model_dir, &skel).map_err(
+        |error| {
+            let message = format!("Downloaded model was not activated: {}", error);
+            let _ = app.emit(
+                "companion:download-progress",
+                serde_json::json!({
+                    "id": input.id,
+                    "file": "Activation",
+                    "current": total_files,
+                    "total": total_files,
+                    "status": "failed",
+                    "error": message
+                }),
+            );
+            message
+        },
+    )?;
     if let Ok(mut public) = data.public_config.lock() {
         merge_json(
             &mut public,
@@ -1086,13 +1133,20 @@ async fn replace_model_dir(temp_dir: &Path, final_dir: &Path) -> Result<(), Stri
         if tokio::fs::try_exists(&backup_dir).await.unwrap_or(false) {
             let _ = tokio::fs::rename(&backup_dir, final_dir).await;
         }
-        return Err(format!("Failed to activate downloaded model directory: {}", error));
+        return Err(format!(
+            "Failed to activate downloaded model directory: {}",
+            error
+        ));
     }
     remove_dir_if_exists(&backup_dir).await?;
     Ok(())
 }
 
-fn verify_local_model_config(path: &Path, expected_asset_dir: &Path, expected_skel: &str) -> Result<(), String> {
+fn verify_local_model_config(
+    path: &Path,
+    expected_asset_dir: &Path,
+    expected_skel: &str,
+) -> Result<(), String> {
     let config = read_json_if_exists(path)
         .ok_or_else(|| format!("{} was not written", path.to_string_lossy()))?;
     let spine = config
@@ -1107,7 +1161,10 @@ fn verify_local_model_config(path: &Path, expected_asset_dir: &Path, expected_sk
         .and_then(|value| value.as_str())
         .ok_or_else(|| "spine.skel is missing".to_string())?;
     if skel != expected_skel {
-        return Err(format!("spine.skel is {}, expected {}", skel, expected_skel));
+        return Err(format!(
+            "spine.skel is {}, expected {}",
+            skel, expected_skel
+        ));
     }
     let written = PathBuf::from(asset_dir);
     if written != expected_asset_dir {
@@ -1599,10 +1656,19 @@ fn export_logs(data: State<'_, AppData>) -> Result<serde_json::Value, String> {
             .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("log"))
             .collect::<Vec<_>>();
         files.sort();
-        for file in files.into_iter().rev().take(7).collect::<Vec<_>>().into_iter().rev() {
+        for file in files
+            .into_iter()
+            .rev()
+            .take(7)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+        {
             body.push_str(&format!(
                 "===== {} =====\n",
-                file.file_name().and_then(|name| name.to_str()).unwrap_or("log")
+                file.file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("log")
             ));
             if let Ok(text) = std::fs::read_to_string(&file) {
                 body.push_str(&text);
@@ -1655,21 +1721,67 @@ fn open_folder(app: tauri::AppHandle, p: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn start_drag(window: tauri::Window) -> Result<(), String> {
-    window.start_dragging().map_err(|e| e.to_string())
+async fn start_drag(
+    window: tauri::Window,
+    data: State<'_, AppData>,
+    point: DragPoint,
+) -> Result<(), String> {
+    let position = window.outer_position().map_err(|e| e.to_string())?;
+    *data.drag_state.lock().unwrap() = Some(DragState {
+        start_x: point.screen_x,
+        start_y: point.screen_y,
+        window_x: position.x,
+        window_y: position.y,
+    });
+    Ok(())
 }
 
 #[tauri::command]
-async fn set_mouse_passthrough(window: tauri::Window, enabled: bool) -> Result<(), String> {
-    if enabled {
-        // Tauri does not support Electron's forward:true behavior here. If we
-        // ignore cursor events, the transparent window stops receiving the
-        // mousemove/wheel events needed to recover clickability and zoom.
-        return Ok(());
+async fn move_drag(
+    window: tauri::Window,
+    data: State<'_, AppData>,
+    point: DragPoint,
+) -> Result<(), String> {
+    let drag_state = data.drag_state.lock().unwrap().clone();
+    if let Some(drag) = drag_state {
+        let dx = (point.screen_x - drag.start_x).round() as i32;
+        let dy = (point.screen_y - drag.start_y).round() as i32;
+        window
+            .set_position(tauri::PhysicalPosition::new(
+                drag.window_x + dx,
+                drag.window_y + dy,
+            ))
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn end_drag(data: State<'_, AppData>) -> Result<(), String> {
+    *data.drag_state.lock().unwrap() = None;
+    Ok(())
+}
+
+#[tauri::command]
+async fn set_mouse_passthrough(
+    window: tauri::Window,
+    enabled: bool,
+    bounds: Option<PointerBounds>,
+) -> Result<(), String> {
+    if let Some(bounds) = bounds {
+        let _ = (bounds.left, bounds.right, bounds.top, bounds.bottom);
     }
     window
-        .set_ignore_cursor_events(false)
-        .map_err(|e| e.to_string())
+        .set_ignore_cursor_events(enabled)
+        .map_err(|e| e.to_string())?;
+    if enabled {
+        let recover_window = window.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(360)).await;
+            let _ = recover_window.set_ignore_cursor_events(false);
+        });
+    }
+    Ok(())
 }
 
 fn show_companion_window(win: &WebviewWindow) {
@@ -2122,6 +2234,7 @@ pub fn run() {
             local_config_path: runtime_config.local_config_path.clone(),
             asset_root: asset_root_store.clone(),
             history: history_store.clone(),
+            drag_state: Arc::new(Mutex::new(None)),
         })
         .setup(move |app| {
             // Bind the local API server before the hidden window is revealed.
@@ -2390,6 +2503,8 @@ pub fn run() {
             remove_model,
             open_folder,
             start_drag,
+            move_drag,
+            end_drag,
             set_mouse_passthrough,
             reveal_window,
             open_manager_window,

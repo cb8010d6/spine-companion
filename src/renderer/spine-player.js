@@ -146,6 +146,12 @@ export class SpinePlayer {
     this.applyTickerMode();
   }
 
+  setHitboxPadding(value) {
+    this.hitboxPadding = Number.isFinite(Number(value))
+      ? Math.min(48, Math.max(0, Number(value)))
+      : 8;
+  }
+
   setDragActive(active) {
     this.dragActive = Boolean(active);
     this.applyTickerMode();
@@ -344,17 +350,20 @@ export class SpinePlayer {
   }
 
   getInteractiveBounds() {
-    if (!this.model || !this.stableBounds) return null;
-    const width = this.stableBounds.width * this.screenScale;
-    const height = this.stableBounds.height * this.screenScale;
+    if (!this.model || !this.spine) return null;
+    const sourceBounds = this.spine.getLocalBounds?.() || this.stableBounds;
+    if (!sourceBounds) return null;
+    const width = Math.max(1, sourceBounds.width * this.screenScale);
+    const height = Math.max(1, sourceBounds.height * this.screenScale);
     const zoomRange = Math.max(0.01, this.maxUserScale - this.minUserScale);
     const zoomRatio = Math.max(0, Math.min(1, (this.userScale - this.minUserScale) / zoomRange));
-    const hitWidth = width * (0.62 + zoomRatio * 0.18);
-    const hitHeight = height * (0.72 + zoomRatio * 0.16);
+    const hitWidth = width * (0.46 + zoomRatio * 0.16);
+    const hitHeight = height * (0.58 + zoomRatio * 0.18);
+    const top = this.model.y - height + Math.max(0, height - hitHeight) * 0.45;
     return {
       left: this.model.x - hitWidth / 2 - this.hitboxPadding,
       right: this.model.x + hitWidth / 2 + this.hitboxPadding,
-      top: this.model.y - hitHeight - this.hitboxPadding,
+      top: top - this.hitboxPadding,
       bottom: this.model.y + this.hitboxPadding
     };
   }

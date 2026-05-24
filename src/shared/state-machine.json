@@ -52,9 +52,7 @@
     "success": {
       "animation": "Special",
       "segment": "success",
-      "loop": false,
-      "returnTo": "idle",
-      "returnAfterMs": 10400
+      "loop": false
     },
     "failed": {
       "animation": "Sleep",

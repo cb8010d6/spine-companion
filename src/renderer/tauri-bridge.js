@@ -96,11 +96,14 @@ export async function initTauriBridge() {
       return () => { if (unlisten) unlisten(); };
     },
     onNotificationDismiss: () => () => {},
-    dragStart: () => _tauriInvoke("start_drag"),
-    dragMove: () => { /* Tauri handles drag natively */ },
-    dragEnd: () => { /* Tauri handles drag natively */ },
+    dragStart: (point) => _tauriInvoke("start_drag", { point }),
+    dragMove: (point) => _tauriInvoke("move_drag", { point }).catch(() => {}),
+    dragEnd: () => _tauriInvoke("end_drag").catch(() => {}),
     revealWindow: () => _tauriInvoke("reveal_window"),
     rendererReady: () => _tauriInvoke("reveal_window"),
-    setMousePassthrough: (enabled) => _tauriInvoke("set_mouse_passthrough", { enabled: Boolean(enabled) })
+    setMousePassthrough: (enabled, bounds) => _tauriInvoke("set_mouse_passthrough", {
+      enabled: Boolean(enabled),
+      bounds: bounds || null
+    })
   };
 }

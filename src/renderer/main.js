@@ -80,8 +80,10 @@ function applyUiSettings(settings = {}) {
   document.body.dataset.bubbleBackground = currentUiSettings.bubbleBackground || "solid";
   player?.setHudVisible(currentUiSettings.hudVisible !== false);
   player?.setDragMode(currentUiSettings.dragMode || "compatible");
+  player?.setHitboxPadding(currentUiSettings.hitboxPadding);
   syncSettingsPanel();
   updateBubble(currentState);
+  refreshMousePassthroughSoon();
 }
 
 function syncSettingsPanel() {
@@ -151,10 +153,17 @@ function elementContainsPoint(element, x, y) {
   return rectContains(element.getBoundingClientRect(), x, y);
 }
 
-function setMousePassthrough(enabled) {
-  if (!window.companion?.setMousePassthrough || mousePassthrough === enabled) return;
+function setMousePassthrough(enabled, force = false) {
+  if (!window.companion?.setMousePassthrough || (!force && mousePassthrough === enabled)) return;
   mousePassthrough = enabled;
-  window.companion.setMousePassthrough(enabled);
+  window.companion.setMousePassthrough(enabled, player?.getInteractiveBounds?.());
+}
+
+function refreshMousePassthroughSoon() {
+  window.requestAnimationFrame(() => {
+    if (pendingMousePassthroughEvent) scheduleMousePassthroughUpdate(pendingMousePassthroughEvent);
+    if (mousePassthrough) setMousePassthrough(true, true);
+  });
 }
 
 async function openManagerFromRenderer() {
@@ -261,6 +270,17 @@ function updateCompletionToast(state) {
   }, 10000);
 }
 
+async function returnToIdle(source = "user") {
+  const idleState = { state: "idle", source };
+  window.clearTimeout(clickReturnTimer);
+  player?.applyState(idleState, true);
+  updateHud(idleState);
+  completionToast.hidden = true;
+  window.clearTimeout(completionToastTimer);
+  setMousePassthrough(true);
+  await provider?.setState?.(idleState).catch(() => {});
+}
+
 function renderModelCatalog(config) {
   const catalog = config.models?.catalog || [];
   const fragment = document.createDocumentFragment();
@@ -360,6 +380,7 @@ async function loadPlayer(config) {
   };
   player.setHudVisible(currentUiSettings.hudVisible !== false);
   player.setDragMode(currentUiSettings.dragMode || "compatible");
+  player.setHitboxPadding(currentUiSettings.hitboxPadding);
   applyBubbleAnchor(player.getAnchor());
   player.applyState(currentState, true);
   emptyState.hidden = true;
@@ -397,6 +418,10 @@ async function hotReloadPlayer(nextConfig, statusText = "") {
 function wireDragging() {
   shell.addEventListener("pointerdown", (event) => {
     if (event.button !== 0 || event.target.closest(".hud")) return;
+    if (currentState.state === "success") {
+      returnToIdle("success-click");
+      return;
+    }
     drag = {
       moved: false,
       x: event.screenX,
@@ -524,9 +549,11 @@ async function boot() {
   window.companion?.onScale((payload) => {
     if (payload?.action === "reset") {
       player?.resetUserScale();
+      refreshMousePassthroughSoon();
       return;
     }
     player?.adjustUserScale(Number(payload?.delta || 0));
+    refreshMousePassthroughSoon();
   });
 
   window.companion?.onModelImported?.(async (result) => {
@@ -594,9 +621,7 @@ async function boot() {
   });
 
   completionToast.addEventListener("click", () => {
-    completionToast.hidden = true;
-    window.clearTimeout(completionToastTimer);
-    setMousePassthrough(true);
+    returnToIdle("completion-toast");
   });
 }
 
