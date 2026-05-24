@@ -74,6 +74,7 @@ body {
   background: var(--text-muted);
 }
 .dot.working { background: var(--accent); }
+.dot.success { background: var(--success); }
 .dot.failed { background: var(--danger); }
 
 .model-section {
@@ -136,6 +137,66 @@ body {
   height: 1px;
   background: var(--border);
   margin: 0 16px;
+}
+
+.runtime-section {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  padding: 12px 16px 8px;
+}
+
+.runtime-card,
+.task-section {
+  border: 1px solid color-mix(in srgb, var(--border) 88%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bg-panel) 76%, transparent);
+}
+
+.runtime-card {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 9px 10px;
+}
+
+.runtime-label,
+.section-title {
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.runtime-card strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-card strong[data-status="ok"] {
+  color: var(--success);
+}
+
+.runtime-card strong[data-status="warn"] {
+  color: var(--sc-warning);
+}
+
+.task-section {
+  display: grid;
+  gap: 6px;
+  margin: 0 16px 12px;
+  padding: 10px;
+}
+
+.task-message {
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 .controls-section {

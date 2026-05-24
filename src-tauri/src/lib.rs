@@ -14,6 +14,8 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::{Foundation::POINT, UI::WindowsAndMessaging::GetCursorPos};
 
 struct AppData {
     store: StateStore,
@@ -96,6 +98,33 @@ struct PointerBounds {
     right: f64,
     top: f64,
     bottom: f64,
+}
+
+#[cfg(target_os = "windows")]
+fn cursor_position_physical() -> Option<(f64, f64)> {
+    let mut point = POINT { x: 0, y: 0 };
+    let ok = unsafe { GetCursorPos(&mut point) };
+    if ok == 0 {
+        None
+    } else {
+        Some((point.x as f64, point.y as f64))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn cursor_inside_pointer_bounds(window: &tauri::Window, bounds: &PointerBounds) -> bool {
+    let Some((cursor_x, cursor_y)) = cursor_position_physical() else {
+        return false;
+    };
+    let Ok(position) = window.outer_position() else {
+        return false;
+    };
+    let scale_factor = window.scale_factor().unwrap_or(1.0).clamp(0.5, 4.0);
+    let left = position.x as f64 + bounds.left * scale_factor;
+    let right = position.x as f64 + bounds.right * scale_factor;
+    let top = position.y as f64 + bounds.top * scale_factor;
+    let bottom = position.y as f64 + bounds.bottom * scale_factor;
+    cursor_x >= left && cursor_x <= right && cursor_y >= top && cursor_y <= bottom
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -184,7 +213,7 @@ fn fallback_config() -> serde_json::Value {
         "specialSegments": {
             "review": { "from": 2.6, "to": 4.35, "loop": false },
             "success": { "from": 4.4, "to": 14.433, "loop": false },
-            "successLoop": { "from": 9.2, "to": 14.433, "loop": true },
+            "successLoop": { "from": 9.2, "to": 14.433, "loop": true, "mixDurationMs": 420, "repeatCount": 240 },
             "special": { "from": 0, "to": 14.433, "loop": true }
         }
     })
@@ -1786,18 +1815,39 @@ async fn set_mouse_passthrough(
     enabled: bool,
     bounds: Option<PointerBounds>,
 ) -> Result<(), String> {
-    if let Some(bounds) = bounds {
-        let _ = (bounds.left, bounds.right, bounds.top, bounds.bottom);
-    }
     window
         .set_ignore_cursor_events(enabled)
         .map_err(|e| e.to_string())?;
     if enabled {
-        let recover_window = window.clone();
-        tauri::async_runtime::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(360)).await;
-            let _ = recover_window.set_ignore_cursor_events(false);
-        });
+        #[cfg(target_os = "windows")]
+        {
+            if let Some(bounds) = bounds {
+                let recover_window = window.clone();
+                tauri::async_runtime::spawn(async move {
+                    for _ in 0..900 {
+                        tokio::time::sleep(Duration::from_millis(80)).await;
+                        if cursor_inside_pointer_bounds(&recover_window, &bounds) {
+                            let _ = recover_window.set_ignore_cursor_events(false);
+                            break;
+                        }
+                    }
+                });
+            } else {
+                let recover_window = window.clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(360)).await;
+                    let _ = recover_window.set_ignore_cursor_events(false);
+                });
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let recover_window = window.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(360)).await;
+                let _ = recover_window.set_ignore_cursor_events(false);
+            });
+        }
     }
     Ok(())
 }

@@ -205,11 +205,16 @@ export class SpinePlayer {
     }
 
     if (tailSegment && !(segment?.loop ?? motion.loop ?? true)) {
-      const tailEntry = this.spine.state.addAnimation(0, motion.animation, tailSegment.loop ?? true, 0);
-      tailEntry.mixDuration = Number(this.config.spine.mixDurationMs || 280) / 1000;
-      tailEntry.animationStart = Number(tailSegment.from || 0);
-      tailEntry.animationEnd = Number(tailSegment.to || tailEntry.animation.duration);
-      tailEntry.trackTime = 0;
+      const tailShouldRepeat = tailSegment.loop !== false;
+      const tailRepeatCount = tailShouldRepeat ? Math.max(1, Number(tailSegment.repeatCount || 240)) : 1;
+      const tailMixDuration = Number(tailSegment.mixDurationMs || this.config.spine.mixDurationMs || 280) / 1000;
+      for (let index = 0; index < tailRepeatCount; index += 1) {
+        const tailEntry = this.spine.state.addAnimation(0, motion.animation, !tailShouldRepeat && (tailSegment.loop ?? false), 0);
+        tailEntry.mixDuration = tailMixDuration;
+        tailEntry.animationStart = Number(tailSegment.from || 0);
+        tailEntry.animationEnd = Number(tailSegment.to || tailEntry.animation.duration);
+        tailEntry.trackTime = 0;
+      }
     }
 
     if (motion.repeatSegment && segment && !(segment.loop ?? motion.loop ?? true)) {
@@ -374,7 +379,8 @@ export class SpinePlayer {
       x: this.anchor.x + (target.x - this.anchor.x) * mix,
       y: this.anchor.y + (target.y - this.anchor.y) * mix,
       scale: target.scale,
-      side: target.side
+      side: target.side,
+      avoid: target.avoid
     };
     this.anchorTarget = target;
     this.onAnchorChange?.(this.anchor);
@@ -392,10 +398,10 @@ export class SpinePlayer {
     const height = Math.max(1, sourceBounds.height * this.screenScale);
     const zoomRange = Math.max(0.01, this.maxUserScale - this.minUserScale);
     const zoomRatio = Math.max(0, Math.min(1, (this.userScale - this.minUserScale) / zoomRange));
-    const hitWidth = width * (0.2 + zoomRatio * 0.22);
-    const hitHeight = height * (0.26 + zoomRatio * 0.2);
-    const scaledPadding = Math.min(this.hitboxPadding, Math.max(2, this.hitboxPadding * this.userScale));
-    const bottom = this.model.y - height * 0.08;
+    const hitWidth = width * (0.16 + zoomRatio * 0.18);
+    const hitHeight = height * (0.2 + zoomRatio * 0.18);
+    const scaledPadding = Math.min(this.hitboxPadding * 0.65, Math.max(1, this.hitboxPadding * this.userScale * 0.55));
+    const bottom = this.model.y - height * 0.04;
     return {
       left: this.model.x - hitWidth / 2 - scaledPadding,
       right: this.model.x + hitWidth / 2 + scaledPadding,

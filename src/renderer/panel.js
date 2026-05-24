@@ -3,9 +3,11 @@ import { initTauriBridge, isTauri } from "./tauri-bridge.js";
 import { modelPreview } from "./model-preview.js";
 import { renderSpinePreview } from "./spine-preview.js";
 import { createI18n, t } from "../shared/i18n.js";
+import { defaultMessageForState, sourceDisplayName } from "../shared/notification-policy.js";
 
 let config = null;
 let panelPinned = false;
+let currentDiagnostics = null;
 const quickStates = ["idle", "working", "running", "reviewing", "success", "failed"];
 
 function stateLabel(id) {
@@ -18,6 +20,41 @@ function updateStaticLabels() {
     pin.textContent = panelPinned ? t("panel.pin.pinned") : t("panel.pin.pin");
     pin.title = pin.textContent;
   }
+  document.getElementById("panel-source-label").textContent = t("panel.runtime.source");
+  document.getElementById("panel-api-label").textContent = t("panel.runtime.bridge");
+  document.getElementById("panel-task-title").textContent = t("panel.task.title");
+  document.getElementById("scale-label").textContent = t("panel.control.scale");
+  document.getElementById("bubble-toggle-label").textContent = t("panel.control.progressBubble");
+  document.getElementById("bubble-theme-label").textContent = t("panel.control.bubbleTheme");
+  document.getElementById("hud-toggle-label").textContent = t("panel.control.desktopHud");
+  document.getElementById("reminders-title").textContent = t("panel.section.reminders");
+  document.getElementById("updates-title").textContent = t("panel.section.updates");
+  document.getElementById("ai-bridge-title").textContent = t("panel.aiBridge");
+  document.getElementById("btn-manager-label").textContent = t("panel.actions.openManager");
+  document.getElementById("btn-quit-label").textContent = t("panel.actions.quit");
+}
+
+function isDebugPanelEnabled() {
+  const params = new URLSearchParams(window.location.search);
+  return params.has("debug") || config?.ui?.debugPanel === true || config?.ui?.devMode === true;
+}
+
+function renderQuickStates() {
+  const quickStateSection = document.getElementById("quick-state-section");
+  const enabled = isDebugPanelEnabled();
+  quickStateSection.hidden = !enabled;
+  if (!enabled) {
+    quickStateSection.replaceChildren();
+    return;
+  }
+  quickStateSection.replaceChildren(...quickStates.map((state) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = stateLabel(state);
+    button.setAttribute("aria-label", stateLabel(state));
+    button.addEventListener("click", () => window.companion?.setState?.({ state, source: "debug-panel" }));
+    return button;
+  }));
 }
 
 function renderPreview(previewEl, preview) {
@@ -93,6 +130,7 @@ async function updateState() {
   if (!config) return;
   createI18n(config);
   updateStaticLabels();
+  renderQuickStates();
 
   const spine = config.spine || {};
   const ui = config.ui || {};
@@ -116,6 +154,9 @@ async function updateState() {
     const preview = modelPreview(activeModel, config);
     const previewEl = document.getElementById("panel-model-preview");
     renderPreview(previewEl, preview);
+  } else {
+    document.getElementById("panel-model-name").textContent = t("panel.model.none");
+    document.getElementById("panel-model-skel").textContent = t("panel.model.noModel");
   }
 
   if (window.companion?.getState) {
@@ -129,10 +170,12 @@ async function updateState() {
   // Diagnostics for AI
   if (window.companion?.getDiagnostics) {
     const diag = await window.companion.getDiagnostics();
+    currentDiagnostics = diag;
     document.querySelector(".codex-dot").classList.toggle("on", diag.mcpConfigured);
     document.querySelector(".claude-dot").classList.toggle("on", Boolean((diag.mcpMatches || []).find((m) => m.tool === "Claude" && m.configured)));
     document.querySelector(".cursor-dot").classList.toggle("on", Boolean((diag.mcpMatches || []).find((m) => m.tool === "Roo / Cline" && m.configured)));
     document.querySelector(".local-dot").classList.toggle("on", diag.apiOk);
+    updateBridgeSummary(diag);
   }
 
   if (window.companion?.listReminders) {
@@ -151,6 +194,18 @@ async function updateState() {
   }
 }
 
+function updateBridgeSummary(diag = currentDiagnostics || {}) {
+  const value = document.getElementById("panel-api-value");
+  const apiOk = Boolean(diag.apiOk);
+  const aiOk = Boolean(diag.mcpConfigured || (diag.mcpMatches || []).some((m) => m.configured));
+  value.dataset.status = apiOk ? "ok" : "warn";
+  value.textContent = apiOk && aiOk
+    ? t("panel.bridge.connected")
+    : apiOk
+      ? t("panel.bridge.apiOnly")
+      : t("panel.bridge.offline");
+}
+
 function applyCompanionState(state = {}) {
   const dot = document.getElementById("global-status-dot");
   const text = document.getElementById("global-status-text");
@@ -160,6 +215,14 @@ function applyCompanionState(state = {}) {
   dot.className = "dot";
   if (id === "working" || id === "thinking" || id === "running" || id === "reviewing") dot.classList.add("working");
   if (id === "failed") dot.classList.add("failed");
+  if (id === "success") dot.classList.add("success");
+
+  const source = state.source || "local";
+  document.getElementById("panel-source-value").textContent = sourceDisplayName(source);
+  const message = String(state.message || defaultMessageForState(id, source) || "").trim();
+  document.getElementById("panel-task-message").textContent = id === "idle"
+    ? t("panel.task.none")
+    : message || stateLabel(id);
 }
 
 async function boot() {
@@ -168,16 +231,6 @@ async function boot() {
   }
 
   await updateState();
-
-  const quickStateSection = document.getElementById("quick-state-section");
-  quickStateSection.replaceChildren(...quickStates.map((state) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.textContent = stateLabel(state);
-    button.setAttribute("aria-label", stateLabel(state));
-    button.addEventListener("click", () => window.companion?.setState?.({ state, source: "quick-panel" }));
-    return button;
-  }));
 
   window.companion?.onState?.(applyCompanionState);
 

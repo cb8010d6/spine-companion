@@ -53,7 +53,9 @@
     "successLoop": {
       "from": 9.2,
       "to": 14.433,
-      "loop": true
+      "loop": true,
+      "mixDurationMs": 420,
+      "repeatCount": 240
     },
     "special": {
       "from": 0,
