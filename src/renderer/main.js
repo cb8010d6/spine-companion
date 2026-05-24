@@ -120,12 +120,43 @@ function applyBubbleAnchor(anchor = currentBubbleAnchor) {
     : currentBubbleAnchor.x;
   const maxX = Math.max(inset, window.innerWidth - visualWidth - inset);
   const maxY = Math.max(inset, window.innerHeight - visualHeight - inset);
-  const x = Math.max(inset, Math.min(maxX, rawX));
-  const y = Math.max(inset, Math.min(maxY, currentBubbleAnchor.y));
+  let side = currentBubbleAnchor.side || "left";
+  let x = Math.max(inset, Math.min(maxX, rawX));
+  let y = Math.max(inset, Math.min(maxY, currentBubbleAnchor.y));
+  const avoid = currentBubbleAnchor.avoid;
+  if (avoid) {
+    const gap = Math.max(8, 16 * scale);
+    const overlaps = () => (
+      x < avoid.right + gap
+      && x + visualWidth > avoid.left - gap
+      && y < avoid.bottom + gap
+      && y + visualHeight > avoid.top - gap
+    );
+    if (overlaps()) {
+      const rightX = avoid.right + gap;
+      const leftX = avoid.left - visualWidth - gap;
+      const roomRight = window.innerWidth - rightX - inset;
+      const roomLeft = leftX - inset;
+      if (roomRight >= visualWidth || roomRight >= roomLeft) {
+        x = Math.max(inset, Math.min(maxX, rightX));
+        side = "left";
+      } else {
+        x = Math.max(inset, Math.min(maxX, leftX));
+        side = "right";
+      }
+    }
+    if (overlaps()) {
+      const aboveY = avoid.top - visualHeight - gap;
+      const belowY = avoid.bottom + gap;
+      y = aboveY >= inset
+        ? aboveY
+        : Math.max(inset, Math.min(maxY, belowY));
+    }
+  }
   progressBubble.style.left = `${Math.round(x)}px`;
   progressBubble.style.top = `${Math.round(y)}px`;
   progressBubble.style.setProperty("--bubble-scale", String(scale));
-  progressBubble.dataset.side = currentBubbleAnchor.side || "left";
+  progressBubble.dataset.side = side;
 }
 
 function renderStateControls(sendState) {
@@ -224,7 +255,7 @@ function updateHud(state) {
 
 function updateBubble(state) {
   const id = state?.state || "idle";
-  if (state?.source === "drag") {
+  if (state?.source === "drag" || state?.source === "click") {
     progressBubble.hidden = true;
     return;
   }
@@ -516,25 +547,22 @@ function wireDragging() {
       }
       return;
     }
+    const previousState = { ...currentState };
     const clickState = {
       state: "reminder",
       source: "click",
-      message: "Interaction",
+      message: "",
       autoReturnMs: 2200,
       returnTo: "idle"
     };
     player?.applyState(clickState, true);
-    updateHud(clickState);
+    updateBubble(previousState);
     window.clearTimeout(clickReturnTimer);
     clickReturnTimer = window.setTimeout(() => {
-      const idleState = { state: "idle", source: "click-return" };
-      player?.applyState(idleState, true);
-      updateHud(idleState);
-      provider?.setState?.(idleState).catch(() => {});
+      player?.applyState(previousState, true);
+      updateHud(previousState);
+      updateBubble(previousState);
     }, Number(clickState.autoReturnMs));
-    if (provider) {
-      await provider.setState(clickState);
-    }
   });
 }
 
