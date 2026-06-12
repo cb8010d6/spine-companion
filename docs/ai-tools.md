@@ -37,7 +37,11 @@ Installed Tauri app:
 }
 ```
 
-OpenCode uses its official `mcp` config shape with a command array:
+OpenCode uses its official `mcp` config shape with a command array.
+
+On Windows, OpenCode Desktop 1.17.x loads user config from
+`%USERPROFILE%\.config\opencode\opencode.json` or `opencode.jsonc`; do not use
+`%APPDATA%\opencode\opencode.json` for the desktop app:
 
 ```json
 {
@@ -92,3 +96,7 @@ curl -X POST http://127.0.0.1:17388/state \
 MCP does not automatically push state. The AI tool must have instructions to call
 `companion_report_ai_phase` during work phases. `companion_report_codex_phase`
 remains as a compatibility alias for older Codex instructions.
+
+For GitHub Copilot / VS Code, a repository-level
+`.github/copilot-instructions.md` is the most reliable way to make the agent
+call the configured MCP tool proactively.

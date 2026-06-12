@@ -543,26 +543,31 @@ async function integrationsView() {
       h("article", { class: "card" }, h("p", { class: "empty-text" }, "AI Integrations are available in the Tauri runtime."))
     );
   }
-  const cards = integrations.map((item) => h("article", { class: "card integration-card" },
-    h("div", { class: "integration-header" },
-      h("div", {},
-        h("h3", {}, item.name),
-        h("p", { class: "model-meta" }, item.note || "")
+  const cards = integrations.map((item) => {
+    const canConfigure = item.configFormat !== "templateOnly" && (item.installed || item.configFound || item.configured);
+    return h("article", { class: "card integration-card" },
+      h("div", { class: "integration-header" },
+        h("div", {},
+          h("h3", {}, item.name),
+          h("p", { class: "model-meta" }, item.note || "")
+        ),
+        h("span", { class: item.configured ? "status-value status-ok" : "status-value" }, item.status)
       ),
-      h("span", { class: item.configured ? "status-value status-ok" : "status-value" }, item.status)
-    ),
-    h("div", { class: "integration-badges" }, integrationStatusBadges(item)),
-    item.configPath ? h("p", { class: "integration-path", title: item.configPath }, `${t("manager.integrations.config")}: ${item.configPath}`) : null,
-    h("p", { class: "integration-path" }, `${t("manager.integrations.command")}: ${item.source} / ${item.sourceLabel}`),
-    h("div", { class: "model-actions" },
-      item.configFormat === "templateOnly"
-        ? h("button", { class: "btn btn-primary", type: "button", onClick: () => copyIntegrationTemplate(null) }, t("manager.actions.copyTemplate"))
-        : h("button", { class: "btn btn-primary", type: "button", onClick: () => configureIntegration(item.id) }, t("manager.actions.configure")),
-      h("button", { class: "btn", type: "button", onClick: () => previewIntegration(item.id) }, t("manager.actions.preview")),
-      item.configPath ? h("button", { class: "btn", type: "button", onClick: () => window.companion?.openAiIntegrationConfig?.(item.id) }, t("manager.actions.openConfig")) : null,
-      item.configFormat !== "templateOnly" ? h("button", { class: "btn", type: "button", onClick: () => copyIntegrationTemplate(item.id) }, t("manager.actions.copyTemplate")) : null
-    )
-  ));
+      h("div", { class: "integration-badges" }, integrationStatusBadges(item)),
+      item.configPath ? h("p", { class: "integration-path", title: item.configPath }, `${t("manager.integrations.config")}: ${item.configPath}`) : null,
+      h("p", { class: "integration-path" }, `${t("manager.integrations.command")}: ${item.source} / ${item.sourceLabel}`),
+      h("div", { class: "model-actions" },
+        item.configFormat === "templateOnly"
+          ? h("button", { class: "btn btn-primary", type: "button", onClick: () => copyIntegrationTemplate(null) }, t("manager.actions.copyTemplate"))
+          : canConfigure
+            ? h("button", { class: "btn btn-primary", type: "button", onClick: () => configureIntegration(item.id) }, t("manager.actions.configure"))
+            : null,
+        h("button", { class: "btn", type: "button", onClick: () => previewIntegration(item.id) }, t("manager.actions.preview")),
+        item.configPath ? h("button", { class: "btn", type: "button", onClick: () => window.companion?.openAiIntegrationConfig?.(item.id) }, t("manager.actions.openConfig")) : null,
+        item.configFormat !== "templateOnly" ? h("button", { class: "btn", type: "button", onClick: () => copyIntegrationTemplate(item.id) }, t("manager.actions.copyTemplate")) : null
+      )
+    );
+  });
   return h("section", {},
     h("div", { class: "view-header" },
       h("div", {},
