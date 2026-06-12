@@ -12,7 +12,7 @@ describe("tray-menu-model", () => {
       "Open Quick Panel",
       "Open Manager",
       "Progress Bubble: On",
-      "Status Panel: Off",
+      "Debug HUD: Off",
       "Click-through: On",
       "Set State",
       "Diagnostics",

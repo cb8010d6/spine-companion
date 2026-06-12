@@ -103,6 +103,19 @@ If the tray icon appears but the window does not:
 - Check whether the model is off-screen after display changes.
 - Reset scale and offsets in **Manager > Settings**.
 
+If Windows reports `LiveKernelEvent 141`, `0x80263001`, or a black rectangle
+where the transparent companion should be:
+
+- Treat it as a Windows GPU driver / DWM desktop composition reset first, not a
+  missing model issue.
+- Update or roll back the GPU driver and restart Windows if desktop composition
+  remains disabled.
+- In **Manager > Settings**, turn off **Hardware acceleration**, then fully quit
+  and restart Spine Companion. This starts Windows WebView2 with software
+  rendering. The app does not switch automatically.
+- In **Manager > Diagnostics**, check **GPU rendering** to confirm the current
+  configured mode.
+
 ## Developer Checks
 
 Before publishing a release:

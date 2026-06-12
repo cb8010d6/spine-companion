@@ -18,7 +18,7 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::state::{
     create_reminder, delete_reminder, list_reminders, set_state, CreateReminderInput,
-    ReminderStore, SetStateInput, StateBroadcast, StateStore,
+    ReminderBroadcast, ReminderStore, SetStateInput, StateBroadcast, StateStore,
 };
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -30,6 +30,7 @@ pub struct AppState {
     pub store: StateStore,
     pub tx: StateBroadcast,
     pub reminders: ReminderStore,
+    pub reminder_tx: ReminderBroadcast,
     pub asset_root: AssetRootStore,
 }
 
@@ -87,7 +88,8 @@ async fn post_reminder(
     AxumState(app): AxumState<AppState>,
     Json(input): Json<CreateReminderInput>,
 ) -> impl IntoResponse {
-    let reminder = create_reminder(&app.store, &app.tx, &app.reminders, input).await;
+    let reminder =
+        create_reminder(&app.store, &app.tx, &app.reminders, &app.reminder_tx, input).await;
     (StatusCode::CREATED, Json(reminder))
 }
 
@@ -95,7 +97,7 @@ async fn delete_reminder_route(
     AxumState(app): AxumState<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let deleted = delete_reminder(&app.reminders, &id).await;
+    let deleted = delete_reminder(&app.reminders, &app.reminder_tx, &id).await;
     let status = if deleted {
         StatusCode::OK
     } else {
@@ -106,10 +108,20 @@ async fn delete_reminder_route(
 
 async fn events(AxumState(app): AxumState<AppState>) -> impl IntoResponse {
     let rx = app.tx.subscribe();
+    let reminder_rx = app.reminder_tx.subscribe();
     let initial = app.store.read().await.clone();
+    let initial_reminders = list_reminders(&app.reminders).await;
 
     let initial_event = futures::stream::once(async move {
         Ok::<_, Infallible>(Event::default().event("state").json_data(initial).unwrap())
+    });
+    let initial_reminders_event = futures::stream::once(async move {
+        Ok::<_, Infallible>(
+            Event::default()
+                .event("reminders")
+                .json_data(initial_reminders)
+                .unwrap(),
+        )
     });
 
     let stream = BroadcastStream::new(rx).filter_map(|result| {
@@ -117,8 +129,24 @@ async fn events(AxumState(app): AxumState<AppState>) -> impl IntoResponse {
             Ok::<_, Infallible>(Event::default().event("state").json_data(state).unwrap())
         })
     });
+    let reminder_stream = BroadcastStream::new(reminder_rx).filter_map(|result| {
+        result.ok().map(|reminders| {
+            Ok::<_, Infallible>(
+                Event::default()
+                    .event("reminders")
+                    .json_data(reminders)
+                    .unwrap(),
+            )
+        })
+    });
 
-    Sse::new(initial_event.chain(stream)).keep_alive(KeepAlive::default())
+    let live_stream = futures::stream::select(stream, reminder_stream);
+    Sse::new(
+        initial_event
+            .chain(initial_reminders_event)
+            .chain(live_stream),
+    )
+    .keep_alive(KeepAlive::default())
 }
 
 fn file_content_type(file: &FsPath) -> &'static str {
@@ -220,6 +248,7 @@ pub async fn start_api_server(
     store: StateStore,
     tx: StateBroadcast,
     reminders: ReminderStore,
+    reminder_tx: ReminderBroadcast,
     asset_root: AssetRootStore,
     host: &str,
     port: u16,
@@ -228,6 +257,7 @@ pub async fn start_api_server(
         store,
         tx,
         reminders,
+        reminder_tx,
         asset_root,
     };
 
@@ -256,7 +286,7 @@ pub async fn start_api_server(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{create_reminder_store, create_state_store};
+    use crate::state::{create_reminder_broadcast, create_reminder_store, create_state_store};
 
     #[tokio::test]
     async fn file_type_matches_spine_assets() {
@@ -275,10 +305,12 @@ mod tests {
     async fn app_state_can_store_reminders() {
         let (store, tx) = create_state_store("idle");
         let reminders = create_reminder_store();
+        let reminder_tx = create_reminder_broadcast();
         let reminder = create_reminder(
             &store,
             &tx,
             &reminders,
+            &reminder_tx,
             CreateReminderInput {
                 text: Some("API".to_string()),
                 delay_ms: Some(1000),

@@ -95,6 +95,15 @@ bun run mcp:install:codex
 - 检查多显示器切换后窗口是否跑到屏幕外。
 - 在 **Manager > Settings** 重置 scale 和 offset。
 
+如果 Windows 可靠性监视器出现 `LiveKernelEvent 141`、`0x80263001`，
+或者透明窗口变成黑色矩形：
+
+- 优先按 Windows 显卡驱动 / DWM 桌面合成 reset 处理，不要先当成模型缺失。
+- 如果桌面合成一直不可用，尝试更新或回退显卡驱动，并重启 Windows。
+- 在 **Manager > Settings** 关闭 **硬件加速**，然后完全退出并重启
+  Spine Companion。这样 Windows WebView2 会以软件渲染方式启动。应用不会自动切换。
+- 在 **Manager > Diagnostics** 查看 **GPU 渲染**，确认当前配置模式。
+
 ## 发布前检查
 
 ```bash

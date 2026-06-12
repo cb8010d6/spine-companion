@@ -25,7 +25,7 @@ When the `spine_companion` MCP server is available, proactively report phases:
 - `failed`: blocker or failed completion.
 - `waiting`: waiting for user input or external process.
 
-Use `companion_report_codex_phase` with a short message. Continue the task if the companion MCP server is unavailable.
+Use `companion_report_ai_phase` with a short message. `companion_report_codex_phase` remains a compatibility alias. Continue the task if the companion MCP server is unavailable.
 
 ## Manual HTTP Fallback
 

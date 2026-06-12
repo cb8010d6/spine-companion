@@ -117,7 +117,21 @@ curl -X POST http://127.0.0.1:17388/reminders ^
 - SSE: `GET /events`
 - WebSocket: `ws://127.0.0.1:17388/ws`
 
-## 5. Codex/MCP 桥接
+## 5. AI / MCP 集成
+
+安装后的 Tauri 版本优先打开 **Manager > AI Integrations**，在那里检测并配置
+已安装的 AI 工具。Manager 会写入稳定的应用可执行文件路径，并在修改配置前创建备份。
+
+安装版配置形态：
+
+```toml
+[mcp_servers.spine_companion]
+command = "C:/Program Files/Spine Companion/spine-companion.exe"
+args = ["--mcp"]
+env = { COMPANION_API = "http://127.0.0.1:17388", COMPANION_SOURCE = "codex-mcp", COMPANION_SOURCE_LABEL = "Codex" }
+```
+
+源码开发兜底：
 
 ```bash
 bun run mcp:install:codex

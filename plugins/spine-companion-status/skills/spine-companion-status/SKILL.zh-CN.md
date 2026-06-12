@@ -25,7 +25,7 @@ description: 通过内置 MCP 桥接或本地 HTTP API，让 Codex 等 AI 编程
 - `failed`：遇到阻塞或失败结束。
 - `waiting`：等待用户输入或外部进程。
 
-使用 `companion_report_codex_phase` 并附带简短消息。如果 MCP 服务不可用，继续完成用户任务，不要因此中断。
+使用 `companion_report_ai_phase` 并附带简短消息。`companion_report_codex_phase` 仍是兼容旧 Codex 指令的别名。如果 MCP 服务不可用，继续完成用户任务，不要因此中断。
 
 ## HTTP 兜底
 

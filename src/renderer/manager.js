@@ -16,6 +16,7 @@ let installedModels = [];
 let diagnostics = null;
 let history = [];
 let reminders = [];
+let integrations = [];
 let updateStatus = null;
 const downloads = {};
 
@@ -268,6 +269,27 @@ async function importLocalModel() {
   }
 }
 
+async function refreshIntegrations() {
+  integrations = await window.companion?.listAiIntegrations?.() || [];
+  return integrations;
+}
+
+async function copyText(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand("copy");
+  textarea.remove();
+}
+
 function installedView() {
   const active = activeInstalledId();
   const content = installedModels.length
@@ -340,7 +362,7 @@ function settingsView() {
   const resetExperience = async () => {
     await window.companion?.saveSettings?.({
       spine: { scale: 0.86, offsetX: 0, offsetY: -18 },
-      ui: { maxDevicePixelRatio: 2, hitboxPadding: 8 }
+      ui: { maxDevicePixelRatio: 2, hitboxPadding: 8, gpuMode: "hardware" }
     });
     await refreshConfig();
     showToast(t("manager.status.settingsSaved"));
@@ -380,6 +402,10 @@ function settingsView() {
         })),
         rangeNumber(t("manager.field.maxDpr"), "set-max-dpr", Number(ui.maxDevicePixelRatio || 2), 1, 3, 0.25, () => saveUi({ maxDevicePixelRatio: numeric("set-max-dpr-number") })),
         rangeNumber(t("manager.field.hitboxPadding"), "set-hitbox-padding", Number(ui.hitboxPadding || 8), 0, 48, 1, () => saveUi({ hitboxPadding: numeric("set-hitbox-padding-number") })),
+        check(t("manager.field.hardwareAcceleration"), (ui.gpuMode || "hardware") !== "software", (checked) => {
+          saveUi({ gpuMode: checked ? "hardware" : "software" });
+          showToast(t("manager.status.restartRequired"));
+        }, t("manager.hint.hardwareAcceleration")),
         check(t("manager.field.bubbleShadow"), ui.bubbleShadow !== false, (checked) => saveUi({ bubbleShadow: checked })),
         field(t("manager.field.bubbleTheme"), h("select", { class: "select", value: ui.bubbleBackground || "solid", onChange: (e) => saveUi({ bubbleBackground: e.target.value }) },
           ["solid", "soft", "clear", "light"].map((value) => h("option", { value, selected: (ui.bubbleBackground || "solid") === value }, value))
@@ -437,10 +463,114 @@ function field(label, control) {
   return h("label", { class: "form-group" }, h("span", {}, label), control);
 }
 
-function check(label, checked, onChange) {
+function check(label, checked, onChange, hint = "") {
   return h("label", { class: "checkbox-label" },
     h("input", { type: "checkbox", checked, onChange: (e) => onChange(e.target.checked) }),
-    h("span", {}, label)
+    h("span", {},
+      label,
+      hint ? h("small", {}, hint) : null
+    )
+  );
+}
+
+function integrationStatusBadges(item) {
+  const badges = [];
+  if (item.installed) badges.push(badge(t("manager.integrations.installed"), "badge-success"));
+  if (item.configFound) badges.push(badge(t("manager.integrations.configFound"), ""));
+  if (item.configured) badges.push(badge(t("manager.integrations.configured"), "badge-success"));
+  if (item.needsRestart) badges.push(badge(t("manager.integrations.needsRestart"), "badge-warning"));
+  if (item.configFormat === "templateOnly") badges.push(badge(t("manager.integrations.templateOnly"), ""));
+  if (!badges.length) badges.push(badge(t("manager.integrations.notDetected"), ""));
+  return badges;
+}
+
+async function previewIntegration(id) {
+  try {
+    const preview = await window.companion?.previewAiIntegrationConfig?.(id);
+    showModal(preview?.integration?.name || id, preview?.preview || "", [
+      h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.close")),
+      h("button", { class: "btn btn-primary", type: "button", onClick: async () => {
+        await copyText(preview?.preview || "");
+        showToast(t("manager.status.templateCopied"));
+      } }, t("manager.actions.copyTemplate"))
+    ]);
+  } catch (error) {
+    showModal(t("manager.integrations.title"), error.message || String(error), [
+      h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.close"))
+    ]);
+  }
+}
+
+async function copyIntegrationTemplate(id = null) {
+  const text = await window.companion?.copyAiIntegrationTemplate?.(id);
+  await copyText(text || "");
+  showToast(t("manager.status.templateCopied"));
+}
+
+async function configureIntegration(id) {
+  try {
+    const preview = await window.companion?.previewAiIntegrationConfig?.(id);
+    const name = preview?.integration?.name || id;
+    const body = t("manager.modal.integrationPrompt", {
+      name,
+      path: preview?.targetPath || "",
+      backup: preview?.backupPath || "",
+      source: `${preview?.integration?.source || ""} / ${preview?.integration?.sourceLabel || ""}`
+    });
+    showModal(t("manager.modal.integrationTitle", { name }), body, [
+      h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.cancel")),
+      h("button", { class: "btn btn-primary", type: "button", onClick: async () => {
+        closeModal();
+        const result = await window.companion?.configureAiIntegration?.(id);
+        await refreshIntegrations();
+        showToast(t("manager.status.integrationConfigured", { name: result?.integration?.name || name }));
+        renderView("integrations");
+      } }, t("manager.actions.confirmConfigure"))
+    ]);
+  } catch (error) {
+    showModal(t("manager.integrations.title"), error.message || String(error), [
+      h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.close"))
+    ]);
+  }
+}
+
+async function integrationsView() {
+  await refreshIntegrations();
+  const available = typeof window.companion?.listAiIntegrations === "function";
+  if (!available) {
+    return h("section", {},
+      h("h2", { class: "view-title" }, t("manager.integrations.title")),
+      h("article", { class: "card" }, h("p", { class: "empty-text" }, "AI Integrations are available in the Tauri runtime."))
+    );
+  }
+  const cards = integrations.map((item) => h("article", { class: "card integration-card" },
+    h("div", { class: "integration-header" },
+      h("div", {},
+        h("h3", {}, item.name),
+        h("p", { class: "model-meta" }, item.note || "")
+      ),
+      h("span", { class: item.configured ? "status-value status-ok" : "status-value" }, item.status)
+    ),
+    h("div", { class: "integration-badges" }, integrationStatusBadges(item)),
+    item.configPath ? h("p", { class: "integration-path", title: item.configPath }, `${t("manager.integrations.config")}: ${item.configPath}`) : null,
+    h("p", { class: "integration-path" }, `${t("manager.integrations.command")}: ${item.source} / ${item.sourceLabel}`),
+    h("div", { class: "model-actions" },
+      item.configFormat === "templateOnly"
+        ? h("button", { class: "btn btn-primary", type: "button", onClick: () => copyIntegrationTemplate(null) }, t("manager.actions.copyTemplate"))
+        : h("button", { class: "btn btn-primary", type: "button", onClick: () => configureIntegration(item.id) }, t("manager.actions.configure")),
+      h("button", { class: "btn", type: "button", onClick: () => previewIntegration(item.id) }, t("manager.actions.preview")),
+      item.configPath ? h("button", { class: "btn", type: "button", onClick: () => window.companion?.openAiIntegrationConfig?.(item.id) }, t("manager.actions.openConfig")) : null,
+      item.configFormat !== "templateOnly" ? h("button", { class: "btn", type: "button", onClick: () => copyIntegrationTemplate(item.id) }, t("manager.actions.copyTemplate")) : null
+    )
+  ));
+  return h("section", {},
+    h("div", { class: "view-header" },
+      h("div", {},
+        h("h2", { class: "view-title" }, t("manager.integrations.title")),
+        h("p", { class: "empty-text" }, t("manager.integrations.subtitle"))
+      )
+    ),
+    h("div", { class: "grid-2" }, cards)
   );
 }
 
@@ -468,6 +598,7 @@ async function diagnosticsView() {
           diagnostics.shortcut?.enabled === false
             ? t("manager.status.disabled")
             : diagnostics.shortcut?.error || diagnostics.shortcut?.accelerator),
+        diagnostics.gpu ? row(t("manager.diagnostics.gpu"), true, diagnostics.gpu.message || diagnostics.gpu.mode) : null,
         row(t("manager.diagnostics.runtime"), !isTauri(), isTauri() ? t("manager.status.tauriExperimental") : "Electron"),
         h("div", { class: "model-actions" },
           h("button", { class: "btn", type: "button", onClick: () => window.companion?.openFolder?.(config.paths?.configDir) }, t("manager.actions.openConfigFolder")),
@@ -517,6 +648,7 @@ async function renderView(viewName) {
     await refreshReminders();
     render(settingsView(), viewContainer);
   }
+  else if (viewName === "integrations") render(await integrationsView(), viewContainer);
   else if (viewName === "diagnostics") render(await diagnosticsView(), viewContainer);
 }
 
@@ -544,6 +676,10 @@ async function boot() {
     config = nextConfig || await window.companion?.getConfig?.() || config;
     createI18n(config);
     if (activeView === "settings" || activeView === "installed" || activeView === "library") renderView(activeView);
+  });
+  window.companion?.onReminders?.((nextReminders) => {
+    reminders = Array.isArray(nextReminders) ? nextReminders : [];
+    if (activeView === "settings") renderView("settings");
   });
   navTo("library");
 }

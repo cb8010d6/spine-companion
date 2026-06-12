@@ -415,6 +415,14 @@ input[type="range"] {
   cursor: pointer;
 }
 
+.checkbox-label small {
+  display: block;
+  margin-top: 3px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
 input[type="checkbox"] {
   accent-color: var(--accent);
 }
@@ -523,4 +531,34 @@ input[type="checkbox"] {
 
 .wide {
   grid-column: 1 / -1;
+}
+
+.integration-card {
+  gap: 12px;
+}
+
+.integration-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.integration-header h3 {
+  margin: 0 0 4px;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.integration-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.integration-path {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }

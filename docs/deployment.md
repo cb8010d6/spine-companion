@@ -227,11 +227,23 @@ Event streams:
 - SSE: `GET /events`
 - WebSocket: `ws://127.0.0.1:17388/ws`
 
-## 8. Codex MCP Bridge
+## 8. AI / MCP Integrations
 
-The MCP bridge lets Codex read and update the companion through the local API.
+The MCP bridge lets AI tools read and update the companion through the local API.
+For installed Tauri builds, open **Manager > AI Integrations** and configure the
+detected tool from there. The manager writes a stable executable-based MCP entry
+and creates a backup before changing a config file.
 
-Install the MCP entry into local Codex config:
+Installed Tauri entry shape:
+
+```toml
+[mcp_servers.spine_companion]
+command = "C:/Program Files/Spine Companion/spine-companion.exe"
+args = ["--mcp"]
+env = { COMPANION_API = "http://127.0.0.1:17388", COMPANION_SOURCE = "codex-mcp", COMPANION_SOURCE_LABEL = "Codex" }
+```
+
+Source workflow fallback for Codex:
 
 ```bash
 bun run mcp:install:codex
@@ -243,7 +255,7 @@ This appends the following shape to `~/.codex/config.toml`:
 [mcp_servers.spine_companion]
 command = "bun"
 args = ["C:/path/to/spine-companion/scripts/mcp-companion-server.mjs"]
-env = { COMPANION_API = "http://127.0.0.1:17388" }
+env = { COMPANION_API = "http://127.0.0.1:17388", COMPANION_SOURCE = "codex-mcp", COMPANION_SOURCE_LABEL = "Codex" }
 ```
 
 Restart Codex or open a new session after installing. Existing sessions usually
@@ -254,6 +266,7 @@ MCP tools:
 - `companion_get_state`
 - `companion_set_state`
 - `companion_reminder`
+- `companion_report_ai_phase`
 - `companion_report_codex_phase`
 
 The desktop app or `bun run dev:api` must be running before the MCP tools can

@@ -1,10 +1,13 @@
+mod ai_integrations;
+mod mcp;
 mod server;
+mod source_registry;
 mod state;
 
 use state::{
-    create_reminder, create_reminder_store, create_state_store, delete_reminder, list_reminders,
-    set_state, CompanionState, CreateReminderInput, Reminder, ReminderStore, SetStateInput,
-    StateBroadcast, StateStore,
+    create_reminder, create_reminder_broadcast, create_reminder_store, create_state_store,
+    delete_reminder, list_reminders, set_state, CompanionState, CreateReminderInput, Reminder,
+    ReminderBroadcast, ReminderStore, SetStateInput, StateBroadcast, StateStore,
 };
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -14,6 +17,7 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
+use tauri_plugin_notification::NotificationExt;
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::{Foundation::POINT, UI::WindowsAndMessaging::GetCursorPos};
 
@@ -21,6 +25,7 @@ struct AppData {
     store: StateStore,
     tx: StateBroadcast,
     reminders: ReminderStore,
+    reminder_tx: ReminderBroadcast,
     public_config: Arc<Mutex<serde_json::Value>>,
     ui_settings: Arc<Mutex<UiSettings>>,
     config_dir: PathBuf,
@@ -54,6 +59,7 @@ struct UiSettings {
     update_auto_check: bool,
     max_device_pixel_ratio: f64,
     hitbox_padding: f64,
+    gpu_mode: String,
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -72,6 +78,7 @@ struct UiSettingsPatch {
     update_auto_check: Option<bool>,
     max_device_pixel_ratio: Option<f64>,
     hitbox_padding: Option<f64>,
+    gpu_mode: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -181,7 +188,8 @@ fn fallback_config() -> serde_json::Value {
             "shortcutAccelerator": "CommandOrControl+Shift+S",
             "updateAutoCheck": true,
             "maxDevicePixelRatio": 2,
-            "hitboxPadding": 8
+            "hitboxPadding": 8,
+            "gpuMode": "hardware"
         },
         "models": {
             "catalog": [
@@ -439,6 +447,9 @@ fn ui_settings_from_config(config: &serde_json::Value) -> UiSettings {
     let shortcut = string_at(config, &["ui", "shortcutAccelerator"])
         .unwrap_or("CommandOrControl+Shift+S")
         .to_string();
+    let gpu_mode = string_at(config, &["ui", "gpuMode"])
+        .unwrap_or("hardware")
+        .to_string();
     UiSettings {
         hud_visible: bool_at(config, &["ui", "hudVisible"], false),
         bubble_visible: bool_at(config, &["ui", "bubbleVisible"], true),
@@ -457,6 +468,7 @@ fn ui_settings_from_config(config: &serde_json::Value) -> UiSettings {
         update_auto_check: bool_at(config, &["ui", "updateAutoCheck"], true),
         max_device_pixel_ratio: f64_at(config, &["ui", "maxDevicePixelRatio"], 2.0).clamp(1.0, 3.0),
         hitbox_padding: f64_at(config, &["ui", "hitboxPadding"], 8.0).clamp(0.0, 48.0),
+        gpu_mode: normalize_gpu_mode(&gpu_mode),
     }
 }
 
@@ -474,6 +486,36 @@ fn normalize_drag_mode(value: &str) -> String {
         "compatible".to_string()
     }
 }
+
+fn normalize_gpu_mode(value: &str) -> String {
+    if value == "software" {
+        "software".to_string()
+    } else {
+        "hardware".to_string()
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn configure_webview_gpu_mode(settings: &UiSettings) {
+    if settings.gpu_mode != "software" {
+        return;
+    }
+    let flag = "--disable-gpu";
+    let existing = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").unwrap_or_default();
+    if existing.split_whitespace().any(|arg| arg == flag) {
+        return;
+    }
+    let next = if existing.trim().is_empty() {
+        flag.to_string()
+    } else {
+        format!("{} {}", existing.trim(), flag)
+    };
+    std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", next);
+    eprintln!("Spine Companion: WebView2 GPU acceleration disabled by user setting.");
+}
+
+#[cfg(not(target_os = "windows"))]
+fn configure_webview_gpu_mode(_settings: &UiSettings) {}
 
 fn apply_ui_patch(settings: &mut UiSettings, patch: UiSettingsPatch) {
     if let Some(value) = patch.hud_visible {
@@ -516,6 +558,9 @@ fn apply_ui_patch(settings: &mut UiSettings, patch: UiSettingsPatch) {
     }
     if let Some(value) = patch.hitbox_padding {
         settings.hitbox_padding = value.clamp(0.0, 48.0);
+    }
+    if let Some(value) = patch.gpu_mode {
+        settings.gpu_mode = normalize_gpu_mode(&value);
     }
 }
 
@@ -795,7 +840,14 @@ async fn create_reminder_cmd(
     data: State<'_, AppData>,
     input: CreateReminderInput,
 ) -> Result<Reminder, String> {
-    Ok(create_reminder(&data.store, &data.tx, &data.reminders, input).await)
+    Ok(create_reminder(
+        &data.store,
+        &data.tx,
+        &data.reminders,
+        &data.reminder_tx,
+        input,
+    )
+    .await)
 }
 
 #[tauri::command]
@@ -808,7 +860,7 @@ async fn delete_reminder_cmd(
     data: State<'_, AppData>,
     id: String,
 ) -> Result<serde_json::Value, String> {
-    let deleted = delete_reminder(&data.reminders, &id).await;
+    let deleted = delete_reminder(&data.reminders, &data.reminder_tx, &id).await;
     Ok(serde_json::json!({ "deleted": deleted, "id": id }))
 }
 
@@ -1304,106 +1356,37 @@ async fn get_diagnostics(data: State<'_, AppData>) -> Result<serde_json::Value, 
         };
     }
 
-    let mut mcp_matches = Vec::new();
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .unwrap_or_default();
-    if !home.is_empty() {
-        let home_path = std::path::Path::new(&home);
-        let mut mcp_paths = vec![
-            ("Codex", home_path.join(".codex").join("config.toml")),
-            (
-                "Gemini / Antigravity",
-                home_path
-                    .join(".gemini")
-                    .join("antigravity")
-                    .join("mcp_config.json"),
-            ),
-        ];
-        #[cfg(target_os = "windows")]
-        {
-            let roaming = std::env::var("APPDATA")
-                .map(PathBuf::from)
-                .unwrap_or_else(|_| home_path.join("AppData").join("Roaming"));
-            mcp_paths.push((
-                "Claude",
-                roaming.join("Claude").join("claude_desktop_config.json"),
-            ));
-            mcp_paths.push((
-                "Roo / Cline",
-                roaming
-                    .join("Code")
-                    .join("User")
-                    .join("globalStorage")
-                    .join("rooveterinaryinc.roo-cline")
-                    .join("settings")
-                    .join("cline_mcp_settings.json"),
-            ));
-        }
-        #[cfg(target_os = "macos")]
-        {
-            mcp_paths.push((
-                "Claude",
-                home_path
-                    .join("Library")
-                    .join("Application Support")
-                    .join("Claude")
-                    .join("claude_desktop_config.json"),
-            ));
-            mcp_paths.push((
-                "Roo / Cline",
-                home_path
-                    .join("Library")
-                    .join("Application Support")
-                    .join("Code")
-                    .join("User")
-                    .join("globalStorage")
-                    .join("rooveterinaryinc.roo-cline")
-                    .join("settings")
-                    .join("cline_mcp_settings.json"),
-            ));
-        }
-        #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
-        {
-            let config_home = std::env::var("XDG_CONFIG_HOME")
-                .map(PathBuf::from)
-                .unwrap_or_else(|_| home_path.join(".config"));
-            mcp_paths.push((
-                "Claude",
-                config_home
-                    .join("Claude")
-                    .join("claude_desktop_config.json"),
-            ));
-            mcp_paths.push((
-                "Roo / Cline",
-                config_home
-                    .join("Code")
-                    .join("User")
-                    .join("globalStorage")
-                    .join("rooveterinaryinc.roo-cline")
-                    .join("settings")
-                    .join("cline_mcp_settings.json"),
-            ));
-        }
-
-        for (tool, p) in mcp_paths {
-            if let Ok(content) = std::fs::read_to_string(&p) {
-                let configured =
-                    content.contains("spine_companion") || content.contains("spine-companion");
-                mcp_matches.push(serde_json::json!({
-                    "tool": tool,
-                    "path": p.to_string_lossy(),
-                    "exists": true,
-                    "configured": configured
-                }));
-            }
-        }
-    }
-    let mcp_configured = mcp_matches.iter().any(|item| {
-        item.get("configured")
-            .and_then(|value| value.as_bool())
-            .unwrap_or(false)
-    });
+    let ai_integrations = ai_integrations::list_ai_integrations();
+    let mcp_matches = ai_integrations
+        .iter()
+        .filter(|item| item.config_found || item.configured)
+        .map(|item| {
+            serde_json::json!({
+                "tool": item.name,
+                "path": item.config_path,
+                "exists": item.config_found,
+                "configured": item.configured,
+                "source": item.source,
+                "sourceLabel": item.source_label,
+                "status": item.status
+            })
+        })
+        .collect::<Vec<_>>();
+    let mcp_configured = ai_integrations.iter().any(|item| item.configured);
+    let ui = current_ui_settings(&data);
+    let gpu_mode = ui.gpu_mode.clone();
+    let gpu_effective = if cfg!(target_os = "windows") {
+        gpu_mode.clone()
+    } else {
+        "platform-default".to_string()
+    };
+    let gpu_message = if cfg!(target_os = "windows") && gpu_mode == "software" {
+        "WebView2 starts with --disable-gpu after app restart."
+    } else if cfg!(target_os = "windows") {
+        "WebView2 uses hardware acceleration."
+    } else {
+        "GPU mode is only applied on Windows WebView2."
+    };
 
     Ok(serde_json::json!({
         "apiOk": state_ok,
@@ -1416,17 +1399,24 @@ async fn get_diagnostics(data: State<'_, AppData>) -> Result<serde_json::Value, 
         "modelRecovery": recovery,
         "logsDir": data.config_dir.join("logs").to_string_lossy().to_string(),
         "shortcut": {
-            "enabled": current_ui_settings(&data).shortcut_enabled,
+            "enabled": ui.shortcut_enabled,
             "registered": false,
-            "accelerator": current_ui_settings(&data).shortcut_accelerator,
+            "accelerator": ui.shortcut_accelerator,
             "error": "Global shortcuts are not implemented in the Tauri runtime yet."
+        },
+        "gpu": {
+            "mode": gpu_mode,
+            "effective": gpu_effective,
+            "requiresRestart": true,
+            "message": gpu_message
         },
         "runtime": {
             "name": "tauri",
             "experimental": true
         },
         "mcpConfigured": mcp_configured,
-        "mcpMatches": mcp_matches
+        "mcpMatches": mcp_matches,
+        "aiIntegrations": ai_integrations
     }))
 }
 
@@ -1737,6 +1727,67 @@ fn set_auto_launch(_enabled: bool) -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
+fn list_ai_integrations() -> Result<Vec<ai_integrations::AiIntegration>, String> {
+    Ok(ai_integrations::list_ai_integrations())
+}
+
+#[tauri::command]
+fn preview_ai_integration_config(
+    data: State<'_, AppData>,
+    tool_id: String,
+) -> Result<ai_integrations::IntegrationPreview, String> {
+    let exe = current_mcp_exe_path()?;
+    let api = companion_api_origin_from_data(&data);
+    ai_integrations::preview_ai_integration_config(&tool_id, &exe, &api)
+}
+
+#[tauri::command]
+fn configure_ai_integration(
+    data: State<'_, AppData>,
+    tool_id: String,
+) -> Result<ai_integrations::IntegrationApplyResult, String> {
+    let exe = current_mcp_exe_path()?;
+    let api = companion_api_origin_from_data(&data);
+    ai_integrations::configure_ai_integration(&tool_id, &exe, &api)
+}
+
+#[tauri::command]
+fn open_ai_integration_config(data: State<'_, AppData>, tool_id: String) -> Result<(), String> {
+    let exe = current_mcp_exe_path()?;
+    let api = companion_api_origin_from_data(&data);
+    let preview = ai_integrations::preview_ai_integration_config(&tool_id, &exe, &api)?;
+    if preview.target_path.trim().is_empty() {
+        return Err("This integration only provides copyable templates.".to_string());
+    }
+    let path = PathBuf::from(preview.target_path);
+    let target = if path.exists() {
+        path
+    } else {
+        path.parent()
+            .map(Path::to_path_buf)
+            .ok_or_else(|| "No parent folder for integration config".to_string())?
+    };
+    if !target.exists() {
+        std::fs::create_dir_all(&target).map_err(|error| error.to_string())?;
+    }
+    open_external(&target.to_string_lossy()).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn copy_ai_integration_template(
+    data: State<'_, AppData>,
+    tool_id: Option<String>,
+) -> Result<String, String> {
+    let exe = current_mcp_exe_path()?;
+    let api = companion_api_origin_from_data(&data);
+    if let Some(id) = tool_id {
+        return ai_integrations::preview_ai_integration_config(&id, &exe, &api)
+            .map(|preview| preview.preview);
+    }
+    Ok(ai_integrations::templates_for_custom(&exe, &api))
+}
+
+#[tauri::command]
 fn open_folder(app: tauri::AppHandle, p: String) -> Result<(), String> {
     let data = app.state::<AppData>();
     let requested = PathBuf::from(&p);
@@ -1860,26 +1911,99 @@ fn show_companion_window(win: &WebviewWindow) {
     let _ = win.set_focus();
 }
 
+fn restore_companion_window_surface(win: &WebviewWindow) {
+    let _ = win.set_ignore_cursor_events(false);
+    let _ = win.unminimize();
+    let _ = win.show();
+    let _ = win.set_always_on_top(true);
+}
+
 fn should_reveal_for_state(settings: &UiSettings, state: &CompanionState) -> bool {
     settings.auto_reveal_on_mcp && is_ai_source(&state.source) && state.state != "idle"
 }
 
 fn is_ai_source(source: &str) -> bool {
-    let source = source.to_ascii_lowercase();
-    source.starts_with("codex")
-        || source.starts_with("claude")
-        || source.starts_with("cursor")
-        || source.starts_with("cline")
-        || source.starts_with("roo")
-        || source.starts_with("gemini")
-        || source.starts_with("antigravity")
-        || source.starts_with("local-ai")
-        || source.ends_with("-mcp")
+    source_registry::is_ai_source(source)
+}
+
+fn source_display_name(source: &str) -> String {
+    source_registry::source_display_name(source, None)
+}
+
+fn should_notify_state(state: &CompanionState) -> bool {
+    if state.state == "reminder" {
+        return true;
+    }
+    if state.state != "success" && state.state != "failed" {
+        return false;
+    }
+    state.notify == Some(true) || is_ai_source(&state.source)
+}
+
+fn notification_for_state(state: &CompanionState) -> Option<(String, String)> {
+    match state.state.as_str() {
+        "reminder" => Some((
+            "Spine Companion Reminder".to_string(),
+            if state.message.is_empty() {
+                "Reminder".to_string()
+            } else {
+                state.message.clone()
+            },
+        )),
+        "success" => Some((
+            format!("{} task complete", source_display_name(&state.source)),
+            if state.message.is_empty() {
+                "Finished successfully".to_string()
+            } else {
+                state.message.clone()
+            },
+        )),
+        "failed" => Some((
+            format!("{} task failed", source_display_name(&state.source)),
+            if state.message.is_empty() {
+                "Needs attention".to_string()
+            } else {
+                state.message.clone()
+            },
+        )),
+        _ => None,
+    }
+}
+
+fn maybe_show_system_notification(app: &AppHandle, settings: &UiSettings, state: &CompanionState) {
+    if !settings.system_notifications || !should_notify_state(state) {
+        return;
+    }
+    let Some((title, body)) = notification_for_state(state) else {
+        return;
+    };
+    let _ = app.emit(
+        "companion:notification",
+        serde_json::json!({
+            "title": title,
+            "body": body,
+            "state": state.state,
+            "source": state.source,
+        }),
+    );
+    if let Err(error) = app.notification().builder().title(title).body(body).show() {
+        eprintln!("Failed to show system notification: {}", error);
+    }
 }
 
 #[tauri::command]
 async fn reveal_window(window: WebviewWindow) -> Result<(), String> {
     show_companion_window(&window);
+    Ok(())
+}
+
+#[tauri::command]
+async fn recover_gpu_window(window: WebviewWindow, reason: String) -> Result<(), String> {
+    eprintln!("Recovering companion GPU/window surface: {}", reason);
+    let _ = window.set_ignore_cursor_events(false);
+    let _ = window.hide();
+    tokio::time::sleep(Duration::from_millis(90)).await;
+    restore_companion_window_surface(&window);
     Ok(())
 }
 
@@ -2253,6 +2377,20 @@ fn write_local_model_config(path: &Path, asset_dir: &Path, skel: &str) -> Result
     std::fs::write(path, format!("{}\n", text)).map_err(|error| error.to_string())
 }
 
+fn current_mcp_exe_path() -> Result<PathBuf, String> {
+    std::env::current_exe().map_err(|error| error.to_string())
+}
+
+fn companion_api_origin_from_data(data: &State<'_, AppData>) -> String {
+    let public = public_config_with_ui(data);
+    public
+        .get("server")
+        .and_then(|server| server.get("origin"))
+        .and_then(|origin| origin.as_str())
+        .unwrap_or("http://127.0.0.1:17388")
+        .to_string()
+}
+
 fn url_encode_path_segment(value: &str) -> String {
     value
         .bytes()
@@ -2268,12 +2406,23 @@ fn url_encode_path_segment(value: &str) -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    if std::env::args().any(|arg| arg == "--mcp") {
+        if let Err(error) = mcp::run_stdio() {
+            eprintln!("Spine Companion MCP server failed: {}", error);
+            std::process::exit(1);
+        }
+        return;
+    }
+
     let runtime_config = load_runtime_config();
+    configure_webview_gpu_mode(&runtime_config.ui_settings);
     let (store, tx) = create_state_store(&runtime_config.initial_state);
     let reminders = create_reminder_store();
+    let reminder_tx = create_reminder_broadcast();
     let store_for_server = store.clone();
     let tx_for_server = tx.clone();
     let reminders_for_server = reminders.clone();
+    let reminder_tx_for_server = reminder_tx.clone();
     let host_for_server = runtime_config.host.clone();
     let port_for_server = runtime_config.port;
     let asset_root_store: server::AssetRootStore = Arc::new(tokio::sync::RwLock::new(
@@ -2287,6 +2436,7 @@ pub fn run() {
         Arc::new(Mutex::new(vec![store.blocking_read().clone()]));
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(win) = app.get_webview_window("main") {
                 show_companion_window(&win);
@@ -2296,6 +2446,7 @@ pub fn run() {
             store: store.clone(),
             tx: tx.clone(),
             reminders: reminders.clone(),
+            reminder_tx: reminder_tx.clone(),
             public_config: Arc::new(Mutex::new(runtime_config.public.clone())),
             ui_settings: Arc::new(Mutex::new(runtime_config.ui_settings.clone())),
             config_dir: runtime_config.config_dir.clone(),
@@ -2313,6 +2464,7 @@ pub fn run() {
                 store_for_server,
                 tx_for_server,
                 reminders_for_server,
+                reminder_tx_for_server,
                 asset_root_for_server,
                 &host_for_server,
                 port_for_server,
@@ -2336,7 +2488,16 @@ pub fn run() {
                             show_companion_window(&win);
                         }
                     }
+                    let settings = current_ui_settings(&data);
+                    maybe_show_system_notification(&app_handle, &settings, &state);
                     let _ = app_handle.emit("companion:state", state);
+                }
+            });
+            let app_handle = app.handle().clone();
+            let mut reminder_rx = reminder_tx.subscribe();
+            tauri::async_runtime::spawn(async move {
+                while let Ok(reminders) = reminder_rx.recv().await {
+                    let _ = app_handle.emit("companion:reminders", reminders);
                 }
             });
 
@@ -2357,7 +2518,7 @@ pub fn run() {
                 None::<&str>,
             )?;
             let hud_item =
-                MenuItem::with_id(app, "toggle_hud", "Toggle Status Panel", true, None::<&str>)?;
+                MenuItem::with_id(app, "toggle_hud", "Toggle Debug HUD", true, None::<&str>)?;
             let diagnostics_item =
                 MenuItem::with_id(app, "diagnostics", "Diagnostics", true, None::<&str>)?;
             let config_item = MenuItem::with_id(
@@ -2568,6 +2729,11 @@ pub fn run() {
             check_updates,
             open_url,
             set_auto_launch,
+            list_ai_integrations,
+            preview_ai_integration_config,
+            configure_ai_integration,
+            open_ai_integration_config,
+            copy_ai_integration_template,
             remove_model,
             open_folder,
             start_drag,
@@ -2575,6 +2741,7 @@ pub fn run() {
             end_drag,
             set_mouse_passthrough,
             reveal_window,
+            recover_gpu_window,
             open_manager_window,
             hide_panel_window,
             quit_app,
@@ -2706,6 +2873,26 @@ mod tests {
         assert_eq!(compare_versions("0.2.3-alpha.2", "0.2.3-alpha.1"), 1);
         assert_eq!(compare_versions("0.2.3-alpha.1", "0.2.2"), 1);
         assert_eq!(compare_versions("0.2.3", "0.2.3-alpha.2"), 1);
+    }
+
+    #[test]
+    fn gpu_mode_defaults_to_hardware_and_allows_software() {
+        let defaults = ui_settings_from_config(&fallback_config());
+        assert_eq!(defaults.gpu_mode, "hardware");
+
+        let config = serde_json::json!({
+            "ui": {
+                "gpuMode": "software"
+            }
+        });
+        assert_eq!(ui_settings_from_config(&config).gpu_mode, "software");
+
+        let invalid = serde_json::json!({
+            "ui": {
+                "gpuMode": "auto"
+            }
+        });
+        assert_eq!(ui_settings_from_config(&invalid).gpu_mode, "hardware");
     }
 
     #[test]

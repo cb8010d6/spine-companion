@@ -68,8 +68,10 @@ function managerUrl() {
 }
 
 function sendToRenderer(channel, payload) {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send(channel, payload);
+  for (const win of [mainWindow, managerWindow, panelWindow]) {
+    if (win && !win.isDestroyed()) {
+      win.webContents.send(channel, payload);
+    }
   }
 }
 
@@ -422,6 +424,10 @@ function deleteReminder(id) {
     id,
     deleted: Boolean(serverRuntime?.store.deleteReminder(String(id || "")))
   };
+}
+
+function broadcastReminders(reminders = listReminders()) {
+  sendToRenderer("companion:reminders", reminders);
 }
 
 function exportLogs() {
@@ -848,6 +854,10 @@ function registerIpc(config) {
   });
   serverRuntime.store.emitter.on("reminder", (reminder) => {
     logger?.info("reminder.fired", { id: reminder.id, text: reminder.text });
+  });
+  serverRuntime.store.emitter.on("reminders", (reminders) => {
+    logger?.info("reminders.changed", { count: reminders.length });
+    broadcastReminders(reminders);
   });
 
   ipcMain.on("companion:drag-start", (event, point) => {

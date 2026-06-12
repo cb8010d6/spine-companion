@@ -29,8 +29,12 @@ export class SpinePlayer {
     this.baseFitScale = null;
     this.lastLayoutSize = { width: 0, height: 0 };
     this.resizeTimer = null;
+    this.gpuRecoveryTimer = null;
+    this.gpuRecoveryRequested = false;
     this.handleResize = null;
     this.handleWheel = null;
+    this.handleContextLost = null;
+    this.handleContextRestored = null;
     this.hitboxPadding = Number.isFinite(Number(config.ui?.hitboxPadding))
       ? Math.min(48, Math.max(0, Number(config.ui.hitboxPadding)))
       : 8;
@@ -42,12 +46,18 @@ export class SpinePlayer {
       : 2;
     this.app = new PIXI.Application({
       resizeTo: this.stageElement,
+      transparent: true,
       backgroundAlpha: 0,
+      backgroundColor: 0x000000,
       antialias: true,
       autoDensity: true,
+      clearBeforeRender: true,
+      powerPreference: "default",
       resolution: Math.min(window.devicePixelRatio || 1, dprLimit)
     });
     this.stageElement.appendChild(this.app.view);
+    this.configureTransparentRenderer();
+    this.bindContextRecovery();
     this.model = new PIXI.Container();
     this.app.stage.addChild(this.model);
 
@@ -62,6 +72,51 @@ export class SpinePlayer {
     };
     window.addEventListener("resize", this.handleResize);
     this.stageElement.addEventListener("wheel", this.handleWheel, { passive: false });
+  }
+
+  configureTransparentRenderer() {
+    if (!this.app?.renderer) return;
+    this.app.view.style.background = "transparent";
+    try {
+      if (this.app.renderer.background) {
+        this.app.renderer.background.color = 0x000000;
+        this.app.renderer.background.alpha = 0;
+      }
+      if ("backgroundAlpha" in this.app.renderer) {
+        this.app.renderer.backgroundAlpha = 0;
+      }
+      if ("clearBeforeRender" in this.app.renderer) {
+        this.app.renderer.clearBeforeRender = true;
+      }
+    } catch (error) {
+      console.warn("[spine-companion] unable to enforce transparent renderer", error);
+    }
+  }
+
+  bindContextRecovery() {
+    const view = this.app?.view;
+    if (!view) return;
+    this.handleContextLost = (event) => {
+      event.preventDefault();
+      this.app.view.style.visibility = "hidden";
+      this.onGpuContextLost?.({ reason: "webglcontextlost" });
+      window.clearTimeout(this.gpuRecoveryTimer);
+      this.gpuRecoveryTimer = window.setTimeout(() => {
+        this.requestGpuRecovery("webglcontextlost-timeout");
+      }, 800);
+    };
+    this.handleContextRestored = () => {
+      this.configureTransparentRenderer();
+      this.requestGpuRecovery("webglcontextrestored");
+    };
+    view.addEventListener("webglcontextlost", this.handleContextLost, false);
+    view.addEventListener("webglcontextrestored", this.handleContextRestored, false);
+  }
+
+  requestGpuRecovery(reason) {
+    if (this.gpuRecoveryRequested) return;
+    this.gpuRecoveryRequested = true;
+    this.onGpuRecoveryRequested?.({ reason });
   }
 
   async loadSpine() {
@@ -239,6 +294,17 @@ export class SpinePlayer {
     this.layout();
   }
 
+  stateDurationMs(state = {}) {
+    if (!this.spine) return 0;
+    const motion = animationForState(state, this.config);
+    const animation = this.spine.spineData.animations.find((item) => item.name === motion.animation);
+    if (!animation) return 0;
+    const segment = motion.segment ? this.config.specialSegments?.[motion.segment] : null;
+    const from = Number(segment?.from ?? 0);
+    const to = Number(segment?.to ?? animation.duration ?? 0);
+    return Math.max(0, to - from) * 1000;
+  }
+
   measureStableBounds(stateIds) {
     if (!this.spine) return;
     const sampleCount = Math.max(3, Number(this.config.spine.boundsSamples || 10));
@@ -398,10 +464,10 @@ export class SpinePlayer {
     const height = Math.max(1, sourceBounds.height * this.screenScale);
     const zoomRange = Math.max(0.01, this.maxUserScale - this.minUserScale);
     const zoomRatio = Math.max(0, Math.min(1, (this.userScale - this.minUserScale) / zoomRange));
-    const hitWidth = width * (0.16 + zoomRatio * 0.18);
-    const hitHeight = height * (0.2 + zoomRatio * 0.18);
-    const scaledPadding = Math.min(this.hitboxPadding * 0.65, Math.max(1, this.hitboxPadding * this.userScale * 0.55));
-    const bottom = this.model.y - height * 0.04;
+    const hitWidth = width * (0.2 + zoomRatio * 0.2);
+    const hitHeight = height * (0.26 + zoomRatio * 0.22);
+    const scaledPadding = Math.min(this.hitboxPadding * 0.75, Math.max(2, this.hitboxPadding * this.userScale * 0.65));
+    const bottom = this.model.y - height * 0.035;
     return {
       left: this.model.x - hitWidth / 2 - scaledPadding,
       right: this.model.x + hitWidth / 2 + scaledPadding,
@@ -413,8 +479,15 @@ export class SpinePlayer {
   destroy() {
     window.clearTimeout(this.returnTimer);
     window.clearTimeout(this.resizeTimer);
+    window.clearTimeout(this.gpuRecoveryTimer);
     if (this.handleResize) window.removeEventListener("resize", this.handleResize);
     if (this.handleWheel) this.stageElement.removeEventListener("wheel", this.handleWheel);
+    if (this.app?.view && this.handleContextLost) {
+      this.app.view.removeEventListener("webglcontextlost", this.handleContextLost, false);
+    }
+    if (this.app?.view && this.handleContextRestored) {
+      this.app.view.removeEventListener("webglcontextrestored", this.handleContextRestored, false);
+    }
     if (this.app) this.app.destroy(true, { children: true, texture: false, baseTexture: false });
   }
 }

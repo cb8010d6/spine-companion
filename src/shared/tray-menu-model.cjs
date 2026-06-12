@@ -25,7 +25,7 @@ function trayMenuModel(ui = {}, options = {}) {
     },
     {
       id: "toggle_hud",
-      label: `Status Panel: ${ui.hudVisible === false ? "Off" : "On"}`
+      label: `Debug HUD: ${ui.hudVisible === false ? "Off" : "On"}`
     },
     {
       id: "toggle_click_through",

@@ -20,7 +20,7 @@ const entry = `
 ${marker}
 command = "${runtime}"
 args = ["${serverPath}"]
-env = { COMPANION_API = "http://127.0.0.1:17388" }
+env = { COMPANION_API = "http://127.0.0.1:17388", COMPANION_SOURCE = "codex-mcp", COMPANION_SOURCE_LABEL = "Codex" }
 `;
 
 const backupPath = `${configPath}.bak-${Date.now()}`;

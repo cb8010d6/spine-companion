@@ -33,6 +33,62 @@ function postJson(url, data) {
   });
 }
 
+function waitForSseEvent(url, eventName, predicate, action) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let buffer = "";
+    const req = http.request(url, { headers: { accept: "text/event-stream" } }, (res) => {
+      const timeout = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        req.destroy();
+        reject(new Error(`Timed out waiting for ${eventName}`));
+      }, 2000);
+
+      Promise.resolve()
+        .then(action)
+        .catch((error) => {
+          if (!settled) {
+            settled = true;
+            clearTimeout(timeout);
+            req.destroy();
+            reject(error);
+          }
+        });
+
+      res.on("data", (chunk) => {
+        buffer += chunk.toString("utf8");
+        const blocks = buffer.split("\n\n");
+        buffer = blocks.pop() || "";
+        for (const block of blocks) {
+          const lines = block.split("\n");
+          const name = lines.find((line) => line.startsWith("event: "))?.slice("event: ".length);
+          if (name !== eventName) continue;
+          const data = lines
+            .filter((line) => line.startsWith("data: "))
+            .map((line) => line.slice("data: ".length))
+            .join("\n");
+          const parsed = JSON.parse(data);
+          if (predicate(parsed)) {
+            settled = true;
+            clearTimeout(timeout);
+            req.destroy();
+            resolve(parsed);
+            return;
+          }
+        }
+      });
+    });
+    req.on("error", (error) => {
+      if (!settled) {
+        settled = true;
+        reject(error);
+      }
+    });
+    req.end();
+  });
+}
+
 describe("state-server HTTP API", () => {
   let runtime;
   let baseUrl;
@@ -147,6 +203,18 @@ describe("state-server HTTP API", () => {
       expect(deleted.body.deleted).toBe(true);
       const listed = await request(`${baseUrl}/reminders`);
       expect(listed.body.reminders).toEqual([]);
+    });
+
+    it("streams reminder list updates over SSE", async () => {
+      const streamed = await waitForSseEvent(
+        `${baseUrl}/events`,
+        "reminders",
+        (items) => items.some((item) => item.text === "Streamed"),
+        () => postJson(`${baseUrl}/reminders`, { text: "Streamed", delayMs: 60000 })
+      );
+
+      expect(streamed).toHaveLength(1);
+      expect(streamed[0].text).toBe("Streamed");
     });
   });
 

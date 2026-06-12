@@ -44,6 +44,11 @@ export async function initTauriBridge() {
     checkUpdates: () => _tauriInvoke("check_updates"),
     openExternal: (url) => _tauriInvoke("open_url", { url }),
     setAutoLaunch: (enabled) => _tauriInvoke("set_auto_launch", { enabled: Boolean(enabled) }),
+    listAiIntegrations: () => _tauriInvoke("list_ai_integrations"),
+    previewAiIntegrationConfig: (id) => _tauriInvoke("preview_ai_integration_config", { toolId: id }),
+    configureAiIntegration: (id) => _tauriInvoke("configure_ai_integration", { toolId: id }),
+    openAiIntegrationConfig: (id) => _tauriInvoke("open_ai_integration_config", { toolId: id }),
+    copyAiIntegrationTemplate: (id = null) => _tauriInvoke("copy_ai_integration_template", { toolId: id }),
     removeModel: (id) => _tauriInvoke("remove_model", { id }),
     openFolder: (p) => _tauriInvoke("open_folder", { p }),
     openManager: () => _tauriInvoke("open_manager_window"),
@@ -96,11 +101,28 @@ export async function initTauriBridge() {
       return () => { if (unlisten) unlisten(); };
     },
     onNotificationDismiss: () => () => {},
+    onNotification: (callback) => {
+      let unlisten = null;
+      _tauriListen("companion:notification", (event) => {
+        callback(event.payload);
+      }).then((fn) => { unlisten = fn; });
+      return () => { if (unlisten) unlisten(); };
+    },
+    onReminders: (callback) => {
+      let unlisten = null;
+      _tauriListen("companion:reminders", (event) => {
+        callback(event.payload);
+      }).then((fn) => { unlisten = fn; });
+      return () => { if (unlisten) unlisten(); };
+    },
     dragStart: (point) => _tauriInvoke("start_drag", { point }),
     dragMove: (point) => _tauriInvoke("move_drag", { point }).catch(() => {}),
     dragEnd: () => _tauriInvoke("end_drag").catch(() => {}),
     revealWindow: () => _tauriInvoke("reveal_window"),
     rendererReady: () => _tauriInvoke("reveal_window"),
+    recoverGpuWindow: (payload = {}) => _tauriInvoke("recover_gpu_window", {
+      reason: String(payload.reason || "")
+    }).catch(() => {}),
     setMousePassthrough: (enabled, bounds) => _tauriInvoke("set_mouse_passthrough", {
       enabled: Boolean(enabled),
       bounds: bounds || null
