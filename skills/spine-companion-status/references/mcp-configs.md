@@ -2,7 +2,7 @@
 
 [English](mcp-configs.md) | [简体中文](mcp-configs.zh-CN.md)
 
-Use these shapes when a tool cannot be configured by the bundled script.
+Use these shapes when a tool cannot be configured by Manager > AI Integrations.
 
 ## MCP server
 
@@ -10,10 +10,12 @@ Use these shapes when a tool cannot be configured by the bundled script.
 {
   "mcpServers": {
     "spine_companion": {
-      "command": "node",
-      "args": ["C:/path/to/spine-companion/scripts/mcp-companion-server.mjs"],
+      "command": "C:/Program Files/Spine Companion/spine-companion.exe",
+      "args": ["--mcp"],
       "env": {
-        "COMPANION_API": "http://127.0.0.1:17388"
+        "COMPANION_API": "http://127.0.0.1:17388",
+        "COMPANION_SOURCE": "my-tool-mcp",
+        "COMPANION_SOURCE_LABEL": "My Tool"
       }
     }
   }
@@ -24,9 +26,29 @@ Use these shapes when a tool cannot be configured by the bundled script.
 
 ```toml
 [mcp_servers.spine_companion]
-command = "node"
-args = ["C:/path/to/spine-companion/scripts/mcp-companion-server.mjs"]
-env = { COMPANION_API = "http://127.0.0.1:17388" }
+command = "C:/Program Files/Spine Companion/spine-companion.exe"
+args = ["--mcp"]
+env = { COMPANION_API = "http://127.0.0.1:17388", COMPANION_SOURCE = "codex-mcp", COMPANION_SOURCE_LABEL = "Codex" }
+```
+
+## OpenCode
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "spine_companion": {
+      "type": "local",
+      "command": ["C:/Program Files/Spine Companion/spine-companion.exe", "--mcp"],
+      "enabled": true,
+      "environment": {
+        "COMPANION_API": "http://127.0.0.1:17388",
+        "COMPANION_SOURCE": "opencode-mcp",
+        "COMPANION_SOURCE_LABEL": "OpenCode"
+      }
+    }
+  }
+}
 ```
 
 ## HTTP fallback

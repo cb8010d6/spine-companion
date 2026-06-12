@@ -16,14 +16,19 @@ describe("notification policy", () => {
     expect(isAiSource("claude-code")).toBe(true);
     expect(isAiSource("cursor-mcp")).toBe(true);
     expect(isAiSource("gemini")).toBe(true);
+    expect(isAiSource("mimocode-mcp")).toBe(true);
+    expect(isAiSource("opencode-mcp")).toBe(true);
+    expect(isAiSource("my-new-agent-mcp")).toBe(true);
     expect(isAiSource("tray")).toBe(false);
     expect(sourceDisplayName("claude-code")).toBe("Claude");
+    expect(sourceDisplayName("mimocode-mcp")).toBe("MiMoCode");
   });
 
   it("only notifies completion for AI sources or explicit notify", () => {
     expect(shouldNotifyState({ state: "success", source: "hud" })).toBe(false);
     expect(shouldNotifyState({ state: "failed", source: "tray" })).toBe(false);
     expect(shouldNotifyState({ state: "success", source: "codex-mcp" })).toBe(true);
+    expect(shouldNotifyState({ state: "success", source: "mimocode-mcp" })).toBe(true);
     expect(shouldNotifyState({ state: "failed", source: "local", notify: true })).toBe(true);
     expect(shouldNotifyState({ state: "reminder", source: "reminder" })).toBe(true);
   });

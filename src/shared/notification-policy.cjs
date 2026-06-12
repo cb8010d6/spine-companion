@@ -1,43 +1,8 @@
-const AI_SOURCE_PATTERNS = [
-  /^codex(?:-|$)/i,
-  /^claude(?:-|$)/i,
-  /^cursor(?:-|$)/i,
-  /^cline(?:-|$)/i,
-  /^roo(?:-|$)/i,
-  /^gemini(?:-|$)/i,
-  /^antigravity(?:-|$)/i,
-  /^local-ai(?:-|$)/i,
-  /(?:^|-)mcp$/i
-];
-
-const AI_SOURCE_LABELS = [
-  [/^codex/i, "Codex"],
-  [/^claude/i, "Claude"],
-  [/^cursor/i, "Cursor"],
-  [/^cline/i, "Cline"],
-  [/^roo/i, "Roo"],
-  [/^gemini/i, "Gemini"],
-  [/^antigravity/i, "Antigravity"],
-  [/^local-ai/i, "Local AI"]
-];
-
-function normalizeSource(source) {
-  return String(source || "").trim().toLowerCase();
-}
-
-function isAiSource(source) {
-  const normalized = normalizeSource(source);
-  return AI_SOURCE_PATTERNS.some((pattern) => pattern.test(normalized));
-}
-
-function sourceDisplayName(source) {
-  const normalized = normalizeSource(source);
-  for (const [pattern, label] of AI_SOURCE_LABELS) {
-    if (pattern.test(normalized)) return label;
-  }
-  if (isAiSource(normalized)) return "AI";
-  return source ? String(source) : "Local";
-}
+const {
+  isAiSource,
+  normalizeSource,
+  sourceDisplayName
+} = require("./source-registry.cjs");
 
 function isCompletionState(state) {
   const id = typeof state === "string" ? state : state?.state;

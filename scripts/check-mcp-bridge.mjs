@@ -16,7 +16,9 @@ const transport = new StdioClientTransport({
   cwd: process.cwd(),
   env: {
     ...process.env,
-    COMPANION_API: origin
+    COMPANION_API: origin,
+    COMPANION_SOURCE: "",
+    COMPANION_SOURCE_LABEL: ""
   },
   stderr: "pipe"
 });
@@ -27,7 +29,7 @@ try {
   await client.connect(transport);
   const tools = await client.listTools();
   const names = tools.tools.map((tool) => tool.name);
-  for (const expected of ["companion_get_state", "companion_set_state", "companion_reminder", "companion_report_codex_phase"]) {
+  for (const expected of ["companion_get_state", "companion_set_state", "companion_reminder", "companion_report_codex_phase", "companion_report_ai_phase"]) {
     if (!names.includes(expected)) throw new Error(`Missing MCP tool: ${expected}`);
   }
 
@@ -43,6 +45,18 @@ try {
   const state = api.store.snapshot();
   if (state.state !== "reviewing" || state.source !== "mcp-check") {
     throw new Error(`Unexpected companion state: ${JSON.stringify(state)}`);
+  }
+
+  await client.callTool({
+    name: "companion_report_codex_phase",
+    arguments: {
+      phase: "running"
+    }
+  });
+
+  const aliasState = api.store.snapshot();
+  if (aliasState.state !== "running" || aliasState.source !== "spine-companion-check-mcp") {
+    throw new Error(`Unexpected alias source: ${JSON.stringify(aliasState)}`);
   }
 
   console.log("MCP bridge check passed.");

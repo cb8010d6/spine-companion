@@ -2,9 +2,35 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import sourceRegistry from "../src/shared/source-registry.cjs";
 
 const apiBase = (process.env.COMPANION_API || "http://127.0.0.1:17388").replace(/\/$/, "");
 const states = ["idle", "working", "reviewing", "running", "success", "failed", "waiting", "sleeping", "reminder"];
+
+function configuredSource() {
+  const envSource = String(process.env.COMPANION_SOURCE || "").trim();
+  const envLabel = String(process.env.COMPANION_SOURCE_LABEL || "").trim();
+  if (envSource) {
+    return {
+      source: envSource,
+      sourceLabel: sourceRegistry.sourceDisplayName(envSource, envLabel)
+    };
+  }
+  const clientInfo = server.server.getClientVersion?.();
+  const clientSource = sourceRegistry.sourceFromClientInfo(clientInfo || {});
+  return {
+    source: clientSource || "ai-mcp",
+    sourceLabel: sourceRegistry.sourceDisplayName(clientSource || "ai-mcp")
+  };
+}
+
+function sourceForInput(input = {}) {
+  const configured = configuredSource();
+  return {
+    ...configured,
+    source: input.source || configured.source
+  };
+}
 
 async function apiJson(path, options = {}) {
   const response = await fetch(`${apiBase}${path}`, {
@@ -48,21 +74,22 @@ server.registerTool("companion_get_state", {
 
 server.registerTool("companion_set_state", {
   title: "Set companion state",
-  description: "Set the desktop Spine companion state so Codex can reflect current work status.",
+  description: "Set the desktop Spine companion state for an AI coding tool.",
   inputSchema: {
     state: z.enum(states),
-    source: z.string().default("codex"),
+    source: z.string().optional(),
     message: z.string().optional(),
     direction: z.enum(["left", "right"]).optional(),
     autoReturnMs: z.number().int().positive().optional(),
     returnTo: z.enum(states).optional()
   }
 }, async (input) => {
+  const resolved = sourceForInput(input);
   const state = await apiJson("/state", {
     method: "POST",
-    body: JSON.stringify(input)
+    body: JSON.stringify({ ...input, source: resolved.source })
   });
-  return textResult(state);
+  return textResult({ ...state, sourceLabel: resolved.sourceLabel });
 });
 
 server.registerTool("companion_reminder", {
@@ -86,12 +113,26 @@ server.registerTool("companion_reminder", {
 
 server.registerTool("companion_report_codex_phase", {
   title: "Report Codex phase",
-  description: "Map a Codex work phase to a companion state with sensible defaults.",
+  description: "Compatibility alias for older Codex instructions. Uses the configured MCP source.",
   inputSchema: {
     phase: z.enum(["thinking", "editing", "running", "reviewing", "succeeded", "failed", "waiting"]),
-    message: z.string().optional()
+    message: z.string().optional(),
+    source: z.string().optional()
   }
-}, async ({ phase, message }) => {
+}, reportPhase);
+
+server.registerTool("companion_report_ai_phase", {
+  title: "Report AI phase",
+  description: "Map an AI coding tool work phase to a companion state with sensible defaults.",
+  inputSchema: {
+    phase: z.enum(["thinking", "editing", "running", "reviewing", "succeeded", "failed", "waiting"]),
+    message: z.string().optional(),
+    source: z.string().optional()
+  }
+}, reportPhase);
+
+async function reportPhase({ phase, message, source }) {
+  const resolved = sourceForInput({ source });
   const map = {
     thinking: "working",
     editing: "working",
@@ -105,12 +146,12 @@ server.registerTool("companion_report_codex_phase", {
     method: "POST",
     body: JSON.stringify({
       state: map[phase],
-      source: "codex-mcp",
+      source: resolved.source,
       message: message || phase
     })
   });
-  return textResult(state);
-});
+  return textResult({ ...state, sourceLabel: resolved.sourceLabel });
+}
 
 const transport = new StdioServerTransport();
 await server.connect(transport);

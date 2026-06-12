@@ -35,7 +35,7 @@
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build",
+    "tauri:build": "bun scripts/tauri-build.cjs",
     "tauri:portable:assets": "bun scripts/package-tauri-portable.cjs"
   },
   "dependencies": {

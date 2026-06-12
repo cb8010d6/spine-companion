@@ -55,20 +55,28 @@ function appendBlock(file, marker, block) {
   return true;
 }
 
-function mcpJsonEntry() {
+function sourceEnv(source, label) {
   return {
-    command: runtime,
-    args: [mcpServer.replace(/\\/g, "/")],
-    env: { COMPANION_API: api }
+    COMPANION_API: api,
+    COMPANION_SOURCE: source,
+    COMPANION_SOURCE_LABEL: label
   };
 }
 
-function codexMcpBlock() {
+function mcpJsonEntry(source = "ai-mcp", label = "AI") {
+  return {
+    command: runtime,
+    args: [mcpServer.replace(/\\/g, "/")],
+    env: sourceEnv(source, label)
+  };
+}
+
+function codexMcpBlock(source = "codex-mcp", label = "Codex") {
   return `# Spine Companion local MCP bridge.
 [mcp_servers.spine_companion]
 command = "${runtime}"
 args = ["${mcpServer.replace(/\\/g, "/")}"]
-env = { COMPANION_API = "${api}" }`;
+env = { COMPANION_API = "${api}", COMPANION_SOURCE = "${source}", COMPANION_SOURCE_LABEL = "${label}" }`;
 }
 
 function upsertBlock(file, marker, block) {
@@ -103,7 +111,8 @@ When the spine_companion MCP tools are available, proactively report work phases
 - failed: blocker or failed completion.
 - waiting: waiting for user input or an external process.
 
-Use companion_report_codex_phase with a short message. If the MCP server is not
+Use companion_report_ai_phase with a short message. companion_report_codex_phase
+is a compatibility alias only. If the MCP server is not
 available but the local companion app is running, report the same phase with:
 \`bun ${reportScript.replace(/\\/g, "/")} <phase> "<short message>"\`. Continue the user task
 if status reporting is unavailable.`;
@@ -125,7 +134,7 @@ function installCursor() {
   const mcpPath = path.join(repoRoot, ".cursor", "mcp.json");
   const json = readJson(mcpPath);
   json.mcpServers = json.mcpServers || {};
-  json.mcpServers.spine_companion = mcpJsonEntry();
+  json.mcpServers.spine_companion = mcpJsonEntry("cursor-mcp", "Cursor");
   writeJson(mcpPath, json);
   const rulePath = path.join(repoRoot, ".cursor", "rules", "spine-companion-status.mdc");
   appendBlock(rulePath, "spine-companion-status", policy);
@@ -142,7 +151,7 @@ function installClaudeDesktop() {
   const configPath = path.join(base, "claude_desktop_config.json");
   const json = readJson(configPath);
   json.mcpServers = json.mcpServers || {};
-  json.mcpServers.spine_companion = mcpJsonEntry();
+  json.mcpServers.spine_companion = mcpJsonEntry("claude-mcp", "Claude");
   writeJson(configPath, json);
   console.log(`configured Claude Desktop: ${configPath}`);
 }
@@ -151,7 +160,7 @@ function installClaudeCode() {
   const mcpPath = path.join(repoRoot, ".mcp.json");
   const json = readJson(mcpPath);
   json.mcpServers = json.mcpServers || {};
-  json.mcpServers.spine_companion = mcpJsonEntry();
+  json.mcpServers.spine_companion = mcpJsonEntry("claude-code-mcp", "Claude Code");
   writeJson(mcpPath, json);
   const claudePath = path.join(repoRoot, "CLAUDE.md");
   appendBlock(claudePath, "spine-companion-status", policy);
@@ -164,7 +173,7 @@ function installClaudeCli() {
     type: "stdio",
     command: runtime,
     args: [mcpServer.replace(/\\/g, "/")],
-    env: { COMPANION_API: api }
+    env: sourceEnv("claude-cli-mcp", "Claude CLI")
   });
   try {
     childProcess.execFileSync("claude", ["mcp", "add-json", "spine_companion", payload, "--scope", "user"], {

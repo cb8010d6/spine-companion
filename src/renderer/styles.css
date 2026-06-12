@@ -69,6 +69,10 @@ canvas {
   filter: saturate(1.01);
 }
 
+.gpu-recovering canvas {
+  visibility: hidden;
+}
+
 .hud {
   position: absolute;
   left: 14px;

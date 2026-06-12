@@ -2,7 +2,7 @@
 
 [English](mcp-configs.md) | [简体中文](mcp-configs.zh-CN.md)
 
-当某个工具无法由脚本自动配置时，复制这些配置形状。
+当某个工具无法由 Manager > AI Integrations 自动配置时，复制这些配置形状。
 
 ## MCP server
 
@@ -10,10 +10,12 @@
 {
   "mcpServers": {
     "spine_companion": {
-      "command": "node",
-      "args": ["C:/path/to/spine-companion/scripts/mcp-companion-server.mjs"],
+      "command": "C:/Program Files/Spine Companion/spine-companion.exe",
+      "args": ["--mcp"],
       "env": {
-        "COMPANION_API": "http://127.0.0.1:17388"
+        "COMPANION_API": "http://127.0.0.1:17388",
+        "COMPANION_SOURCE": "my-tool-mcp",
+        "COMPANION_SOURCE_LABEL": "My Tool"
       }
     }
   }
@@ -24,9 +26,29 @@
 
 ```toml
 [mcp_servers.spine_companion]
-command = "node"
-args = ["C:/path/to/spine-companion/scripts/mcp-companion-server.mjs"]
-env = { COMPANION_API = "http://127.0.0.1:17388" }
+command = "C:/Program Files/Spine Companion/spine-companion.exe"
+args = ["--mcp"]
+env = { COMPANION_API = "http://127.0.0.1:17388", COMPANION_SOURCE = "codex-mcp", COMPANION_SOURCE_LABEL = "Codex" }
+```
+
+## OpenCode
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "spine_companion": {
+      "type": "local",
+      "command": ["C:/Program Files/Spine Companion/spine-companion.exe", "--mcp"],
+      "enabled": true,
+      "environment": {
+        "COMPANION_API": "http://127.0.0.1:17388",
+        "COMPANION_SOURCE": "opencode-mcp",
+        "COMPANION_SOURCE_LABEL": "OpenCode"
+      }
+    }
+  }
+}
 ```
 
 ## HTTP 兜底

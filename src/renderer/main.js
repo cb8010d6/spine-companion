@@ -70,6 +70,7 @@ let runtimeConfig = null;
 let providerErrorToastTimer = null;
 let onboardingDismissedForSession = false;
 let clickReturnTimer = 0;
+let gpuRecoveryInFlight = false;
 
 function applyUiSettings(settings = {}) {
   currentUiSettings = { ...currentUiSettings, ...settings };
@@ -407,10 +408,43 @@ function showErrorBoundary(error, config) {
   }));
 }
 
+async function recoverGpuRenderer(event = {}) {
+  if (gpuRecoveryInFlight || !runtimeConfig) return;
+  gpuRecoveryInFlight = true;
+  document.body.classList.add("gpu-recovering");
+  console.warn("[spine-companion] GPU renderer context reset; rebuilding Spine player", event);
+  updateBubble({
+    state: "waiting",
+    source: "renderer",
+    message: "Graphics renderer reset; reloading the model."
+  });
+  try {
+    await new Promise((resolve) => window.setTimeout(resolve, 120));
+    await loadPlayer(runtimeConfig);
+    await window.companion?.recoverGpuWindow?.({
+      reason: event?.reason || "renderer-rebuild"
+    });
+    player?.applyState(currentState, true);
+    updateHud(currentState);
+    updateBubble(currentState);
+  } catch (error) {
+    showErrorBoundary(error, runtimeConfig);
+  } finally {
+    gpuRecoveryInFlight = false;
+    document.body.classList.remove("gpu-recovering");
+    refreshMousePassthroughSoon();
+  }
+}
+
 async function loadPlayer(config) {
   player?.destroy();
   stage.replaceChildren();
   player = new SpinePlayer(stage, config);
+  player.onGpuContextLost = (event) => {
+    document.body.classList.add("gpu-recovering");
+    console.warn("[spine-companion] WebGL context lost", event);
+  };
+  player.onGpuRecoveryRequested = recoverGpuRenderer;
   await player.init();
   player.onAutoReturn = (state) => provider.setState({ state, source: "renderer" });
   player.onAnchorChange = (anchor) => {
