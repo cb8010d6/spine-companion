@@ -59,6 +59,7 @@ struct UiSettings {
     update_auto_check: bool,
     max_device_pixel_ratio: f64,
     hitbox_padding: f64,
+    gpu_mode: String,
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -77,6 +78,7 @@ struct UiSettingsPatch {
     update_auto_check: Option<bool>,
     max_device_pixel_ratio: Option<f64>,
     hitbox_padding: Option<f64>,
+    gpu_mode: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -186,7 +188,8 @@ fn fallback_config() -> serde_json::Value {
             "shortcutAccelerator": "CommandOrControl+Shift+S",
             "updateAutoCheck": true,
             "maxDevicePixelRatio": 2,
-            "hitboxPadding": 8
+            "hitboxPadding": 8,
+            "gpuMode": "hardware"
         },
         "models": {
             "catalog": [
@@ -444,6 +447,9 @@ fn ui_settings_from_config(config: &serde_json::Value) -> UiSettings {
     let shortcut = string_at(config, &["ui", "shortcutAccelerator"])
         .unwrap_or("CommandOrControl+Shift+S")
         .to_string();
+    let gpu_mode = string_at(config, &["ui", "gpuMode"])
+        .unwrap_or("hardware")
+        .to_string();
     UiSettings {
         hud_visible: bool_at(config, &["ui", "hudVisible"], false),
         bubble_visible: bool_at(config, &["ui", "bubbleVisible"], true),
@@ -462,6 +468,7 @@ fn ui_settings_from_config(config: &serde_json::Value) -> UiSettings {
         update_auto_check: bool_at(config, &["ui", "updateAutoCheck"], true),
         max_device_pixel_ratio: f64_at(config, &["ui", "maxDevicePixelRatio"], 2.0).clamp(1.0, 3.0),
         hitbox_padding: f64_at(config, &["ui", "hitboxPadding"], 8.0).clamp(0.0, 48.0),
+        gpu_mode: normalize_gpu_mode(&gpu_mode),
     }
 }
 
@@ -479,6 +486,36 @@ fn normalize_drag_mode(value: &str) -> String {
         "compatible".to_string()
     }
 }
+
+fn normalize_gpu_mode(value: &str) -> String {
+    if value == "software" {
+        "software".to_string()
+    } else {
+        "hardware".to_string()
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn configure_webview_gpu_mode(settings: &UiSettings) {
+    if settings.gpu_mode != "software" {
+        return;
+    }
+    let flag = "--disable-gpu";
+    let existing = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").unwrap_or_default();
+    if existing.split_whitespace().any(|arg| arg == flag) {
+        return;
+    }
+    let next = if existing.trim().is_empty() {
+        flag.to_string()
+    } else {
+        format!("{} {}", existing.trim(), flag)
+    };
+    std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", next);
+    eprintln!("Spine Companion: WebView2 GPU acceleration disabled by user setting.");
+}
+
+#[cfg(not(target_os = "windows"))]
+fn configure_webview_gpu_mode(_settings: &UiSettings) {}
 
 fn apply_ui_patch(settings: &mut UiSettings, patch: UiSettingsPatch) {
     if let Some(value) = patch.hud_visible {
@@ -521,6 +558,9 @@ fn apply_ui_patch(settings: &mut UiSettings, patch: UiSettingsPatch) {
     }
     if let Some(value) = patch.hitbox_padding {
         settings.hitbox_padding = value.clamp(0.0, 48.0);
+    }
+    if let Some(value) = patch.gpu_mode {
+        settings.gpu_mode = normalize_gpu_mode(&value);
     }
 }
 
@@ -1333,6 +1373,20 @@ async fn get_diagnostics(data: State<'_, AppData>) -> Result<serde_json::Value, 
         })
         .collect::<Vec<_>>();
     let mcp_configured = ai_integrations.iter().any(|item| item.configured);
+    let ui = current_ui_settings(&data);
+    let gpu_mode = ui.gpu_mode.clone();
+    let gpu_effective = if cfg!(target_os = "windows") {
+        gpu_mode.clone()
+    } else {
+        "platform-default".to_string()
+    };
+    let gpu_message = if cfg!(target_os = "windows") && gpu_mode == "software" {
+        "WebView2 starts with --disable-gpu after app restart."
+    } else if cfg!(target_os = "windows") {
+        "WebView2 uses hardware acceleration."
+    } else {
+        "GPU mode is only applied on Windows WebView2."
+    };
 
     Ok(serde_json::json!({
         "apiOk": state_ok,
@@ -1345,10 +1399,16 @@ async fn get_diagnostics(data: State<'_, AppData>) -> Result<serde_json::Value, 
         "modelRecovery": recovery,
         "logsDir": data.config_dir.join("logs").to_string_lossy().to_string(),
         "shortcut": {
-            "enabled": current_ui_settings(&data).shortcut_enabled,
+            "enabled": ui.shortcut_enabled,
             "registered": false,
-            "accelerator": current_ui_settings(&data).shortcut_accelerator,
+            "accelerator": ui.shortcut_accelerator,
             "error": "Global shortcuts are not implemented in the Tauri runtime yet."
+        },
+        "gpu": {
+            "mode": gpu_mode,
+            "effective": gpu_effective,
+            "requiresRestart": true,
+            "message": gpu_message
         },
         "runtime": {
             "name": "tauri",
@@ -2355,6 +2415,7 @@ pub fn run() {
     }
 
     let runtime_config = load_runtime_config();
+    configure_webview_gpu_mode(&runtime_config.ui_settings);
     let (store, tx) = create_state_store(&runtime_config.initial_state);
     let reminders = create_reminder_store();
     let reminder_tx = create_reminder_broadcast();
@@ -2812,6 +2873,26 @@ mod tests {
         assert_eq!(compare_versions("0.2.3-alpha.2", "0.2.3-alpha.1"), 1);
         assert_eq!(compare_versions("0.2.3-alpha.1", "0.2.2"), 1);
         assert_eq!(compare_versions("0.2.3", "0.2.3-alpha.2"), 1);
+    }
+
+    #[test]
+    fn gpu_mode_defaults_to_hardware_and_allows_software() {
+        let defaults = ui_settings_from_config(&fallback_config());
+        assert_eq!(defaults.gpu_mode, "hardware");
+
+        let config = serde_json::json!({
+            "ui": {
+                "gpuMode": "software"
+            }
+        });
+        assert_eq!(ui_settings_from_config(&config).gpu_mode, "software");
+
+        let invalid = serde_json::json!({
+            "ui": {
+                "gpuMode": "auto"
+            }
+        });
+        assert_eq!(ui_settings_from_config(&invalid).gpu_mode, "hardware");
     }
 
     #[test]

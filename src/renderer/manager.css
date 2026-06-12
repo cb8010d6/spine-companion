@@ -415,6 +415,14 @@ input[type="range"] {
   cursor: pointer;
 }
 
+.checkbox-label small {
+  display: block;
+  margin-top: 3px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
 input[type="checkbox"] {
   accent-color: var(--accent);
 }

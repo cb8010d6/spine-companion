@@ -362,7 +362,7 @@ function settingsView() {
   const resetExperience = async () => {
     await window.companion?.saveSettings?.({
       spine: { scale: 0.86, offsetX: 0, offsetY: -18 },
-      ui: { maxDevicePixelRatio: 2, hitboxPadding: 8 }
+      ui: { maxDevicePixelRatio: 2, hitboxPadding: 8, gpuMode: "hardware" }
     });
     await refreshConfig();
     showToast(t("manager.status.settingsSaved"));
@@ -402,6 +402,10 @@ function settingsView() {
         })),
         rangeNumber(t("manager.field.maxDpr"), "set-max-dpr", Number(ui.maxDevicePixelRatio || 2), 1, 3, 0.25, () => saveUi({ maxDevicePixelRatio: numeric("set-max-dpr-number") })),
         rangeNumber(t("manager.field.hitboxPadding"), "set-hitbox-padding", Number(ui.hitboxPadding || 8), 0, 48, 1, () => saveUi({ hitboxPadding: numeric("set-hitbox-padding-number") })),
+        check(t("manager.field.hardwareAcceleration"), (ui.gpuMode || "hardware") !== "software", (checked) => {
+          saveUi({ gpuMode: checked ? "hardware" : "software" });
+          showToast(t("manager.status.restartRequired"));
+        }, t("manager.hint.hardwareAcceleration")),
         check(t("manager.field.bubbleShadow"), ui.bubbleShadow !== false, (checked) => saveUi({ bubbleShadow: checked })),
         field(t("manager.field.bubbleTheme"), h("select", { class: "select", value: ui.bubbleBackground || "solid", onChange: (e) => saveUi({ bubbleBackground: e.target.value }) },
           ["solid", "soft", "clear", "light"].map((value) => h("option", { value, selected: (ui.bubbleBackground || "solid") === value }, value))
@@ -459,10 +463,13 @@ function field(label, control) {
   return h("label", { class: "form-group" }, h("span", {}, label), control);
 }
 
-function check(label, checked, onChange) {
+function check(label, checked, onChange, hint = "") {
   return h("label", { class: "checkbox-label" },
     h("input", { type: "checkbox", checked, onChange: (e) => onChange(e.target.checked) }),
-    h("span", {}, label)
+    h("span", {},
+      label,
+      hint ? h("small", {}, hint) : null
+    )
   );
 }
 
@@ -591,6 +598,7 @@ async function diagnosticsView() {
           diagnostics.shortcut?.enabled === false
             ? t("manager.status.disabled")
             : diagnostics.shortcut?.error || diagnostics.shortcut?.accelerator),
+        diagnostics.gpu ? row(t("manager.diagnostics.gpu"), true, diagnostics.gpu.message || diagnostics.gpu.mode) : null,
         row(t("manager.diagnostics.runtime"), !isTauri(), isTauri() ? t("manager.status.tauriExperimental") : "Electron"),
         h("div", { class: "model-actions" },
           h("button", { class: "btn", type: "button", onClick: () => window.companion?.openFolder?.(config.paths?.configDir) }, t("manager.actions.openConfigFolder")),
