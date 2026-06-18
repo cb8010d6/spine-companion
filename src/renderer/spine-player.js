@@ -458,14 +458,14 @@ export class SpinePlayer {
 
   getInteractiveBounds() {
     if (!this.model || !this.spine) return null;
-    const sourceBounds = this.spine.getLocalBounds?.() || this.stableBounds;
+    const sourceBounds = this.stableBounds || this.spine.getLocalBounds?.();
     if (!sourceBounds) return null;
     const width = Math.max(1, sourceBounds.width * this.screenScale);
     const height = Math.max(1, sourceBounds.height * this.screenScale);
     const zoomRange = Math.max(0.01, this.maxUserScale - this.minUserScale);
     const zoomRatio = Math.max(0, Math.min(1, (this.userScale - this.minUserScale) / zoomRange));
-    const hitWidth = width * (0.2 + zoomRatio * 0.2);
-    const hitHeight = height * (0.26 + zoomRatio * 0.22);
+    const hitWidth = Math.min(width * 0.62, Math.max(36, width * (0.28 + zoomRatio * 0.18)));
+    const hitHeight = Math.min(height * 0.66, Math.max(58, height * (0.38 + zoomRatio * 0.18)));
     const scaledPadding = Math.min(this.hitboxPadding * 0.75, Math.max(2, this.hitboxPadding * this.userScale * 0.65));
     const bottom = this.model.y - height * 0.035;
     return {
@@ -473,6 +473,18 @@ export class SpinePlayer {
       right: this.model.x + hitWidth / 2 + scaledPadding,
       top: bottom - hitHeight - scaledPadding,
       bottom: bottom + scaledPadding
+    };
+  }
+
+  getPointerRecoveryBounds() {
+    const bounds = this.getInteractiveBounds();
+    if (!bounds) return null;
+    const recoveryPadding = Math.max(10, Math.min(24, 8 + this.hitboxPadding * 0.75));
+    return {
+      left: bounds.left - recoveryPadding,
+      right: bounds.right + recoveryPadding,
+      top: bounds.top - recoveryPadding,
+      bottom: bounds.bottom + recoveryPadding
     };
   }
 

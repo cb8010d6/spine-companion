@@ -10,7 +10,10 @@ use state::{
     ReminderBroadcast, ReminderStore, SetStateInput, StateBroadcast, StateStore,
 };
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc, Mutex,
+};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
@@ -33,6 +36,7 @@ struct AppData {
     asset_root: server::AssetRootStore,
     history: Arc<Mutex<Vec<CompanionState>>>,
     drag_state: Arc<Mutex<Option<DragState>>>,
+    passthrough_generation: Arc<AtomicU64>,
 }
 
 #[derive(Clone, Debug)]
@@ -1863,9 +1867,11 @@ async fn end_drag(data: State<'_, AppData>) -> Result<(), String> {
 #[tauri::command]
 async fn set_mouse_passthrough(
     window: tauri::Window,
+    data: State<'_, AppData>,
     enabled: bool,
     bounds: Option<PointerBounds>,
 ) -> Result<(), String> {
+    let generation = data.passthrough_generation.fetch_add(1, Ordering::SeqCst) + 1;
     window
         .set_ignore_cursor_events(enabled)
         .map_err(|e| e.to_string())?;
@@ -1874,29 +1880,41 @@ async fn set_mouse_passthrough(
         {
             if let Some(bounds) = bounds {
                 let recover_window = window.clone();
+                let generation_ref = data.passthrough_generation.clone();
                 tauri::async_runtime::spawn(async move {
-                    for _ in 0..900 {
-                        tokio::time::sleep(Duration::from_millis(80)).await;
+                    for _ in 0..2400 {
+                        tokio::time::sleep(Duration::from_millis(16)).await;
+                        if generation_ref.load(Ordering::SeqCst) != generation {
+                            break;
+                        }
                         if cursor_inside_pointer_bounds(&recover_window, &bounds) {
-                            let _ = recover_window.set_ignore_cursor_events(false);
+                            if generation_ref.load(Ordering::SeqCst) == generation {
+                                let _ = recover_window.set_ignore_cursor_events(false);
+                            }
                             break;
                         }
                     }
                 });
             } else {
                 let recover_window = window.clone();
+                let generation_ref = data.passthrough_generation.clone();
                 tauri::async_runtime::spawn(async move {
-                    tokio::time::sleep(Duration::from_millis(360)).await;
-                    let _ = recover_window.set_ignore_cursor_events(false);
+                    tokio::time::sleep(Duration::from_millis(160)).await;
+                    if generation_ref.load(Ordering::SeqCst) == generation {
+                        let _ = recover_window.set_ignore_cursor_events(false);
+                    }
                 });
             }
         }
         #[cfg(not(target_os = "windows"))]
         {
             let recover_window = window.clone();
+            let generation_ref = data.passthrough_generation.clone();
             tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(Duration::from_millis(360)).await;
-                let _ = recover_window.set_ignore_cursor_events(false);
+                tokio::time::sleep(Duration::from_millis(160)).await;
+                if generation_ref.load(Ordering::SeqCst) == generation {
+                    let _ = recover_window.set_ignore_cursor_events(false);
+                }
             });
         }
     }
@@ -2454,6 +2472,7 @@ pub fn run() {
             asset_root: asset_root_store.clone(),
             history: history_store.clone(),
             drag_state: Arc::new(Mutex::new(None)),
+            passthrough_generation: Arc::new(AtomicU64::new(0)),
         })
         .setup(move |app| {
             // Bind the local API server before the hidden window is revealed.

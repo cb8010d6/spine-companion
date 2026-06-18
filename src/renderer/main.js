@@ -188,7 +188,10 @@ function elementContainsPoint(element, x, y) {
 function setMousePassthrough(enabled, force = false) {
   if (!window.companion?.setMousePassthrough || (!force && mousePassthrough === enabled)) return;
   mousePassthrough = enabled;
-  window.companion.setMousePassthrough(enabled, player?.getInteractiveBounds?.());
+  const pointerBounds = enabled
+    ? player?.getPointerRecoveryBounds?.() || player?.getInteractiveBounds?.()
+    : player?.getInteractiveBounds?.();
+  window.companion.setMousePassthrough(enabled, pointerBounds);
 }
 
 function refreshMousePassthroughSoon() {
