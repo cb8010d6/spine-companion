@@ -19,7 +19,7 @@ describe("modelPreview", () => {
       server: { origin: "http://127.0.0.1:17388" },
       spine: {
         skel: "build_char_1001_amiya2_sale#16.skel",
-        assetDir: "C:/Users/INDEX/AppData/Roaming/spine-companion/models/ark-1001-amiya2-sale-16"
+        assetDir: "C:/example/spine-companion/models/ark-1001-amiya2-sale-16"
       }
     });
 

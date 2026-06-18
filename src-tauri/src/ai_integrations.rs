@@ -242,13 +242,31 @@ fn definitions(env: &IntegrationEnv) -> Vec<IntegrationDefinition> {
             source_label: "OpenCode",
             format: IntegrationFormat::OpenCodeJson,
             config_paths: vec![
-                env.config_home.join("opencode").join("opencode.json"),
-                env.config_home.join("opencode").join("opencode.jsonc"),
+                env.home
+                    .join(".config")
+                    .join("opencode")
+                    .join("opencode.jsonc"),
+                env.home
+                    .join(".config")
+                    .join("opencode")
+                    .join("opencode.json"),
+                env.home
+                    .join(".config")
+                    .join("opencode")
+                    .join("config.json"),
                 env.home.join(".opencode.json"),
+                env.config_home.join("opencode").join("opencode.jsonc"),
+                env.config_home.join("opencode").join("opencode.json"),
                 env.local_appdata.join("opencode").join(".opencode.json"),
-                env.home.join(".config").join("opencode").join("opencode.json"),
             ],
-            app_probes: vec![env.config_home.join("opencode")],
+            app_probes: vec![
+                env.home.join(".config").join("opencode"),
+                env.config_home.join("opencode"),
+                env.appdata.join("ai.opencode.desktop"),
+                env.local_appdata
+                    .join("Programs")
+                    .join("@opencode-aidesktop"),
+            ],
             note: "Writes opencode.json under the official mcp field.",
         },
         IntegrationDefinition {
@@ -327,13 +345,18 @@ fn integration_from_def(def: &IntegrationDefinition) -> AiIntegration {
         .map(|path| path.exists() && is_configured(path))
         .unwrap_or(false);
     let installed = config_found || def.app_probes.iter().any(|path| path.exists());
+    let display_config_path = if installed || config_found || configured {
+        config_path.clone()
+    } else {
+        None
+    };
     let supported = def.format != IntegrationFormat::TemplateOnly || def.id == "custom";
     AiIntegration {
         id: def.id.to_string(),
         name: def.name.to_string(),
         source: def.source.to_string(),
         source_label: def.source_label.to_string(),
-        config_path: config_path
+        config_path: display_config_path
             .as_ref()
             .map(|path| path.to_string_lossy().to_string())
             .unwrap_or_default(),
@@ -797,6 +820,43 @@ mod tests {
             value["mcp"]["spine_companion"]["environment"]["COMPANION_SOURCE"],
             "opencode-mcp"
         );
+    }
+
+    #[test]
+    fn opencode_prefers_config_dir_jsonc_over_legacy_appdata_path() {
+        let root = temp_root("opencode-paths");
+        let env = fixture_env(&root);
+        let opencode_jsonc = env
+            .home
+            .join(".config")
+            .join("opencode")
+            .join("opencode.jsonc");
+        let legacy = env.config_home.join("opencode").join("opencode.json");
+        fs::create_dir_all(opencode_jsonc.parent().unwrap()).unwrap();
+        fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        fs::write(&opencode_jsonc, "{}").unwrap();
+        fs::write(&legacy, "{\"mcp\":{\"spine_companion\":{}}}").unwrap();
+
+        let def = definitions(&env)
+            .into_iter()
+            .find(|def| def.id == "opencode")
+            .unwrap();
+        assert_eq!(selected_config_path(&def), Some(opencode_jsonc));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn undetected_integration_does_not_expose_candidate_config_path() {
+        let root = temp_root("hidden-candidate");
+        let env = fixture_env(&root);
+        let items = list_ai_integrations_with_env(&env);
+        let claude = items
+            .iter()
+            .find(|item| item.id == "claude-desktop")
+            .unwrap();
+        assert_eq!(claude.status, "Not detected");
+        assert_eq!(claude.config_path, "");
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

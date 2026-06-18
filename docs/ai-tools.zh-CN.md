@@ -36,7 +36,11 @@ Gemini / Antigravity、OpenCode、MiMoCode。MiMoCode 缺少公开 MCP 配置文
 }
 ```
 
-OpenCode 使用官方的 `mcp` 配置形态，`command` 是数组：
+OpenCode 使用官方的 `mcp` 配置形态，`command` 是数组。
+
+在 Windows 上，OpenCode Desktop 1.17.x 实际读取
+`%USERPROFILE%\.config\opencode\opencode.json` 或 `opencode.jsonc`；
+桌面版不要写到 `%APPDATA%\opencode\opencode.json`：
 
 ```json
 {
@@ -88,3 +92,6 @@ curl -X POST http://127.0.0.1:17388/state \
 
 MCP 本身不会自动推送状态。AI 工具必须有指令，在工作阶段主动调用
 `companion_report_ai_phase`。`companion_report_codex_phase` 仍保留为旧 Codex 指令的兼容别名。
+
+对 GitHub Copilot / VS Code，仓库级 `.github/copilot-instructions.md`
+通常是让 agent 主动调用 MCP 工具的最可靠方式。
