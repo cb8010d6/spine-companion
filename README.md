@@ -2,11 +2,13 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-Open-source desktop companion MVP for Spine 3.8 models. It uses Electron,
-`pixi.js@6.5.10`, and `pixi-spine@3.1.2` to render `.skel/.atlas/.png` directly
-with transparent background, always-on-top window behavior, dragging, scaling,
-click interaction, state transitions, a local status API, MCP bridge, progress
-bubble, tray controls, simple reminders, and a tool-like Manager window.
+Open-source desktop companion MVP for Spine 3.8 models. The current runtime focus
+is Tauri, with the legacy Electron path still present for compatibility. The
+renderer uses `pixi.js@6.5.10` and `pixi-spine@3.1.2` to render
+`.skel/.atlas/.png` directly with transparent background, always-on-top window
+behavior, dragging, scaling, click interaction, state transitions, a local status
+API, MCP bridge, progress bubble, tray controls, simple reminders, and a
+tool-like Manager window.
 
 ## Asset Policy
 
@@ -58,6 +60,8 @@ bun run tauri:dev
 For detailed deployment, startup, MCP, and troubleshooting steps, see
 [docs/deployment.md](docs/deployment.md). For a UI-focused walkthrough, see
 [docs/user-guide.md](docs/user-guide.md).
+The planned AI-assisted character workflow is documented in
+[docs/avatar-studio.md](docs/avatar-studio.md).
 
 The renderer preview is available at:
 
@@ -192,8 +196,8 @@ The MCP bridge only works while the companion app or local API is running. Run
 `bun run mcp:install:codex`, restart Codex, and check Manager > Diagnostics.
 
 **Which runtime should I use?**
-Electron is currently the most complete daily-use runtime. Tauri builds are
-included and improving, but some platform behavior still needs broader testing.
+Use the Tauri release build for current testing. The Electron path remains in
+the repository for compatibility, but new user-facing features target Tauri.
 
 ## Open-Source Notes
 
