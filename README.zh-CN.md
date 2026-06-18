@@ -2,10 +2,11 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-Spine Companion 是一个开源桌面陪伴应用 MVP，面向 Spine 3.8 模型。它基于
-Electron、`pixi.js@6.5.10` 和 `pixi-spine@3.1.2`，可以直接渲染
-`.skel/.atlas/.png`，并提供透明背景、窗口置顶、拖拽、缩放、点击互动、状态切换、
-本地状态 API、MCP 桥接、进度气泡、托盘控制、简单提醒和工具化的 Manager 窗口。
+Spine Companion 是一个开源桌面陪伴应用 MVP，面向 Spine 3.8 模型。当前运行时重点是
+Tauri，旧 Electron 路径仍保留用于兼容。渲染器基于 `pixi.js@6.5.10` 和
+`pixi-spine@3.1.2`，可以直接渲染 `.skel/.atlas/.png`，并提供透明背景、窗口置顶、
+拖拽、缩放、点击互动、状态切换、本地状态 API、MCP 桥接、进度气泡、托盘控制、
+简单提醒和工具化的 Manager 窗口。
 
 ## 素材策略
 
@@ -55,6 +56,7 @@ bun run tauri:dev
 
 部署、启动、MCP 和排障步骤见 [docs/deployment.zh-CN.md](docs/deployment.zh-CN.md)。
 偏 UI 的使用说明见 [docs/user-guide.zh-CN.md](docs/user-guide.zh-CN.md)。
+计划中的 AI 辅助形象制作流程见 [docs/avatar-studio.zh-CN.md](docs/avatar-studio.zh-CN.md)。
 
 渲染器预览地址：
 
@@ -180,8 +182,8 @@ MCP bridge 只有在 companion 应用或本地 API 运行时才可用。运行
 `bun run mcp:install:codex`，重启 Codex，然后检查 Manager > Diagnostics。
 
 **应该使用哪个 runtime？**
-Electron 目前是日常使用最完整的 runtime。Tauri 构建已经包含在仓库中并持续改进，但部分
-平台行为仍需要更多测试。
+当前测试请优先使用 Tauri release 构建。Electron 路径仍保留在仓库中用于兼容，但新的
+用户可见功能会优先面向 Tauri。
 
 ## 开源说明
 
