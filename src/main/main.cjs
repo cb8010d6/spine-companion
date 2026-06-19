@@ -638,6 +638,8 @@ async function openPanel(bounds) {
       transparent: true,
       hasShadow: true,
       resizable: false,
+      maximizable: false,
+      fullscreenable: false,
       alwaysOnTop: true,
       skipTaskbar: true,
       show: false,

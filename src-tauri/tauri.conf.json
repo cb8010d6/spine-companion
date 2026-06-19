@@ -23,7 +23,10 @@
         "alwaysOnTop": true,
         "skipTaskbar": false,
         "visible": false,
-        "shadow": false
+        "shadow": false,
+        "resizable": false,
+        "maximizable": false,
+        "fullscreen": false
       },
       {
         "label": "manager",
