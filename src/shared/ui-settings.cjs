@@ -11,7 +11,8 @@ const DEFAULT_UI_SETTINGS = Object.freeze({
   shortcutAccelerator: "CommandOrControl+Shift+S",
   updateAutoCheck: true,
   maxDevicePixelRatio: 2,
-  hitboxPadding: 8
+  hitboxPadding: 8,
+  debugHitbox: false
 });
 
 const BUBBLE_BACKGROUNDS = new Set(["solid", "soft", "clear", "light"]);
@@ -42,7 +43,8 @@ function normalizeUiSettings(input = {}, defaults = DEFAULT_UI_SETTINGS) {
       : defaults.maxDevicePixelRatio,
     hitboxPadding: Number.isFinite(Number(source.hitboxPadding))
       ? Math.min(48, Math.max(0, Number(source.hitboxPadding)))
-      : defaults.hitboxPadding
+      : defaults.hitboxPadding,
+    debugHitbox: typeof source.debugHitbox === "boolean" ? source.debugHitbox : defaults.debugHitbox
   };
 }
 
@@ -69,6 +71,7 @@ function applyUiSettingsPatch(current = DEFAULT_UI_SETTINGS, patch = {}) {
   if (Number.isFinite(Number(patch.hitboxPadding))) {
     next.hitboxPadding = Math.min(48, Math.max(0, Number(patch.hitboxPadding)));
   }
+  if (typeof patch.debugHitbox === "boolean") next.debugHitbox = patch.debugHitbox;
   return normalizeUiSettings(next, current);
 }
 

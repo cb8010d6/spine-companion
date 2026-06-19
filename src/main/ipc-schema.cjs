@@ -47,6 +47,7 @@ const uiSettingsSchema = z.object({
   maxDevicePixelRatio: z.number().min(1).max(3).optional(),
   hitboxPadding: z.number().min(0).max(48).optional(),
   gpuMode: z.enum(["hardware", "software"]).optional(),
+  debugHitbox: z.boolean().optional(),
   theme: z.enum(["dark", "light"]).optional(),
   locale: z.enum(["auto", "en", "zh-CN"]).optional()
 }).passthrough();

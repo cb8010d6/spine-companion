@@ -43,7 +43,7 @@
     "review": {
       "from": 2.6,
       "to": 4.35,
-      "loop": false
+      "loop": true
     },
     "success": {
       "from": 4.4,

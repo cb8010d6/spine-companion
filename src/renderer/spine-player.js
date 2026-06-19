@@ -35,6 +35,8 @@ export class SpinePlayer {
     this.handleWheel = null;
     this.handleContextLost = null;
     this.handleContextRestored = null;
+    this.lastFrameAt = 0;
+    this.frameTicker = null;
     this.hitboxPadding = Number.isFinite(Number(config.ui?.hitboxPadding))
       ? Math.min(48, Math.max(0, Number(config.ui.hitboxPadding)))
       : 8;
@@ -56,6 +58,10 @@ export class SpinePlayer {
       resolution: Math.min(window.devicePixelRatio || 1, dprLimit)
     });
     this.stageElement.appendChild(this.app.view);
+    this.frameTicker = () => {
+      this.lastFrameAt = Date.now();
+    };
+    this.app.ticker.add(this.frameTicker);
     this.configureTransparentRenderer();
     this.bindContextRecovery();
     this.model = new PIXI.Container();
@@ -458,16 +464,19 @@ export class SpinePlayer {
 
   getInteractiveBounds() {
     if (!this.model || !this.spine) return null;
-    const sourceBounds = this.stableBounds || this.spine.getLocalBounds?.();
+    const liveBounds = this.spine.getLocalBounds?.();
+    const sourceBounds = liveBounds && liveBounds.width > 1 && liveBounds.height > 1
+      ? liveBounds
+      : this.stableBounds;
     if (!sourceBounds) return null;
     const width = Math.max(1, sourceBounds.width * this.screenScale);
     const height = Math.max(1, sourceBounds.height * this.screenScale);
     const zoomRange = Math.max(0.01, this.maxUserScale - this.minUserScale);
     const zoomRatio = Math.max(0, Math.min(1, (this.userScale - this.minUserScale) / zoomRange));
-    const hitWidth = Math.min(width * 0.62, Math.max(36, width * (0.28 + zoomRatio * 0.18)));
-    const hitHeight = Math.min(height * 0.66, Math.max(58, height * (0.38 + zoomRatio * 0.18)));
+    const hitWidth = Math.min(width * 0.58, Math.max(34, width * (0.24 + zoomRatio * 0.16)));
+    const hitHeight = Math.min(height * 0.58, Math.max(54, height * (0.34 + zoomRatio * 0.16)));
     const scaledPadding = Math.min(this.hitboxPadding * 0.75, Math.max(2, this.hitboxPadding * this.userScale * 0.65));
-    const bottom = this.model.y - height * 0.035;
+    const bottom = this.model.y - height * 0.045;
     return {
       left: this.model.x - hitWidth / 2 - scaledPadding,
       right: this.model.x + hitWidth / 2 + scaledPadding,
@@ -488,6 +497,26 @@ export class SpinePlayer {
     };
   }
 
+  getRendererHealth() {
+    const view = this.app?.view;
+    const gl = this.app?.renderer?.gl;
+    const contextLost = typeof gl?.isContextLost === "function" ? gl.isContextLost() : false;
+    return {
+      status: contextLost ? "context-lost" : "ok",
+      canvasWidth: Number(view?.width || 0),
+      canvasHeight: Number(view?.height || 0),
+      clientWidth: Number(view?.clientWidth || 0),
+      clientHeight: Number(view?.clientHeight || 0),
+      lastFrameAt: this.lastFrameAt,
+      contextLost,
+      hasModel: Boolean(this.spine),
+      screenScale: this.screenScale,
+      userScale: this.userScale,
+      interactiveBounds: this.getInteractiveBounds(),
+      recoveryBounds: this.getPointerRecoveryBounds()
+    };
+  }
+
   destroy() {
     window.clearTimeout(this.returnTimer);
     window.clearTimeout(this.resizeTimer);
@@ -500,6 +529,7 @@ export class SpinePlayer {
     if (this.app?.view && this.handleContextRestored) {
       this.app.view.removeEventListener("webglcontextrestored", this.handleContextRestored, false);
     }
+    if (this.app && this.frameTicker) this.app.ticker.remove(this.frameTicker);
     if (this.app) this.app.destroy(true, { children: true, texture: false, baseTexture: false });
   }
 }
