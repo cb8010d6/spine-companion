@@ -365,7 +365,7 @@ button:disabled {
   align-items: center;
 }
 
-input[type="number"], select {
+input[type="number"], select, .input {
   width: 120px;
   background: var(--bg);
   border: 1px solid var(--border);
@@ -561,4 +561,16 @@ input[type="checkbox"] {
   font-size: 11px;
   line-height: 1.4;
   overflow-wrap: anywhere;
+}
+
+.custom-integration-form {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.custom-integration-form .input {
+  width: 100%;
+  min-width: 0;
 }

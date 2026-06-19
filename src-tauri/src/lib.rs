@@ -1865,6 +1865,23 @@ fn copy_ai_integration_template(
 }
 
 #[tauri::command]
+fn copy_custom_ai_integration_template(
+    data: State<'_, AppData>,
+    input: ai_integrations::CustomIntegrationInput,
+) -> Result<String, String> {
+    let exe = current_mcp_exe_path()?;
+    let api = companion_api_origin_from_data(&data);
+    Ok(ai_integrations::templates_for_custom_input(&exe, &api, input))
+}
+
+#[tauri::command]
+fn generate_ai_integration_instructions(
+    tool_id: String,
+) -> Result<ai_integrations::AgentInstructions, String> {
+    ai_integrations::generate_agent_instructions(&tool_id)
+}
+
+#[tauri::command]
 fn test_ai_integration(
     data: State<'_, AppData>,
     tool_id: String,
@@ -3061,6 +3078,8 @@ pub fn run() {
             configure_ai_integration,
             open_ai_integration_config,
             copy_ai_integration_template,
+            copy_custom_ai_integration_template,
+            generate_ai_integration_instructions,
             test_ai_integration,
             remove_model,
             open_folder,

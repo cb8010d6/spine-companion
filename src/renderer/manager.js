@@ -480,6 +480,11 @@ function integrationStatusBadges(item) {
   if (item.configFound) badges.push(badge(t("manager.integrations.configFound"), ""));
   if (item.configured) badges.push(badge(t("manager.integrations.configured"), "badge-success"));
   if (item.needsRestart) badges.push(badge(t("manager.integrations.needsRestart"), "badge-warning"));
+  if (item.configFormat !== "templateOnly" && item.instructionsFound) {
+    badges.push(badge(t("manager.integrations.instructionsFound"), "badge-success"));
+  } else if (item.configFormat !== "templateOnly" && item.configured) {
+    badges.push(badge(t("manager.integrations.instructionsMissing"), "badge-warning"));
+  }
   if (item.configFormat === "templateOnly") badges.push(badge(t("manager.integrations.templateOnly"), ""));
   if (!badges.length) badges.push(badge(t("manager.integrations.notDetected"), ""));
   return badges;
@@ -506,6 +511,34 @@ async function copyIntegrationTemplate(id = null) {
   const text = await window.companion?.copyAiIntegrationTemplate?.(id);
   await copyText(text || "");
   showToast(t("manager.status.templateCopied"));
+}
+
+async function generateCustomTemplate(form) {
+  const text = await window.companion?.copyCustomAiIntegrationTemplate?.({
+    toolName: form.querySelector("[name=toolName]")?.value || "",
+    source: form.querySelector("[name=source]")?.value || "",
+    sourceLabel: form.querySelector("[name=sourceLabel]")?.value || ""
+  });
+  await copyText(text || "");
+  showToast(t("manager.status.templateCopied"));
+}
+
+async function showAgentInstructions(id) {
+  try {
+    const result = await window.companion?.generateAiIntegrationInstructions?.(id);
+    const pathLine = result?.targetPath ? `${t("manager.integrations.instructions")}: ${result.targetPath}\n\n` : "";
+    showModal(result?.title || t("manager.actions.agentInstructions"), `${pathLine}${result?.body || ""}`, [
+      h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.close")),
+      h("button", { class: "btn btn-primary", type: "button", onClick: async () => {
+        await copyText(result?.body || "");
+        showToast(t("manager.status.instructionsCopied"));
+      } }, t("manager.actions.copyInstructions"))
+    ]);
+  } catch (error) {
+    showModal(t("manager.actions.agentInstructions"), error.message || String(error), [
+      h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.close"))
+    ]);
+  }
 }
 
 async function configureIntegration(id) {
@@ -574,6 +607,15 @@ async function integrationsView() {
   }
   const cards = integrations.map((item) => {
     const canConfigure = item.configFormat !== "templateOnly" && (item.installed || item.configFound || item.configured);
+    const customForm = item.configFormat === "templateOnly" ? h("form", { class: "custom-integration-form", onSubmit: (event) => {
+      event.preventDefault();
+      generateCustomTemplate(event.currentTarget);
+    } },
+      h("input", { class: "input", name: "toolName", placeholder: t("manager.integrations.customTool") }),
+      h("input", { class: "input", name: "source", placeholder: "my-tool-mcp" }),
+      h("input", { class: "input", name: "sourceLabel", placeholder: t("manager.integrations.customLabel") }),
+      h("button", { class: "btn btn-primary", type: "submit" }, t("manager.actions.generateCustomTemplate"))
+    ) : null;
     return h("article", { class: "card integration-card" },
       h("div", { class: "integration-header" },
         h("div", {},
@@ -584,7 +626,9 @@ async function integrationsView() {
       ),
       h("div", { class: "integration-badges" }, integrationStatusBadges(item)),
       item.configPath ? h("p", { class: "integration-path", title: item.configPath }, `${t("manager.integrations.config")}: ${item.configPath}`) : null,
+      item.instructionsPath ? h("p", { class: "integration-path", title: item.instructionsPath }, `${t("manager.integrations.instructions")}: ${item.instructionsPath}`) : null,
       h("p", { class: "integration-path" }, `${t("manager.integrations.command")}: ${item.source} / ${item.sourceLabel}`),
+      customForm,
       h("div", { class: "model-actions" },
         item.configFormat === "templateOnly"
           ? h("button", { class: "btn btn-primary", type: "button", onClick: () => copyIntegrationTemplate(null) }, t("manager.actions.copyTemplate"))
@@ -593,6 +637,7 @@ async function integrationsView() {
             : null,
         h("button", { class: "btn", type: "button", onClick: () => previewIntegration(item.id) }, t("manager.actions.preview")),
         item.configFormat !== "templateOnly" ? h("button", { class: "btn", type: "button", onClick: () => testIntegration(item.id) }, t("manager.actions.testMcp")) : null,
+        item.configFormat !== "templateOnly" ? h("button", { class: "btn", type: "button", onClick: () => showAgentInstructions(item.id) }, t("manager.actions.agentInstructions")) : null,
         item.configPath ? h("button", { class: "btn", type: "button", onClick: () => window.companion?.openAiIntegrationConfig?.(item.id) }, t("manager.actions.openConfig")) : null,
         item.configFormat !== "templateOnly" ? h("button", { class: "btn", type: "button", onClick: () => copyIntegrationTemplate(item.id) }, t("manager.actions.copyTemplate")) : null
       )
