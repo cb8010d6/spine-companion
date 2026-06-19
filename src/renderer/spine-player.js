@@ -488,11 +488,12 @@ export class SpinePlayer {
   getPointerRecoveryBounds() {
     const bounds = this.getInteractiveBounds();
     if (!bounds) return null;
-    const recoveryPadding = Math.max(10, Math.min(24, 8 + this.hitboxPadding * 0.75));
+    const scaleFactor = Math.max(0.45, Math.min(1, this.userScale));
+    const recoveryPadding = Math.max(6, Math.min(18, (6 + this.hitboxPadding * 0.55) * scaleFactor));
     return {
       left: bounds.left - recoveryPadding,
       right: bounds.right + recoveryPadding,
-      top: bounds.top - recoveryPadding,
+      top: bounds.top - recoveryPadding * 0.65,
       bottom: bounds.bottom + recoveryPadding
     };
   }

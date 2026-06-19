@@ -8,13 +8,16 @@
 
 let _tauriInvoke = null;
 let _tauriListen = null;
+let _tauriWindow = null;
 
 async function loadTauri() {
   if (_tauriInvoke) return;
   const core = await import("@tauri-apps/api/core");
   const event = await import("@tauri-apps/api/event");
+  const windowApi = await import("@tauri-apps/api/window");
   _tauriInvoke = core.invoke;
   _tauriListen = event.listen;
+  _tauriWindow = windowApi.getCurrentWindow();
 }
 
 export function isTauri() {
@@ -37,6 +40,7 @@ export async function initTauriBridge() {
     saveSettings: (patch) => _tauriInvoke("save_settings", { input: { patch } }),
     getDiagnostics: () => _tauriInvoke("get_diagnostics"),
     exportLogs: () => _tauriInvoke("export_logs"),
+    exportDiagnostics: () => _tauriInvoke("export_diagnostics_report"),
     getInstalledModels: () => _tauriInvoke("get_installed_models"),
     getHistory: () => _tauriInvoke("get_history"),
     getCurrentModel: () => _tauriInvoke("get_current_model"),
@@ -119,6 +123,8 @@ export async function initTauriBridge() {
     dragStart: (point) => _tauriInvoke("start_drag", { point }),
     dragMove: (point) => _tauriInvoke("move_drag", { point }).catch(() => {}),
     dragEnd: () => _tauriInvoke("end_drag").catch(() => {}),
+    nativeStartDrag: () => _tauriWindow.startDragging(),
+    getWindowPosition: () => _tauriInvoke("get_window_position"),
     revealWindow: () => _tauriInvoke("reveal_window"),
     rendererReady: () => _tauriInvoke("reveal_window"),
     recoverGpuWindow: (payload = {}) => _tauriInvoke("recover_gpu_window", {

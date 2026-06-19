@@ -1760,6 +1760,33 @@ fn export_logs(data: State<'_, AppData>) -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
+async fn export_diagnostics_report(data: State<'_, AppData>) -> Result<serde_json::Value, String> {
+    let diagnostics = get_diagnostics(data.clone()).await?;
+    let history = get_history(data.clone())?;
+    let reminders = list_reminders_cmd(data.clone()).await?;
+    let output_dir = data.config_dir.join("logs");
+    std::fs::create_dir_all(&output_dir).map_err(|error| error.to_string())?;
+    let output = output_dir.join(format!(
+        "spine-companion-diagnostics-{}.json",
+        chrono::Utc::now().to_rfc3339().replace([':', '.'], "-")
+    ));
+    let report = serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "generatedAt": chrono::Utc::now().to_rfc3339(),
+        "diagnostics": diagnostics,
+        "history": history,
+        "reminders": reminders,
+    });
+    let text = serde_json::to_string_pretty(&report).map_err(|error| error.to_string())?;
+    std::fs::write(&output, &text).map_err(|error| error.to_string())?;
+    Ok(serde_json::json!({
+        "file": output.to_string_lossy().to_string(),
+        "report": report,
+        "text": text
+    }))
+}
+
+#[tauri::command]
 fn open_url(url: String) -> Result<(), String> {
     if !url.starts_with("https://") && !url.starts_with("http://") {
         return Err("Only http(s) URLs can be opened externally".to_string());
@@ -1987,6 +2014,21 @@ async fn move_drag(
 async fn end_drag(data: State<'_, AppData>) -> Result<(), String> {
     *data.drag_state.lock().unwrap() = None;
     Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct WindowPosition {
+    x: i32,
+    y: i32,
+}
+
+#[tauri::command]
+fn get_window_position(window: tauri::Window) -> Result<WindowPosition, String> {
+    let position = window.outer_position().map_err(|error| error.to_string())?;
+    Ok(WindowPosition {
+        x: position.x,
+        y: position.y,
+    })
 }
 
 #[tauri::command]
@@ -3006,6 +3048,7 @@ pub fn run() {
             save_settings,
             get_diagnostics,
             export_logs,
+            export_diagnostics_report,
             get_installed_models,
             get_history,
             get_current_model,
@@ -3024,6 +3067,7 @@ pub fn run() {
             start_drag,
             move_drag,
             end_drag,
+            get_window_position,
             set_mouse_passthrough,
             reveal_window,
             recover_gpu_window,

@@ -75,6 +75,9 @@ let rendererHealthTimer = 0;
 let rendererRecoveryCount = 0;
 let lastRendererRecoveryAt = 0;
 let hitboxDebug = null;
+const NATIVE_DRAG_STOP_IDLE_POLLS = 8;
+const NATIVE_DRAG_POLL_MS = 40;
+const NATIVE_DRAG_MAX_MS = 9000;
 
 function applyUiSettings(settings = {}) {
   currentUiSettings = { ...currentUiSettings, ...settings };
@@ -352,6 +355,118 @@ function isDismissibleTaskState(state = currentState) {
   return state?.state === "success" || state?.state === "failed";
 }
 
+function clearNativeDragTimer() {
+  if (drag?.nativePollTimer) {
+    window.clearInterval(drag.nativePollTimer);
+    drag.nativePollTimer = 0;
+  }
+}
+
+async function finishNativeDrag() {
+  if (!drag) return;
+  clearNativeDragTimer();
+  const completedDrag = drag.moved;
+  const returnState = drag.returnState || { state: "idle", source: "drag-end" };
+  window.companion?.dragEnd?.();
+  drag = null;
+  player?.setDragActive(false);
+  document.body.classList.remove("is-dragging");
+  if (completedDrag) {
+    player?.applyState(returnState, true);
+    updateHud(returnState);
+    updateBubble(returnState);
+    if (provider) {
+      await provider.setState(returnState);
+    }
+  } else {
+    updateBubble(returnState);
+  }
+  refreshMousePassthroughSoon();
+}
+
+function startNativeDragPolling() {
+  if (!drag || drag.nativePollTimer || !window.companion?.getWindowPosition) return;
+  const startedAt = Date.now();
+  drag.nativePollTimer = window.setInterval(async () => {
+    if (!drag) return;
+    try {
+      const position = await window.companion.getWindowPosition();
+      const x = Number(position?.x);
+      const y = Number(position?.y);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+      if (drag.lastWindowX === null || drag.lastWindowY === null) {
+        drag.lastWindowX = x;
+        drag.lastWindowY = y;
+        return;
+      }
+      const dx = x - drag.lastWindowX;
+      const dy = y - drag.lastWindowY;
+      const moved = Math.abs(dx) + Math.abs(dy) >= 1;
+      if (moved) {
+        drag.moved = true;
+        drag.nativeIdlePolls = 0;
+        if (Math.abs(dx) >= 1 && player) {
+          const direction = dx < 0 ? "left" : "right";
+          if (direction !== drag.lastDirection) {
+            drag.lastDirection = direction;
+            player.applyState({
+              state: "running",
+              direction,
+              source: "drag"
+            });
+          } else {
+            player.setDirection(direction);
+          }
+          updateHud({
+            state: "running",
+            direction,
+            source: "drag"
+          });
+        }
+      } else if (drag.moved) {
+        drag.nativeIdlePolls += 1;
+      }
+      drag.lastWindowX = x;
+      drag.lastWindowY = y;
+      const elapsed = Date.now() - startedAt;
+      if ((drag.moved && drag.nativeIdlePolls >= NATIVE_DRAG_STOP_IDLE_POLLS && elapsed > 280)
+        || elapsed > NATIVE_DRAG_MAX_MS) {
+        await finishNativeDrag();
+      }
+    } catch {
+      await finishNativeDrag();
+    }
+  }, NATIVE_DRAG_POLL_MS);
+}
+
+async function beginNativeDrag(event) {
+  if (!drag || !window.companion?.nativeStartDrag || !window.companion?.getWindowPosition) return false;
+  try {
+    drag.native = true;
+    drag.lastWindowX = null;
+    drag.lastWindowY = null;
+    drag.nativeIdlePolls = 0;
+    progressBubble.hidden = true;
+    try {
+      if (shell.hasPointerCapture?.(event.pointerId)) {
+        shell.releasePointerCapture(event.pointerId);
+      }
+    } catch {}
+    const nativeDrag = window.companion.nativeStartDrag();
+    nativeDrag.catch(() => {});
+    const initialPosition = await window.companion.getWindowPosition();
+    drag.lastWindowX = Number(initialPosition?.x);
+    drag.lastWindowY = Number(initialPosition?.y);
+    startNativeDragPolling();
+    await nativeDrag;
+    return true;
+  } catch {
+    clearNativeDragTimer();
+    if (drag) drag.native = false;
+    return false;
+  }
+}
+
 function renderModelCatalog(config) {
   const catalog = config.models?.catalog || [];
   const fragment = document.createDocumentFragment();
@@ -576,11 +691,16 @@ function wireDragging() {
       totalX: 0,
       totalY: 0,
       lastDirection: "",
-      returnState
+      returnState,
+      native: false,
+      nativePollTimer: 0,
+      nativeIdlePolls: 0,
+      lastWindowX: null,
+      lastWindowY: null
     };
     document.body.classList.add("is-dragging");
     player?.setDragActive(true);
-    window.companion?.dragStart({
+    window.companion?.dragStart?.({
       screenX: event.screenX,
       screenY: event.screenY,
       totalX: 0,
@@ -591,6 +711,7 @@ function wireDragging() {
 
   shell.addEventListener("pointermove", (event) => {
     if (!drag) return;
+    if (drag.native) return;
     const fallbackDx = event.screenX - drag.lastX;
     const fallbackDy = event.screenY - drag.lastY;
     const movementX = Number.isFinite(event.movementX) && event.movementX !== 0 ? event.movementX : fallbackDx;
@@ -603,6 +724,10 @@ function wireDragging() {
     if (distance > 3 && !drag.moved) {
       drag.moved = true;
       progressBubble.hidden = true;
+    }
+    if (drag.moved && window.companion?.nativeStartDrag) {
+      beginNativeDrag(event);
+      return;
     }
     const dx = Math.abs(movementX) >= 0.5 ? movementX : event.screenX - drag.lastRunX;
     if (drag.moved && Math.abs(dx) >= 2 && player) {
@@ -626,7 +751,7 @@ function wireDragging() {
     }
     drag.lastX = event.screenX;
     drag.lastY = event.screenY;
-    window.companion?.dragMove({
+    window.companion?.dragMove?.({
       screenX: event.screenX,
       screenY: event.screenY,
       totalX: screenTotalX,
@@ -636,9 +761,10 @@ function wireDragging() {
 
   shell.addEventListener("pointerup", async (event) => {
     if (!drag) return;
+    if (drag.native) return;
     const completedDrag = drag.moved;
     const returnState = drag.returnState || { state: "idle", source: "drag-end" };
-    window.companion?.dragEnd();
+    window.companion?.dragEnd?.();
     if (completedDrag) {
       player?.applyState(returnState, true);
       updateHud(returnState);

@@ -551,6 +551,18 @@ async function testIntegration(id) {
   }
 }
 
+async function diagnosticsReportText() {
+  const report = {
+    version: config?.version || "",
+    generatedAt: new Date().toISOString(),
+    diagnostics,
+    history,
+    reminders,
+    updateStatus
+  };
+  return JSON.stringify(report, null, 2);
+}
+
 async function integrationsView() {
   await refreshIntegrations();
   const available = typeof window.companion?.listAiIntegrations === "function";
@@ -636,6 +648,14 @@ async function diagnosticsView() {
             const result = await window.companion?.clearGpuCache?.();
             showToast(t("manager.status.gpuCacheCleared", { count: result?.removed || 0 }));
           } }, t("manager.actions.clearGpuCache")),
+          h("button", { class: "btn", type: "button", onClick: async () => {
+            await copyText(await diagnosticsReportText());
+            showToast(t("manager.status.diagnosticsCopied"));
+          } }, t("manager.actions.copyDiagnostics")),
+          h("button", { class: "btn", type: "button", onClick: async () => {
+            const result = await window.companion?.exportDiagnostics?.();
+            showToast(t("manager.status.diagnosticsExported", { path: result?.file || "" }));
+          } }, t("manager.actions.exportDiagnostics")),
           h("button", { class: "btn", type: "button", onClick: async () => {
             const result = await window.companion?.exportLogs?.();
             showToast(t("manager.status.logsExported", { path: result?.file || "" }));
