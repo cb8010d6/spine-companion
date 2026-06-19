@@ -1,6 +1,6 @@
 [package]
 name = "spine-companion"
-version = "0.2.4"
+version = "0.2.5-rc.1"
 description = "Open-source desktop companion shell for local Spine 3.8 models."
 authors = ["Spine Companion contributors"]
 edition = "2021"

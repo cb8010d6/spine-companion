@@ -79,8 +79,28 @@ pub struct AiIntegration {
     pub configured: bool,
     pub supported: bool,
     pub needs_restart: bool,
+    pub instructions_found: bool,
+    pub instructions_path: String,
     pub status: String,
     pub note: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomIntegrationInput {
+    pub tool_name: Option<String>,
+    pub source: Option<String>,
+    pub source_label: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentInstructions {
+    pub integration: AiIntegration,
+    pub target_path: String,
+    pub exists: bool,
+    pub title: String,
+    pub body: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -107,6 +127,18 @@ pub struct IntegrationApplyResult {
 
 fn path_string(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
+}
+
+fn slug(value: &str) -> String {
+    let mut out = String::new();
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+        } else if !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    out.trim_matches('-').to_string()
 }
 
 fn exe_command(exe_path: &Path) -> Vec<String> {
@@ -334,6 +366,21 @@ fn integration_status(
     }
 }
 
+fn instructions_path_for_def(def: &IntegrationDefinition) -> Option<PathBuf> {
+    let env = IntegrationEnv::current()?;
+    match def.id {
+        "codex" => Some(env.home.join(".codex").join("AGENTS.md")),
+        "vscode" => Some(env.home.join(".github").join("copilot-instructions.md")),
+        "cursor" => Some(env.home.join(".cursor").join("rules").join("spine-companion.md")),
+        "claude-desktop" => Some(env.home.join(".claude").join("CLAUDE.md")),
+        "opencode" => Some(env.home.join(".config").join("opencode").join("AGENTS.md")),
+        "mimocode" => Some(env.home.join(".local").join("share").join("mimocode").join("AGENTS.md")),
+        "roo-cline" => Some(env.home.join(".cline").join("spine-companion.md")),
+        "gemini-antigravity" => Some(env.home.join(".gemini").join("GEMINI.md")),
+        _ => None,
+    }
+}
+
 fn integration_from_def(def: &IntegrationDefinition) -> AiIntegration {
     let config_path = selected_config_path(def);
     let config_found = config_path
@@ -351,6 +398,10 @@ fn integration_from_def(def: &IntegrationDefinition) -> AiIntegration {
         None
     };
     let supported = def.format != IntegrationFormat::TemplateOnly || def.id == "custom";
+    let instructions_path = instructions_path_for_def(def)
+        .map(|path| path.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let instructions_found = !instructions_path.is_empty() && Path::new(&instructions_path).exists();
     AiIntegration {
         id: def.id.to_string(),
         name: def.name.to_string(),
@@ -366,9 +417,61 @@ fn integration_from_def(def: &IntegrationDefinition) -> AiIntegration {
         configured,
         supported,
         needs_restart: configured,
+        instructions_found,
+        instructions_path,
         status: integration_status(installed, config_found, configured, supported),
         note: def.note.to_string(),
     }
+}
+
+fn instruction_title(def: &IntegrationDefinition) -> String {
+    format!("Spine Companion integration for {}", def.name)
+}
+
+fn instruction_body(def: &IntegrationDefinition) -> String {
+    let tool = def.name;
+    let source = def.source;
+    let label = def.source_label;
+    format!(
+        r#"# Spine Companion Status Reporting
+
+When the `spine_companion` MCP tools are available in {tool}, proactively report visible work phases to the local Spine Companion desktop app.
+
+Use `companion_report_ai_phase` with a short human-readable message:
+
+- `thinking`: reading context, planning, or deciding next steps.
+- `editing`: changing files or applying patches.
+- `running`: running commands, tests, builds, installs, or long local tasks.
+- `reviewing`: checking diffs, logs, screenshots, or test output.
+- `waiting`: waiting for user input or an external process.
+- `succeeded`: final successful completion.
+- `failed`: blocker or failed completion.
+
+Prefer the configured MCP source `{source}` / `{label}`. If only the compatibility alias exists, `companion_report_codex_phase` is acceptable, but it must use the configured source from the MCP environment.
+
+Do not spam updates for tiny steps. Report at meaningful phase boundaries and continue the user task if the companion app is unavailable.
+"#
+    )
+}
+
+pub fn generate_agent_instructions(id: &str) -> Result<AgentInstructions, String> {
+    let env =
+        IntegrationEnv::current().ok_or_else(|| "Cannot locate user home directory".to_string())?;
+    let def = find_definition(&env, id)?;
+    if def.format == IntegrationFormat::TemplateOnly {
+        return Err("Custom integrations use editable templates instead of agent files.".to_string());
+    }
+    let integration = integration_from_def(&def);
+    let target = instructions_path_for_def(&def)
+        .ok_or_else(|| "No instruction target is defined for this tool".to_string())?;
+    let body = instruction_body(&def);
+    Ok(AgentInstructions {
+        integration,
+        target_path: target.to_string_lossy().to_string(),
+        exists: target.exists(),
+        title: instruction_title(&def),
+        body,
+    })
 }
 
 pub fn list_ai_integrations_with_env(env: &IntegrationEnv) -> Vec<AiIntegration> {
@@ -722,6 +825,33 @@ pub fn templates_for_custom(exe_path: &Path, api: &str) -> String {
     template_bundle(exe_path, api, "ai-mcp", "AI")
 }
 
+pub fn templates_for_custom_input(
+    exe_path: &Path,
+    api: &str,
+    input: CustomIntegrationInput,
+) -> String {
+    let label = input
+        .source_label
+        .or(input.tool_name.clone())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "AI".to_string());
+    let source = input
+        .source
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| {
+            let base = input.tool_name.unwrap_or_else(|| label.clone());
+            let slug = slug(&base);
+            if slug.is_empty() {
+                "ai-mcp".to_string()
+            } else if slug.ends_with("-mcp") {
+                slug
+            } else {
+                format!("{slug}-mcp")
+            }
+        });
+    template_bundle(exe_path, api, source.trim(), label.trim())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -820,6 +950,37 @@ mod tests {
             value["mcp"]["spine_companion"]["environment"]["COMPANION_SOURCE"],
             "opencode-mcp"
         );
+    }
+
+    #[test]
+    fn custom_template_uses_user_source_and_label() {
+        let exe = PathBuf::from("C:/Spine/spine-companion.exe");
+        let text = templates_for_custom_input(
+            &exe,
+            "http://127.0.0.1:17388",
+            CustomIntegrationInput {
+                tool_name: Some("Future Agent".to_string()),
+                source: Some("future-agent-mcp".to_string()),
+                source_label: Some("Future Agent".to_string()),
+            },
+        );
+        assert!(text.contains("future-agent-mcp"));
+        assert!(text.contains("Future Agent"));
+    }
+
+    #[test]
+    fn agent_instruction_body_names_source() {
+        let root = temp_root("instructions");
+        let env = fixture_env(&root);
+        let def = definitions(&env)
+            .into_iter()
+            .find(|item| item.id == "mimocode")
+            .unwrap();
+        let body = instruction_body(&def);
+        assert!(body.contains("mimocode-mcp"));
+        assert!(body.contains("MiMoCode"));
+        assert!(body.contains("companion_report_ai_phase"));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

@@ -10,7 +10,7 @@ const navButtons = document.querySelectorAll("nav button");
 const topbarStatus = document.getElementById("topbar-status");
 const modalContainer = document.getElementById("modal-container");
 
-let activeView = "library";
+let activeView = "dashboard";
 let config = { models: { catalog: [] }, ui: {}, spine: {} };
 let installedModels = [];
 let diagnostics = null;
@@ -156,6 +156,48 @@ function isInstalled(id) {
 function activeInstalledId() {
   const active = String(config.spine?.assetDir || "").replace(/\\/g, "/");
   return installedModels.find((model) => active.endsWith(`/${model.id}`) || active.endsWith(model.id))?.id || "";
+}
+
+function activeModelLabel() {
+  const id = activeInstalledId();
+  const model = installedModels.find((item) => item.id === id) || catalogModel(id);
+  return model?.name || id || config.spine?.skel || t("panel.model.noModel");
+}
+
+async function dashboardView() {
+  diagnostics = await window.companion?.getDiagnostics?.() || diagnostics || {};
+  history = await window.companion?.getHistory?.() || history || [];
+  reminders = await window.companion?.listReminders?.() || reminders || [];
+  integrations = await window.companion?.listAiIntegrations?.() || integrations || [];
+  if (!updateStatus) await refreshUpdateStatus({ silent: true });
+  const lastState = history[history.length - 1] || {};
+  const configuredIntegrations = integrations.filter((item) => item.configured);
+  const card = (title, value, detail, actions = []) => h("article", { class: "card dashboard-card" },
+    h("div", { class: "dashboard-card-title" }, title),
+    h("div", { class: "dashboard-card-value" }, value || "-"),
+    detail ? h("p", { class: "model-meta" }, detail) : null,
+    actions.length ? h("div", { class: "model-actions" }, actions) : null
+  );
+  return h("section", {},
+    h("div", { class: "view-header" },
+      h("div", {},
+        h("h2", { class: "view-title" }, t("manager.dashboard.title")),
+        h("p", { class: "empty-text" }, t("manager.integrations.subtitle"))
+      )
+    ),
+    h("div", { class: "grid-2" },
+      card(t("manager.dashboard.model"), activeModelLabel(), config.spine?.assetDir || "", [
+        h("button", { class: "btn", type: "button", onClick: () => navTo("library") }, t("manager.dashboard.openLibrary"))
+      ]),
+      card(t("manager.dashboard.ai"), lastState.source || configuredIntegrations[0]?.sourceLabel || "Local", lastState.message || `${configuredIntegrations.length} configured`, [
+        h("button", { class: "btn", type: "button", onClick: () => navTo("integrations") }, t("manager.dashboard.openIntegrations"))
+      ]),
+      card(t("manager.dashboard.bridge"), diagnostics.apiOk ? t("panel.bridge.connected") : t("panel.bridge.offline"), diagnostics.mcpConfigured ? "MCP configured" : "MCP not configured"),
+      card(t("manager.dashboard.reminders"), String(reminders.length), reminders[0]?.message || t("manager.empty.noReminders")),
+      card(t("manager.dashboard.updates"), updateStatus?.updateAvailable ? t("manager.status.updateAvailable", { version: updateStatus.latestVersion }) : t("manager.status.upToDate", { version: updateStatus?.currentVersion || config.version || "" }), updateStatus?.channel || "stable"),
+      card(t("manager.dashboard.renderer"), diagnostics.rendererHealth?.status || diagnostics.gpu?.mode || "hardware", diagnostics.rendererHealth?.lastReason || "")
+    )
+  );
 }
 
 async function startDownload(id) {
@@ -480,6 +522,11 @@ function integrationStatusBadges(item) {
   if (item.configFound) badges.push(badge(t("manager.integrations.configFound"), ""));
   if (item.configured) badges.push(badge(t("manager.integrations.configured"), "badge-success"));
   if (item.needsRestart) badges.push(badge(t("manager.integrations.needsRestart"), "badge-warning"));
+  if (item.configFormat !== "templateOnly" && item.instructionsFound) {
+    badges.push(badge(t("manager.integrations.instructionsFound"), "badge-success"));
+  } else if (item.configFormat !== "templateOnly" && item.configured) {
+    badges.push(badge(t("manager.integrations.instructionsMissing"), "badge-warning"));
+  }
   if (item.configFormat === "templateOnly") badges.push(badge(t("manager.integrations.templateOnly"), ""));
   if (!badges.length) badges.push(badge(t("manager.integrations.notDetected"), ""));
   return badges;
@@ -506,6 +553,34 @@ async function copyIntegrationTemplate(id = null) {
   const text = await window.companion?.copyAiIntegrationTemplate?.(id);
   await copyText(text || "");
   showToast(t("manager.status.templateCopied"));
+}
+
+async function generateCustomTemplate(form) {
+  const text = await window.companion?.copyCustomAiIntegrationTemplate?.({
+    toolName: form.querySelector("[name=toolName]")?.value || "",
+    source: form.querySelector("[name=source]")?.value || "",
+    sourceLabel: form.querySelector("[name=sourceLabel]")?.value || ""
+  });
+  await copyText(text || "");
+  showToast(t("manager.status.templateCopied"));
+}
+
+async function showAgentInstructions(id) {
+  try {
+    const result = await window.companion?.generateAiIntegrationInstructions?.(id);
+    const pathLine = result?.targetPath ? `${t("manager.integrations.instructions")}: ${result.targetPath}\n\n` : "";
+    showModal(result?.title || t("manager.actions.agentInstructions"), `${pathLine}${result?.body || ""}`, [
+      h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.close")),
+      h("button", { class: "btn btn-primary", type: "button", onClick: async () => {
+        await copyText(result?.body || "");
+        showToast(t("manager.status.instructionsCopied"));
+      } }, t("manager.actions.copyInstructions"))
+    ]);
+  } catch (error) {
+    showModal(t("manager.actions.agentInstructions"), error.message || String(error), [
+      h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.close"))
+    ]);
+  }
 }
 
 async function configureIntegration(id) {
@@ -574,6 +649,15 @@ async function integrationsView() {
   }
   const cards = integrations.map((item) => {
     const canConfigure = item.configFormat !== "templateOnly" && (item.installed || item.configFound || item.configured);
+    const customForm = item.configFormat === "templateOnly" ? h("form", { class: "custom-integration-form", onSubmit: (event) => {
+      event.preventDefault();
+      generateCustomTemplate(event.currentTarget);
+    } },
+      h("input", { class: "input", name: "toolName", placeholder: t("manager.integrations.customTool") }),
+      h("input", { class: "input", name: "source", placeholder: "my-tool-mcp" }),
+      h("input", { class: "input", name: "sourceLabel", placeholder: t("manager.integrations.customLabel") }),
+      h("button", { class: "btn btn-primary", type: "submit" }, t("manager.actions.generateCustomTemplate"))
+    ) : null;
     return h("article", { class: "card integration-card" },
       h("div", { class: "integration-header" },
         h("div", {},
@@ -584,7 +668,9 @@ async function integrationsView() {
       ),
       h("div", { class: "integration-badges" }, integrationStatusBadges(item)),
       item.configPath ? h("p", { class: "integration-path", title: item.configPath }, `${t("manager.integrations.config")}: ${item.configPath}`) : null,
+      item.instructionsPath ? h("p", { class: "integration-path", title: item.instructionsPath }, `${t("manager.integrations.instructions")}: ${item.instructionsPath}`) : null,
       h("p", { class: "integration-path" }, `${t("manager.integrations.command")}: ${item.source} / ${item.sourceLabel}`),
+      customForm,
       h("div", { class: "model-actions" },
         item.configFormat === "templateOnly"
           ? h("button", { class: "btn btn-primary", type: "button", onClick: () => copyIntegrationTemplate(null) }, t("manager.actions.copyTemplate"))
@@ -593,6 +679,7 @@ async function integrationsView() {
             : null,
         h("button", { class: "btn", type: "button", onClick: () => previewIntegration(item.id) }, t("manager.actions.preview")),
         item.configFormat !== "templateOnly" ? h("button", { class: "btn", type: "button", onClick: () => testIntegration(item.id) }, t("manager.actions.testMcp")) : null,
+        item.configFormat !== "templateOnly" ? h("button", { class: "btn", type: "button", onClick: () => showAgentInstructions(item.id) }, t("manager.actions.agentInstructions")) : null,
         item.configPath ? h("button", { class: "btn", type: "button", onClick: () => window.companion?.openAiIntegrationConfig?.(item.id) }, t("manager.actions.openConfig")) : null,
         item.configFormat !== "templateOnly" ? h("button", { class: "btn", type: "button", onClick: () => copyIntegrationTemplate(item.id) }, t("manager.actions.copyTemplate")) : null
       )
@@ -693,6 +780,22 @@ async function diagnosticsView() {
 }
 
 function avatarStudioView() {
+  const pathInput = h("input", { class: "input", type: "text", placeholder: "C:/path/to/avatar-pack", "aria-label": t("manager.avatar.packPath") });
+  const resultRoot = h("div", { class: "avatar-validation" });
+  const renderValidation = (result) => {
+    const ok = result?.ok === true;
+    resultRoot.replaceChildren(
+      h("p", { class: ok ? "status-value status-ok" : "status-value status-err" }, ok ? t("manager.avatar.valid") : t("manager.avatar.invalid")),
+      result?.id || result?.name ? h("p", { class: "model-meta" }, `${result.name || result.id} (${result.id || ""})`) : null,
+      ...(result?.errors || []).map((item) => h("p", { class: "error-text" }, item)),
+      ...(result?.warnings || []).map((item) => h("p", { class: "model-meta" }, item))
+    );
+  };
+  const validate = async () => {
+    const result = await window.companion?.validateAvatarPack?.(pathInput.value.trim());
+    renderValidation(result);
+    return result;
+  };
   return h("section", {},
     h("div", { class: "view-header" },
       h("div", {},
@@ -707,7 +810,17 @@ function avatarStudioView() {
       ),
       h("article", { class: "card" },
         h("h3", {}, t("manager.avatar.packTitle")),
-        h("p", { class: "model-meta" }, "avatar-pack.json, preview.png, layers/, rig/, exports/")
+        h("p", { class: "model-meta" }, "avatar-pack.json, preview.png, layers/, rig/, exports/"),
+        h("div", { class: "avatar-pack-form" },
+          pathInput,
+          h("button", { class: "btn", type: "button", onClick: validate }, t("manager.avatar.validate")),
+          h("button", { class: "btn btn-primary", type: "button", onClick: async () => {
+            const result = await window.companion?.importAvatarPack?.(pathInput.value.trim());
+            renderValidation(result?.validation);
+            showToast(result?.imported ? t("manager.status.loadedModel", { name: result.validation?.name || result.validation?.id || "avatar pack" }) : t("manager.avatar.invalid"));
+          } }, t("manager.avatar.import"))
+        ),
+        resultRoot
       ),
       h("article", { class: "card" },
         h("h3", {}, t("manager.avatar.limitsTitle")),
@@ -727,7 +840,8 @@ function avatarStudioView() {
 async function renderView(viewName) {
   viewContainer.replaceChildren(h("p", { class: "empty-text" }, t("manager.status.loading")));
   setStatus(t("manager.status.viewing", { view: viewName }));
-  if (viewName === "library") render(libraryView(), viewContainer);
+  if (viewName === "dashboard") render(await dashboardView(), viewContainer);
+  else if (viewName === "library") render(libraryView(), viewContainer);
   else if (viewName === "installed") render(installedView(), viewContainer);
   else if (viewName === "downloads") render(downloadsView(), viewContainer);
   else if (viewName === "settings") {
@@ -762,7 +876,7 @@ async function boot() {
   window.companion?.onConfigChanged?.(async (nextConfig) => {
     config = nextConfig || await window.companion?.getConfig?.() || config;
     createI18n(config);
-    if (activeView === "settings" || activeView === "installed" || activeView === "library") renderView(activeView);
+    if (activeView === "settings" || activeView === "installed" || activeView === "library" || activeView === "dashboard") renderView(activeView);
   });
   window.companion?.onReminders?.((nextReminders) => {
     reminders = Array.isArray(nextReminders) ? nextReminders : [];
