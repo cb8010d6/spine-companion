@@ -592,3 +592,19 @@ input[type="checkbox"] {
   width: 100%;
   min-width: 0;
 }
+
+.avatar-pack-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.avatar-pack-form .input {
+  width: 100%;
+}
+
+.avatar-validation {
+  display: grid;
+  gap: 6px;
+}

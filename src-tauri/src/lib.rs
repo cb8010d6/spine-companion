@@ -1,4 +1,5 @@
 mod ai_integrations;
+mod avatar;
 mod mcp;
 mod server;
 mod source_registry;
@@ -1882,6 +1883,24 @@ fn generate_ai_integration_instructions(
 }
 
 #[tauri::command]
+fn avatar_requirements() -> Result<serde_json::Value, String> {
+    Ok(avatar::requirements())
+}
+
+#[tauri::command]
+fn validate_avatar_pack(input: avatar::AvatarPackInput) -> Result<avatar::AvatarValidation, String> {
+    Ok(avatar::validate_pack(&avatar::path_from_input(input)))
+}
+
+#[tauri::command]
+fn import_avatar_pack(
+    data: State<'_, AppData>,
+    input: avatar::AvatarPackInput,
+) -> Result<avatar::AvatarImportResult, String> {
+    avatar::import_pack(&avatar::path_from_input(input), &data.config_dir)
+}
+
+#[tauri::command]
 fn test_ai_integration(
     data: State<'_, AppData>,
     tool_id: String,
@@ -3080,6 +3099,9 @@ pub fn run() {
             copy_ai_integration_template,
             copy_custom_ai_integration_template,
             generate_ai_integration_instructions,
+            avatar_requirements,
+            validate_avatar_pack,
+            import_avatar_pack,
             test_ai_integration,
             remove_model,
             open_folder,

@@ -39,9 +39,9 @@ exports/
 
 avatar pack 属于用户本地内容。生成或上传的角色素材不得提交到本仓库。
 
-## 计划中的 MCP 接口
+## 实验性 MCP 接口
 
-以下接口计划在后续版本实现，可作为 Codex 或其他 AI 工具的对接契约：
+以下接口已作为实验性契约提供，可供 Codex 或其他 AI 工具对接：
 
 - `companion_avatar_requirements`
 - `companion_create_avatar_job`

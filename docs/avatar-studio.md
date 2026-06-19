@@ -44,10 +44,10 @@ exports/
 The pack is local user content. Generated or uploaded character assets must not
 be committed to this repository.
 
-## Planned MCP Interfaces
+## Experimental MCP Interfaces
 
-These interfaces are planned for a future release and should be treated as the
-contract for Codex or another AI tool:
+These interfaces are available as an experimental contract for Codex or another
+AI tool:
 
 - `companion_avatar_requirements`
 - `companion_create_avatar_job`

@@ -780,6 +780,22 @@ async function diagnosticsView() {
 }
 
 function avatarStudioView() {
+  const pathInput = h("input", { class: "input", type: "text", placeholder: "C:/path/to/avatar-pack", "aria-label": t("manager.avatar.packPath") });
+  const resultRoot = h("div", { class: "avatar-validation" });
+  const renderValidation = (result) => {
+    const ok = result?.ok === true;
+    resultRoot.replaceChildren(
+      h("p", { class: ok ? "status-value status-ok" : "status-value status-err" }, ok ? t("manager.avatar.valid") : t("manager.avatar.invalid")),
+      result?.id || result?.name ? h("p", { class: "model-meta" }, `${result.name || result.id} (${result.id || ""})`) : null,
+      ...(result?.errors || []).map((item) => h("p", { class: "error-text" }, item)),
+      ...(result?.warnings || []).map((item) => h("p", { class: "model-meta" }, item))
+    );
+  };
+  const validate = async () => {
+    const result = await window.companion?.validateAvatarPack?.(pathInput.value.trim());
+    renderValidation(result);
+    return result;
+  };
   return h("section", {},
     h("div", { class: "view-header" },
       h("div", {},
@@ -794,7 +810,17 @@ function avatarStudioView() {
       ),
       h("article", { class: "card" },
         h("h3", {}, t("manager.avatar.packTitle")),
-        h("p", { class: "model-meta" }, "avatar-pack.json, preview.png, layers/, rig/, exports/")
+        h("p", { class: "model-meta" }, "avatar-pack.json, preview.png, layers/, rig/, exports/"),
+        h("div", { class: "avatar-pack-form" },
+          pathInput,
+          h("button", { class: "btn", type: "button", onClick: validate }, t("manager.avatar.validate")),
+          h("button", { class: "btn btn-primary", type: "button", onClick: async () => {
+            const result = await window.companion?.importAvatarPack?.(pathInput.value.trim());
+            renderValidation(result?.validation);
+            showToast(result?.imported ? t("manager.status.loadedModel", { name: result.validation?.name || result.validation?.id || "avatar pack" }) : t("manager.avatar.invalid"));
+          } }, t("manager.avatar.import"))
+        ),
+        resultRoot
       ),
       h("article", { class: "card" },
         h("h3", {}, t("manager.avatar.limitsTitle")),

@@ -1,3 +1,4 @@
+use crate::avatar;
 use crate::source_registry::{source_from_client_name, source_from_env_or_client, SourceInfo};
 use serde_json::{json, Value};
 use std::io::{self, BufRead, Write};
@@ -111,6 +112,29 @@ fn reminder_schema() -> Value {
     })
 }
 
+fn avatar_pack_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "path": { "type": "string" }
+        },
+        "required": ["path"]
+    })
+}
+
+fn avatar_job_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "jobId": { "type": "string" },
+            "phase": { "type": "string" },
+            "message": { "type": "string" },
+            "packPath": { "type": "string" },
+            "motions": { "type": "array", "items": { "type": "string" } }
+        }
+    })
+}
+
 fn tools() -> Value {
     json!([
         {
@@ -142,6 +166,36 @@ fn tools() -> Value {
             "title": "Report Codex phase",
             "description": "Compatibility alias for older Codex instructions. Uses the configured MCP source.",
             "inputSchema": phase_schema()
+        },
+        {
+            "name": "companion_avatar_requirements",
+            "title": "Get avatar pack requirements",
+            "description": "Read the local Avatar Studio pack contract and current limits.",
+            "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "companion_create_avatar_job",
+            "title": "Create avatar job",
+            "description": "Create a structured Avatar Studio planning job for AI-assisted layer, rig, motion and export work.",
+            "inputSchema": avatar_job_schema()
+        },
+        {
+            "name": "companion_update_avatar_job",
+            "title": "Update avatar job",
+            "description": "Report Avatar Studio job progress. This records planning/progress only and does not claim a finished rig.",
+            "inputSchema": avatar_job_schema()
+        },
+        {
+            "name": "companion_validate_avatar_pack",
+            "title": "Validate avatar pack",
+            "description": "Validate a local avatar pack folder without importing it.",
+            "inputSchema": avatar_pack_schema()
+        },
+        {
+            "name": "companion_import_avatar_pack",
+            "title": "Import avatar pack",
+            "description": "Record a valid local avatar pack in Spine Companion. This does not claim to create Spine runtime exports.",
+            "inputSchema": avatar_pack_schema()
         }
     ])
 }
@@ -179,6 +233,14 @@ fn phase_payload(arguments: &Value, source: &SourceInfo) -> Value {
     })
 }
 
+fn mcp_config_dir() -> std::path::PathBuf {
+    std::env::var("LOCALAPPDATA")
+        .or_else(|_| std::env::var("XDG_DATA_HOME"))
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::env::temp_dir())
+        .join("Spine Companion")
+}
+
 async fn call_tool(name: &str, arguments: Value, source: &SourceInfo) -> Result<Value, String> {
     match name {
         "companion_get_state" => api_json("/state", None)
@@ -200,6 +262,37 @@ async fn call_tool(name: &str, arguments: Value, source: &SourceInfo) -> Result<
             api_json("/state", Some(phase_payload(&arguments, source)))
                 .await
                 .map(|value| text_result(value, source))
+        }
+        "companion_avatar_requirements" => Ok(text_result(avatar::requirements(), source)),
+        "companion_create_avatar_job" => {
+            let job_id = arguments
+                .get("jobId")
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or("avatar-job");
+            Ok(text_result(json!({
+                "jobId": job_id,
+                "created": true,
+                "requirements": avatar::requirements(),
+                "message": "Avatar job created. Produce a local avatar pack and validate it before import."
+            }), source))
+        }
+        "companion_update_avatar_job" => Ok(text_result(json!({
+            "jobId": arguments.get("jobId").and_then(|value| value.as_str()).unwrap_or("avatar-job"),
+            "phase": arguments.get("phase").and_then(|value| value.as_str()).unwrap_or("working"),
+            "message": arguments.get("message").and_then(|value| value.as_str()).unwrap_or("Avatar job updated."),
+            "packPath": arguments.get("packPath").and_then(|value| value.as_str()).unwrap_or(""),
+            "note": "Progress recorded for the AI tool. Validate/import the avatar pack when files exist."
+        }), source)),
+        "companion_validate_avatar_pack" => {
+            let path = arguments.get("path").and_then(|value| value.as_str()).unwrap_or("");
+            let result = avatar::validate_pack(std::path::Path::new(path));
+            Ok(text_result(serde_json::to_value(result).unwrap_or_else(|_| json!({})), source))
+        }
+        "companion_import_avatar_pack" => {
+            let path = arguments.get("path").and_then(|value| value.as_str()).unwrap_or("");
+            let result = avatar::import_pack(std::path::Path::new(path), &mcp_config_dir())?;
+            Ok(text_result(serde_json::to_value(result).unwrap_or_else(|_| json!({})), source))
         }
         _ => Err(format!("Unknown MCP tool: {name}")),
     }
