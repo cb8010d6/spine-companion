@@ -71,9 +71,16 @@ let providerErrorToastTimer = null;
 let onboardingDismissedForSession = false;
 let clickReturnTimer = 0;
 let gpuRecoveryInFlight = false;
+let rendererHealthTimer = 0;
+let rendererRecoveryCount = 0;
+let lastRendererRecoveryAt = 0;
+let hitboxDebug = null;
 
 function applyUiSettings(settings = {}) {
   currentUiSettings = { ...currentUiSettings, ...settings };
+  if (runtimeConfig) {
+    runtimeConfig = { ...runtimeConfig, ui: { ...(runtimeConfig.ui || {}), ...settings } };
+  }
   document.body.classList.toggle("hud-hidden", currentUiSettings.hudVisible === false);
   document.body.classList.toggle("bubble-hidden", currentUiSettings.bubbleVisible === false);
   document.body.classList.toggle("bubble-no-shadow", currentUiSettings.bubbleShadow === false);
@@ -192,6 +199,27 @@ function setMousePassthrough(enabled, force = false) {
     ? player?.getPointerRecoveryBounds?.() || player?.getInteractiveBounds?.()
     : player?.getInteractiveBounds?.();
   window.companion.setMousePassthrough(enabled, pointerBounds);
+}
+
+function ensureHitboxDebug() {
+  if (hitboxDebug) return hitboxDebug;
+  hitboxDebug = document.createElement("div");
+  hitboxDebug.className = "hitbox-debug";
+  hitboxDebug.hidden = true;
+  shell.appendChild(hitboxDebug);
+  return hitboxDebug;
+}
+
+function updateHitboxDebug() {
+  const box = ensureHitboxDebug();
+  const enabled = currentUiSettings.hudVisible !== false && runtimeConfig?.ui?.debugHitbox === true;
+  const bounds = player?.getInteractiveBounds?.();
+  box.hidden = !enabled || !bounds;
+  if (box.hidden) return;
+  box.style.left = `${Math.round(bounds.left)}px`;
+  box.style.top = `${Math.round(bounds.top)}px`;
+  box.style.width = `${Math.max(1, Math.round(bounds.right - bounds.left))}px`;
+  box.style.height = `${Math.max(1, Math.round(bounds.bottom - bounds.top))}px`;
 }
 
 function refreshMousePassthroughSoon() {
@@ -414,6 +442,8 @@ function showErrorBoundary(error, config) {
 async function recoverGpuRenderer(event = {}) {
   if (gpuRecoveryInFlight || !runtimeConfig) return;
   gpuRecoveryInFlight = true;
+  rendererRecoveryCount += 1;
+  lastRendererRecoveryAt = Date.now();
   document.body.classList.add("gpu-recovering");
   console.warn("[spine-companion] GPU renderer context reset; rebuilding Spine player", event);
   updateBubble({
@@ -424,9 +454,12 @@ async function recoverGpuRenderer(event = {}) {
   try {
     await new Promise((resolve) => window.setTimeout(resolve, 120));
     await loadPlayer(runtimeConfig);
-    await window.companion?.recoverGpuWindow?.({
-      reason: event?.reason || "renderer-rebuild"
-    });
+    const reason = event?.reason || "renderer-rebuild";
+    if (event?.recreateWindow) {
+      await window.companion?.restartRenderer?.({ reason });
+      return;
+    }
+    await window.companion?.recoverGpuWindow?.({ reason });
     player?.applyState(currentState, true);
     updateHud(currentState);
     updateBubble(currentState);
@@ -437,6 +470,38 @@ async function recoverGpuRenderer(event = {}) {
     document.body.classList.remove("gpu-recovering");
     refreshMousePassthroughSoon();
   }
+}
+
+function rendererHealthPayload(status, reason = "") {
+  const health = player?.getRendererHealth?.() || {};
+  return {
+    ...health,
+    status,
+    lastReason: reason,
+    recoveryCount: rendererRecoveryCount,
+    lastRecoveryAt: lastRendererRecoveryAt,
+    lastHeartbeatAt: Date.now()
+  };
+}
+
+function startRendererHealthProbe() {
+  window.clearInterval(rendererHealthTimer);
+  rendererHealthTimer = window.setInterval(() => {
+    const health = player?.getRendererHealth?.();
+    updateHitboxDebug();
+    if (!health) return;
+    const now = Date.now();
+    const stale = health.lastFrameAt > 0 && now - health.lastFrameAt > 3500;
+    const invalidCanvas = health.canvasWidth <= 0 || health.canvasHeight <= 0 || health.clientWidth <= 0 || health.clientHeight <= 0;
+    const status = health.contextLost ? "context-lost" : stale ? "stale" : invalidCanvas ? "invalid-canvas" : "ok";
+    window.companion?.updateRendererHealth?.(rendererHealthPayload(status, status)).catch?.(() => {});
+    if ((health.contextLost || stale || invalidCanvas) && !gpuRecoveryInFlight) {
+      recoverGpuRenderer({
+        reason: `health-${status}`,
+        recreateWindow: stale || invalidCanvas
+      });
+    }
+  }, 1500);
 }
 
 async function loadPlayer(config) {
@@ -459,6 +524,7 @@ async function loadPlayer(config) {
   player.setHitboxPadding(currentUiSettings.hitboxPadding);
   applyBubbleAnchor(player.getAnchor());
   player.applyState(currentState, true);
+  updateHitboxDebug();
   emptyState.hidden = true;
   onboardingDismissedForSession = true;
   onboardingRoot.hidden = true;
@@ -466,6 +532,7 @@ async function loadPlayer(config) {
   errorRoot.hidden = true;
   errorRoot.replaceChildren();
   setMousePassthrough(true);
+  startRendererHealthProbe();
 }
 
 function showProviderError(error, context = {}) {
@@ -517,8 +584,7 @@ function wireDragging() {
       screenX: event.screenX,
       screenY: event.screenY,
       totalX: 0,
-      totalY: 0,
-      scaleFactor: window.devicePixelRatio || 1
+      totalY: 0
     });
     shell.setPointerCapture(event.pointerId);
   });
@@ -531,6 +597,8 @@ function wireDragging() {
     const movementY = Number.isFinite(event.movementY) && event.movementY !== 0 ? event.movementY : fallbackDy;
     drag.totalX += movementX;
     drag.totalY += movementY;
+    const screenTotalX = event.screenX - drag.x;
+    const screenTotalY = event.screenY - drag.y;
     const distance = Math.abs(drag.totalX) + Math.abs(drag.totalY);
     if (distance > 3 && !drag.moved) {
       drag.moved = true;
@@ -561,9 +629,8 @@ function wireDragging() {
     window.companion?.dragMove({
       screenX: event.screenX,
       screenY: event.screenY,
-      totalX: drag.totalX,
-      totalY: drag.totalY,
-      scaleFactor: window.devicePixelRatio || 1
+      totalX: screenTotalX,
+      totalY: screenTotalY
     });
   });
 

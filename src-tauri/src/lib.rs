@@ -9,7 +9,9 @@ use state::{
     delete_reminder, list_reminders, set_state, CompanionState, CreateReminderInput, Reminder,
     ReminderBroadcast, ReminderStore, SetStateInput, StateBroadcast, StateStore,
 };
+use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc, Mutex,
@@ -37,6 +39,7 @@ struct AppData {
     history: Arc<Mutex<Vec<CompanionState>>>,
     drag_state: Arc<Mutex<Option<DragState>>>,
     passthrough_generation: Arc<AtomicU64>,
+    renderer_health: Arc<Mutex<RendererHealth>>,
 }
 
 #[derive(Clone, Debug)]
@@ -45,6 +48,28 @@ struct DragState {
     start_y: f64,
     window_x: i32,
     window_y: i32,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RendererHealth {
+    status: String,
+    last_reason: String,
+    recovery_count: u64,
+    last_recovery_at: u64,
+    last_heartbeat_at: u64,
+}
+
+impl Default for RendererHealth {
+    fn default() -> Self {
+        Self {
+            status: "starting".to_string(),
+            last_reason: String::new(),
+            recovery_count: 0,
+            last_recovery_at: 0,
+            last_heartbeat_at: 0,
+        }
+    }
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -64,6 +89,7 @@ struct UiSettings {
     max_device_pixel_ratio: f64,
     hitbox_padding: f64,
     gpu_mode: String,
+    debug_hitbox: bool,
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -83,6 +109,7 @@ struct UiSettingsPatch {
     max_device_pixel_ratio: Option<f64>,
     hitbox_padding: Option<f64>,
     gpu_mode: Option<String>,
+    debug_hitbox: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -99,7 +126,6 @@ struct DragPoint {
     screen_y: f64,
     total_x: Option<f64>,
     total_y: Option<f64>,
-    scale_factor: Option<f64>,
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]
@@ -193,7 +219,8 @@ fn fallback_config() -> serde_json::Value {
             "updateAutoCheck": true,
             "maxDevicePixelRatio": 2,
             "hitboxPadding": 8,
-            "gpuMode": "hardware"
+            "gpuMode": "hardware",
+            "debugHitbox": false
         },
         "models": {
             "catalog": [
@@ -223,7 +250,7 @@ fn fallback_config() -> serde_json::Value {
         },
         "state": { "initial": "idle", "pollMs": 1000, "sources": [{ "type": "local-http" }] },
         "specialSegments": {
-            "review": { "from": 2.6, "to": 4.35, "loop": false },
+            "review": { "from": 2.6, "to": 4.35, "loop": true },
             "success": { "from": 4.4, "to": 14.433, "loop": false },
             "successLoop": { "from": 9.2, "to": 14.433, "loop": true, "mixDurationMs": 420, "repeatCount": 240 },
             "special": { "from": 0, "to": 14.433, "loop": true }
@@ -473,6 +500,7 @@ fn ui_settings_from_config(config: &serde_json::Value) -> UiSettings {
         max_device_pixel_ratio: f64_at(config, &["ui", "maxDevicePixelRatio"], 2.0).clamp(1.0, 3.0),
         hitbox_padding: f64_at(config, &["ui", "hitboxPadding"], 8.0).clamp(0.0, 48.0),
         gpu_mode: normalize_gpu_mode(&gpu_mode),
+        debug_hitbox: bool_at(config, &["ui", "debugHitbox"], false),
     }
 }
 
@@ -565,6 +593,9 @@ fn apply_ui_patch(settings: &mut UiSettings, patch: UiSettingsPatch) {
     }
     if let Some(value) = patch.gpu_mode {
         settings.gpu_mode = normalize_gpu_mode(&value);
+    }
+    if let Some(value) = patch.debug_hitbox {
+        settings.debug_hitbox = value;
     }
 }
 
@@ -1391,6 +1422,18 @@ async fn get_diagnostics(data: State<'_, AppData>) -> Result<serde_json::Value, 
     } else {
         "GPU mode is only applied on Windows WebView2."
     };
+    let renderer_health = data.renderer_health.lock().unwrap().clone();
+    let webview_cache_dir = data
+        .config_dir
+        .parent()
+        .map(|_| {
+            std::env::var("LOCALAPPDATA")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| data.config_dir.clone())
+                .join("dev.spine-companion.desktop")
+                .join("EBWebView")
+        })
+        .unwrap_or_else(|| data.config_dir.join("EBWebView"));
 
     Ok(serde_json::json!({
         "apiOk": state_ok,
@@ -1412,7 +1455,10 @@ async fn get_diagnostics(data: State<'_, AppData>) -> Result<serde_json::Value, 
             "mode": gpu_mode,
             "effective": gpu_effective,
             "requiresRestart": true,
-            "message": gpu_message
+            "message": gpu_message,
+            "renderer": renderer_health,
+            "webviewCacheDir": webview_cache_dir.to_string_lossy().to_string(),
+            "tdrNote": "If Windows reports LiveKernelEvent 141 or display driver reset, restart the renderer or clear WebView GPU cache."
         },
         "runtime": {
             "name": "tauri",
@@ -1792,6 +1838,91 @@ fn copy_ai_integration_template(
 }
 
 #[tauri::command]
+fn test_ai_integration(
+    data: State<'_, AppData>,
+    tool_id: String,
+) -> Result<serde_json::Value, String> {
+    let exe = current_mcp_exe_path()?;
+    let api = companion_api_origin_from_data(&data);
+    let preview = ai_integrations::preview_ai_integration_config(&tool_id, &exe, &api)?;
+    let mut child = Command::new(&exe)
+        .arg("--mcp")
+        .env("COMPANION_API", api)
+        .env("COMPANION_SOURCE", preview.integration.source.clone())
+        .env(
+            "COMPANION_SOURCE_LABEL",
+            preview.integration.source_label.clone(),
+        )
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Failed to start MCP server: {error}"))?;
+
+    {
+        let stdin = child
+            .stdin
+            .as_mut()
+            .ok_or_else(|| "MCP stdin unavailable".to_string())?;
+        let initialize = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "clientInfo": { "name": preview.integration.name, "version": env!("CARGO_PKG_VERSION") }
+            }
+        });
+        let list = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/list",
+            "params": {}
+        });
+        writeln!(stdin, "{initialize}").map_err(|error| error.to_string())?;
+        writeln!(stdin, "{list}").map_err(|error| error.to_string())?;
+    }
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "MCP stdout unavailable".to_string())?;
+    let mut lines = std::io::BufReader::new(stdout).lines();
+    let init_line = lines
+        .next()
+        .transpose()
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "MCP server did not return initialize response".to_string())?;
+    let tools_line = lines
+        .next()
+        .transpose()
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "MCP server did not return tools/list response".to_string())?;
+    let _ = child.kill();
+    let init: serde_json::Value =
+        serde_json::from_str(&init_line).map_err(|error| error.to_string())?;
+    let tools: serde_json::Value =
+        serde_json::from_str(&tools_line).map_err(|error| error.to_string())?;
+    let tool_count = tools
+        .get("result")
+        .and_then(|result| result.get("tools"))
+        .and_then(|tools| tools.as_array())
+        .map(|tools| tools.len())
+        .unwrap_or(0);
+    if init.get("error").is_some() || tools.get("error").is_some() || tool_count == 0 {
+        return Err("MCP server started but did not expose tools.".to_string());
+    }
+    Ok(serde_json::json!({
+        "ok": true,
+        "toolId": tool_id,
+        "toolCount": tool_count,
+        "source": preview.integration.source,
+        "sourceLabel": preview.integration.source_label,
+        "command": preview.command
+    }))
+}
+
+#[tauri::command]
 fn open_folder(app: tauri::AppHandle, p: String) -> Result<(), String> {
     let data = app.state::<AppData>();
     let requested = PathBuf::from(&p);
@@ -1832,20 +1963,14 @@ async fn move_drag(
 ) -> Result<(), String> {
     let drag_state = data.drag_state.lock().unwrap().clone();
     if let Some(drag) = drag_state {
-        let scale_factor = window
-            .scale_factor()
-            .ok()
-            .or(point.scale_factor)
-            .unwrap_or(1.0)
-            .clamp(0.5, 4.0);
         let dx = point
             .total_x
-            .map(|value| value * scale_factor)
+            .or_else(|| Some(point.screen_x - drag.start_x))
             .unwrap_or(point.screen_x - drag.start_x)
             .round() as i32;
         let dy = point
             .total_y
-            .map(|value| value * scale_factor)
+            .or_else(|| Some(point.screen_y - drag.start_y))
             .unwrap_or(point.screen_y - drag.start_y)
             .round() as i32;
         window
@@ -1936,6 +2061,38 @@ fn restore_companion_window_surface(win: &WebviewWindow) {
     let _ = win.set_always_on_top(true);
 }
 
+fn create_main_window(app: &AppHandle) -> Result<WebviewWindow, String> {
+    WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+        .title("Spine Companion")
+        .inner_size(360.0, 460.0)
+        .min_inner_size(260.0, 320.0)
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .skip_taskbar(false)
+        .visible(false)
+        .shadow(false)
+        .build()
+        .map_err(|error| error.to_string())
+}
+
+fn recreate_main_window(app: &AppHandle, reason: &str) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.set_ignore_cursor_events(false);
+        let _ = win.close();
+        std::thread::sleep(std::time::Duration::from_millis(140));
+    }
+    let win = create_main_window(app)?;
+    show_companion_window(&win);
+    let data = app.state::<AppData>();
+    let mut health = data.renderer_health.lock().unwrap();
+    health.status = "recreated".to_string();
+    health.last_reason = reason.to_string();
+    health.recovery_count = health.recovery_count.saturating_add(1);
+    health.last_recovery_at = now_ms();
+    Ok(())
+}
+
 fn should_reveal_for_state(settings: &UiSettings, state: &CompanionState) -> bool {
     settings.auto_reveal_on_mcp && is_ai_source(&state.source) && state.state != "idle"
 }
@@ -2016,13 +2173,87 @@ async fn reveal_window(window: WebviewWindow) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn recover_gpu_window(window: WebviewWindow, reason: String) -> Result<(), String> {
+async fn recover_gpu_window(
+    window: WebviewWindow,
+    data: State<'_, AppData>,
+    reason: String,
+) -> Result<(), String> {
     eprintln!("Recovering companion GPU/window surface: {}", reason);
     let _ = window.set_ignore_cursor_events(false);
     let _ = window.hide();
     tokio::time::sleep(Duration::from_millis(90)).await;
     restore_companion_window_surface(&window);
+    let mut health = data.renderer_health.lock().unwrap();
+    health.status = "recovered".to_string();
+    health.last_reason = reason;
+    health.recovery_count = health.recovery_count.saturating_add(1);
+    health.last_recovery_at = now_ms();
     Ok(())
+}
+
+#[tauri::command]
+async fn restart_renderer(app: tauri::AppHandle, reason: String) -> Result<(), String> {
+    recreate_main_window(&app, &reason)
+}
+
+#[tauri::command]
+fn get_renderer_health(data: State<'_, AppData>) -> Result<RendererHealth, String> {
+    Ok(data.renderer_health.lock().unwrap().clone())
+}
+
+#[tauri::command]
+fn update_renderer_health(data: State<'_, AppData>, input: RendererHealth) -> Result<(), String> {
+    *data.renderer_health.lock().unwrap() = input;
+    Ok(())
+}
+
+#[tauri::command]
+fn clear_webview_gpu_cache(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let mut removed = 0u64;
+    let app_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|error| error.to_string())?;
+    let webview_root = app_dir.join("EBWebView");
+    let names = [
+        "GPUCache",
+        "DawnGraphiteCache",
+        "DawnWebGPUCache",
+        "GrShaderCache",
+        "ShaderCache",
+    ];
+    if webview_root.exists() {
+        for name in names {
+            for dir in find_cache_dirs(&webview_root, name) {
+                if std::fs::remove_dir_all(&dir).is_ok() {
+                    removed += 1;
+                }
+            }
+        }
+    }
+    Ok(serde_json::json!({
+        "removed": removed,
+        "path": webview_root.to_string_lossy()
+    }))
+}
+
+fn find_cache_dirs(root: &Path, name: &str) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return found;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        if path.file_name().and_then(|value| value.to_str()) == Some(name) {
+            found.push(path);
+        } else {
+            found.extend(find_cache_dirs(&path, name));
+        }
+    }
+    found
 }
 
 #[tauri::command]
@@ -2422,6 +2653,13 @@ fn url_encode_path_segment(value: &str) -> String {
         .join("")
 }
 
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     if std::env::args().any(|arg| arg == "--mcp") {
@@ -2473,6 +2711,7 @@ pub fn run() {
             history: history_store.clone(),
             drag_state: Arc::new(Mutex::new(None)),
             passthrough_generation: Arc::new(AtomicU64::new(0)),
+            renderer_health: Arc::new(Mutex::new(RendererHealth::default())),
         })
         .setup(move |app| {
             // Bind the local API server before the hidden window is revealed.
@@ -2540,6 +2779,20 @@ pub fn run() {
                 MenuItem::with_id(app, "toggle_hud", "Toggle Debug HUD", true, None::<&str>)?;
             let diagnostics_item =
                 MenuItem::with_id(app, "diagnostics", "Diagnostics", true, None::<&str>)?;
+            let restart_renderer_item = MenuItem::with_id(
+                app,
+                "restart_renderer",
+                "Restart Renderer",
+                true,
+                None::<&str>,
+            )?;
+            let clear_gpu_cache_item = MenuItem::with_id(
+                app,
+                "clear_gpu_cache",
+                "Clear GPU Cache",
+                true,
+                None::<&str>,
+            )?;
             let config_item = MenuItem::with_id(
                 app,
                 "open_config_dir",
@@ -2615,6 +2868,8 @@ pub fn run() {
                     &state_menu,
                     &sep3,
                     &diagnostics_item,
+                    &restart_renderer_item,
+                    &clear_gpu_cache_item,
                     &config_item,
                     &api_item,
                     &sep4,
@@ -2671,6 +2926,16 @@ pub fn run() {
                     "state_sleeping" => set_tray_state(app, "sleeping", None),
                     "state_reminder" => set_tray_state(app, "reminder", None),
                     "diagnostics" => open_manager_from_tray(app),
+                    "restart_renderer" => {
+                        if let Err(error) = recreate_main_window(app, "tray-restart-renderer") {
+                            eprintln!("Failed to restart renderer from tray: {}", error);
+                        }
+                    }
+                    "clear_gpu_cache" => {
+                        if let Err(error) = clear_webview_gpu_cache(app.clone()) {
+                            eprintln!("Failed to clear GPU cache from tray: {}", error);
+                        }
+                    }
                     "open_config_dir" => open_config_dir(app),
                     "open_local_api" => open_local_api(app),
                     "quit" => app.exit(0),
@@ -2753,6 +3018,7 @@ pub fn run() {
             configure_ai_integration,
             open_ai_integration_config,
             copy_ai_integration_template,
+            test_ai_integration,
             remove_model,
             open_folder,
             start_drag,
@@ -2761,6 +3027,10 @@ pub fn run() {
             set_mouse_passthrough,
             reveal_window,
             recover_gpu_window,
+            restart_renderer,
+            clear_webview_gpu_cache,
+            get_renderer_health,
+            update_renderer_health,
             open_manager_window,
             hide_panel_window,
             quit_app,

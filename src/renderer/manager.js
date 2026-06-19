@@ -362,7 +362,7 @@ function settingsView() {
   const resetExperience = async () => {
     await window.companion?.saveSettings?.({
       spine: { scale: 0.86, offsetX: 0, offsetY: -18 },
-      ui: { maxDevicePixelRatio: 2, hitboxPadding: 8, gpuMode: "hardware" }
+      ui: { maxDevicePixelRatio: 2, hitboxPadding: 8, gpuMode: "hardware", debugHitbox: false }
     });
     await refreshConfig();
     showToast(t("manager.status.settingsSaved"));
@@ -402,6 +402,7 @@ function settingsView() {
         })),
         rangeNumber(t("manager.field.maxDpr"), "set-max-dpr", Number(ui.maxDevicePixelRatio || 2), 1, 3, 0.25, () => saveUi({ maxDevicePixelRatio: numeric("set-max-dpr-number") })),
         rangeNumber(t("manager.field.hitboxPadding"), "set-hitbox-padding", Number(ui.hitboxPadding || 8), 0, 48, 1, () => saveUi({ hitboxPadding: numeric("set-hitbox-padding-number") })),
+        check(t("manager.field.debugHitbox"), ui.debugHitbox === true, (checked) => saveUi({ debugHitbox: checked })),
         check(t("manager.field.hardwareAcceleration"), (ui.gpuMode || "hardware") !== "software", (checked) => {
           saveUi({ gpuMode: checked ? "hardware" : "software" });
           showToast(t("manager.status.restartRequired"));
@@ -534,6 +535,22 @@ async function configureIntegration(id) {
   }
 }
 
+async function testIntegration(id) {
+  try {
+    const result = await window.companion?.testAiIntegration?.(id);
+    showModal(t("manager.integrations.testTitle"), t("manager.integrations.testOk", {
+      label: result?.sourceLabel || result?.source || id,
+      count: result?.toolCount || 0
+    }), [
+      h("button", { class: "btn btn-primary", type: "button", onClick: closeModal }, t("manager.actions.close"))
+    ]);
+  } catch (error) {
+    showModal(t("manager.integrations.testTitle"), error.message || String(error), [
+      h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.close"))
+    ]);
+  }
+}
+
 async function integrationsView() {
   await refreshIntegrations();
   const available = typeof window.companion?.listAiIntegrations === "function";
@@ -563,6 +580,7 @@ async function integrationsView() {
             ? h("button", { class: "btn btn-primary", type: "button", onClick: () => configureIntegration(item.id) }, t("manager.actions.configure"))
             : null,
         h("button", { class: "btn", type: "button", onClick: () => previewIntegration(item.id) }, t("manager.actions.preview")),
+        item.configFormat !== "templateOnly" ? h("button", { class: "btn", type: "button", onClick: () => testIntegration(item.id) }, t("manager.actions.testMcp")) : null,
         item.configPath ? h("button", { class: "btn", type: "button", onClick: () => window.companion?.openAiIntegrationConfig?.(item.id) }, t("manager.actions.openConfig")) : null,
         item.configFormat !== "templateOnly" ? h("button", { class: "btn", type: "button", onClick: () => copyIntegrationTemplate(item.id) }, t("manager.actions.copyTemplate")) : null
       )
@@ -604,9 +622,20 @@ async function diagnosticsView() {
             ? t("manager.status.disabled")
             : diagnostics.shortcut?.error || diagnostics.shortcut?.accelerator),
         diagnostics.gpu ? row(t("manager.diagnostics.gpu"), true, diagnostics.gpu.message || diagnostics.gpu.mode) : null,
+        diagnostics.gpu?.renderer ? row(t("manager.diagnostics.renderer"), diagnostics.gpu.renderer.status !== "context-lost", `${diagnostics.gpu.renderer.status}; recoveries ${diagnostics.gpu.renderer.recoveryCount || 0}`) : null,
+        diagnostics.gpu?.webviewCacheDir ? h("p", { class: "model-meta", title: diagnostics.gpu.webviewCacheDir }, diagnostics.gpu.webviewCacheDir) : null,
+        diagnostics.gpu?.tdrNote ? h("p", { class: "model-meta" }, diagnostics.gpu.tdrNote) : null,
         row(t("manager.diagnostics.runtime"), !isTauri(), isTauri() ? t("manager.status.tauriExperimental") : "Electron"),
         h("div", { class: "model-actions" },
           h("button", { class: "btn", type: "button", onClick: () => window.companion?.openFolder?.(config.paths?.configDir) }, t("manager.actions.openConfigFolder")),
+          h("button", { class: "btn", type: "button", onClick: async () => {
+            await window.companion?.restartRenderer?.({ reason: "manager-diagnostics" });
+            showToast(t("manager.status.rendererRestarted"));
+          } }, t("manager.actions.restartRenderer")),
+          h("button", { class: "btn", type: "button", onClick: async () => {
+            const result = await window.companion?.clearGpuCache?.();
+            showToast(t("manager.status.gpuCacheCleared", { count: result?.removed || 0 }));
+          } }, t("manager.actions.clearGpuCache")),
           h("button", { class: "btn", type: "button", onClick: async () => {
             const result = await window.companion?.exportLogs?.();
             showToast(t("manager.status.logsExported", { path: result?.file || "" }));
@@ -643,6 +672,38 @@ async function diagnosticsView() {
   );
 }
 
+function avatarStudioView() {
+  return h("section", {},
+    h("div", { class: "view-header" },
+      h("div", {},
+        h("h2", { class: "view-title" }, t("manager.avatar.title")),
+        h("p", { class: "empty-text" }, t("manager.avatar.subtitle"))
+      )
+    ),
+    h("div", { class: "grid-2" },
+      h("article", { class: "card" },
+        h("h3", {}, t("manager.avatar.inputsTitle")),
+        h("p", { class: "model-meta" }, t("manager.avatar.inputsBody"))
+      ),
+      h("article", { class: "card" },
+        h("h3", {}, t("manager.avatar.packTitle")),
+        h("p", { class: "model-meta" }, "avatar-pack.json, preview.png, layers/, rig/, exports/")
+      ),
+      h("article", { class: "card" },
+        h("h3", {}, t("manager.avatar.limitsTitle")),
+        h("p", { class: "model-meta" }, t("manager.avatar.limitsBody"))
+      ),
+      h("article", { class: "card" },
+        h("h3", {}, t("manager.avatar.docsTitle")),
+        h("div", { class: "model-actions" },
+          h("button", { class: "btn", type: "button", onClick: () => window.companion?.openExternal?.("https://github.com/cb8010d6/spine-companion/blob/main/docs/avatar-studio.md") }, "English"),
+          h("button", { class: "btn", type: "button", onClick: () => window.companion?.openExternal?.("https://github.com/cb8010d6/spine-companion/blob/main/docs/avatar-studio.zh-CN.md") }, "中文")
+        )
+      )
+    )
+  );
+}
+
 async function renderView(viewName) {
   viewContainer.replaceChildren(h("p", { class: "empty-text" }, t("manager.status.loading")));
   setStatus(t("manager.status.viewing", { view: viewName }));
@@ -654,6 +715,7 @@ async function renderView(viewName) {
     render(settingsView(), viewContainer);
   }
   else if (viewName === "integrations") render(await integrationsView(), viewContainer);
+  else if (viewName === "avatar") render(avatarStudioView(), viewContainer);
   else if (viewName === "diagnostics") render(await diagnosticsView(), viewContainer);
 }
 

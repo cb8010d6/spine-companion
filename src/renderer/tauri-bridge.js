@@ -49,6 +49,7 @@ export async function initTauriBridge() {
     configureAiIntegration: (id) => _tauriInvoke("configure_ai_integration", { toolId: id }),
     openAiIntegrationConfig: (id) => _tauriInvoke("open_ai_integration_config", { toolId: id }),
     copyAiIntegrationTemplate: (id = null) => _tauriInvoke("copy_ai_integration_template", { toolId: id }),
+    testAiIntegration: (id) => _tauriInvoke("test_ai_integration", { toolId: id }),
     removeModel: (id) => _tauriInvoke("remove_model", { id }),
     openFolder: (p) => _tauriInvoke("open_folder", { p }),
     openManager: () => _tauriInvoke("open_manager_window"),
@@ -123,6 +124,12 @@ export async function initTauriBridge() {
     recoverGpuWindow: (payload = {}) => _tauriInvoke("recover_gpu_window", {
       reason: String(payload.reason || "")
     }).catch(() => {}),
+    restartRenderer: (payload = {}) => _tauriInvoke("restart_renderer", {
+      reason: String(payload.reason || "")
+    }),
+    clearGpuCache: () => _tauriInvoke("clear_webview_gpu_cache"),
+    getRendererHealth: () => _tauriInvoke("get_renderer_health"),
+    updateRendererHealth: (input) => _tauriInvoke("update_renderer_health", { input }),
     setMousePassthrough: (enabled, bounds) => _tauriInvoke("set_mouse_passthrough", {
       enabled: Boolean(enabled),
       bounds: bounds || null
