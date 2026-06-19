@@ -5,6 +5,8 @@
   "windows": ["main", "manager", "panel"],
   "permissions": [
     "core:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-outer-position",
     "shell:default"
   ]
 }
