@@ -10,7 +10,7 @@ const navButtons = document.querySelectorAll("nav button");
 const topbarStatus = document.getElementById("topbar-status");
 const modalContainer = document.getElementById("modal-container");
 
-let activeView = "library";
+let activeView = "dashboard";
 let config = { models: { catalog: [] }, ui: {}, spine: {} };
 let installedModels = [];
 let diagnostics = null;
@@ -156,6 +156,48 @@ function isInstalled(id) {
 function activeInstalledId() {
   const active = String(config.spine?.assetDir || "").replace(/\\/g, "/");
   return installedModels.find((model) => active.endsWith(`/${model.id}`) || active.endsWith(model.id))?.id || "";
+}
+
+function activeModelLabel() {
+  const id = activeInstalledId();
+  const model = installedModels.find((item) => item.id === id) || catalogModel(id);
+  return model?.name || id || config.spine?.skel || t("panel.model.noModel");
+}
+
+async function dashboardView() {
+  diagnostics = await window.companion?.getDiagnostics?.() || diagnostics || {};
+  history = await window.companion?.getHistory?.() || history || [];
+  reminders = await window.companion?.listReminders?.() || reminders || [];
+  integrations = await window.companion?.listAiIntegrations?.() || integrations || [];
+  if (!updateStatus) await refreshUpdateStatus({ silent: true });
+  const lastState = history[history.length - 1] || {};
+  const configuredIntegrations = integrations.filter((item) => item.configured);
+  const card = (title, value, detail, actions = []) => h("article", { class: "card dashboard-card" },
+    h("div", { class: "dashboard-card-title" }, title),
+    h("div", { class: "dashboard-card-value" }, value || "-"),
+    detail ? h("p", { class: "model-meta" }, detail) : null,
+    actions.length ? h("div", { class: "model-actions" }, actions) : null
+  );
+  return h("section", {},
+    h("div", { class: "view-header" },
+      h("div", {},
+        h("h2", { class: "view-title" }, t("manager.dashboard.title")),
+        h("p", { class: "empty-text" }, t("manager.integrations.subtitle"))
+      )
+    ),
+    h("div", { class: "grid-2" },
+      card(t("manager.dashboard.model"), activeModelLabel(), config.spine?.assetDir || "", [
+        h("button", { class: "btn", type: "button", onClick: () => navTo("library") }, t("manager.dashboard.openLibrary"))
+      ]),
+      card(t("manager.dashboard.ai"), lastState.source || configuredIntegrations[0]?.sourceLabel || "Local", lastState.message || `${configuredIntegrations.length} configured`, [
+        h("button", { class: "btn", type: "button", onClick: () => navTo("integrations") }, t("manager.dashboard.openIntegrations"))
+      ]),
+      card(t("manager.dashboard.bridge"), diagnostics.apiOk ? t("panel.bridge.connected") : t("panel.bridge.offline"), diagnostics.mcpConfigured ? "MCP configured" : "MCP not configured"),
+      card(t("manager.dashboard.reminders"), String(reminders.length), reminders[0]?.message || t("manager.empty.noReminders")),
+      card(t("manager.dashboard.updates"), updateStatus?.updateAvailable ? t("manager.status.updateAvailable", { version: updateStatus.latestVersion }) : t("manager.status.upToDate", { version: updateStatus?.currentVersion || config.version || "" }), updateStatus?.channel || "stable"),
+      card(t("manager.dashboard.renderer"), diagnostics.rendererHealth?.status || diagnostics.gpu?.mode || "hardware", diagnostics.rendererHealth?.lastReason || "")
+    )
+  );
 }
 
 async function startDownload(id) {
@@ -772,7 +814,8 @@ function avatarStudioView() {
 async function renderView(viewName) {
   viewContainer.replaceChildren(h("p", { class: "empty-text" }, t("manager.status.loading")));
   setStatus(t("manager.status.viewing", { view: viewName }));
-  if (viewName === "library") render(libraryView(), viewContainer);
+  if (viewName === "dashboard") render(await dashboardView(), viewContainer);
+  else if (viewName === "library") render(libraryView(), viewContainer);
   else if (viewName === "installed") render(installedView(), viewContainer);
   else if (viewName === "downloads") render(downloadsView(), viewContainer);
   else if (viewName === "settings") {
@@ -807,7 +850,7 @@ async function boot() {
   window.companion?.onConfigChanged?.(async (nextConfig) => {
     config = nextConfig || await window.companion?.getConfig?.() || config;
     createI18n(config);
-    if (activeView === "settings" || activeView === "installed" || activeView === "library") renderView(activeView);
+    if (activeView === "settings" || activeView === "installed" || activeView === "library" || activeView === "dashboard") renderView(activeView);
   });
   window.companion?.onReminders?.((nextReminders) => {
     reminders = Array.isArray(nextReminders) ? nextReminders : [];
