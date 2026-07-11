@@ -4,13 +4,18 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Spine Companion - Manager</title>
-    <link rel="stylesheet" href="/src/renderer/manager.css" />
   </head>
   <body>
     <div id="manager-app">
       <aside id="sidebar">
-        <div class="sidebar-header">Spine Companion</div>
-        <nav id="manager-nav">
+        <div class="sidebar-header">
+          <span class="sidebar-brand-mark" aria-hidden="true">SC</span>
+          <span class="sidebar-brand-copy">
+            <strong>Spine Companion</strong>
+            <small>Manager</small>
+          </span>
+        </div>
+        <nav id="manager-nav" aria-label="Manager">
           <button type="button" data-view="dashboard" class="active">Dashboard</button>
           <button type="button" data-view="library">Library</button>
           <button type="button" data-view="installed">Installed</button>
@@ -20,6 +25,7 @@
           <button type="button" data-view="settings">Settings</button>
           <button type="button" data-view="diagnostics">Diagnostics</button>
         </nav>
+        <div class="sidebar-footer"><span class="runtime-dot" aria-hidden="true"></span><span id="runtime-label">Tauri</span></div>
       </aside>
       <div class="main-wrapper">
         <header class="topbar">
