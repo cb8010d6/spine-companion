@@ -10,9 +10,8 @@ use state::{
     delete_reminder, list_reminders, set_state, CompanionState, CreateReminderInput, Reminder,
     ReminderBroadcast, ReminderStore, SetStateInput, StateBroadcast, StateStore,
 };
-use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc, Mutex,
@@ -1901,16 +1900,18 @@ fn import_avatar_pack(
 }
 
 #[tauri::command]
-fn test_ai_integration(
+async fn test_ai_integration(
     data: State<'_, AppData>,
     tool_id: String,
 ) -> Result<serde_json::Value, String> {
+    use tokio::io::AsyncBufReadExt;
+
     let exe = current_mcp_exe_path()?;
     let api = companion_api_origin_from_data(&data);
     let preview = ai_integrations::preview_ai_integration_config(&tool_id, &exe, &api)?;
-    let mut child = Command::new(&exe)
+    let mut child = tokio::process::Command::new(&exe)
         .arg("--mcp")
-        .env("COMPANION_API", api)
+        .env("COMPANION_API", &api)
         .env("COMPANION_SOURCE", preview.integration.source.clone())
         .env(
             "COMPANION_SOURCE_LABEL",
@@ -1922,50 +1923,81 @@ fn test_ai_integration(
         .spawn()
         .map_err(|error| format!("Failed to start MCP server: {error}"))?;
 
-    {
-        let stdin = child
-            .stdin
-            .as_mut()
-            .ok_or_else(|| "MCP stdin unavailable".to_string())?;
-        let initialize = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2025-06-18",
-                "clientInfo": { "name": preview.integration.name, "version": env!("CARGO_PKG_VERSION") }
+    let mut stdin = match child.stdin.take() {
+        Some(stdin) => stdin,
+        None => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            return Err("MCP stdin unavailable".to_string());
+        }
+    };
+    let stdout = match child.stdout.take() {
+        Some(stdout) => stdout,
+        None => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            return Err("MCP stdout unavailable".to_string());
+        }
+    };
+    let source_label = preview.integration.source_label.clone();
+    let initialize = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-06-18",
+            "clientInfo": { "name": preview.integration.name, "version": env!("CARGO_PKG_VERSION") }
+        }
+    });
+    let initialized = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/initialized",
+        "params": {}
+    });
+    let list_tools = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/list",
+        "params": {}
+    });
+    let report_phase = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {
+            "name": "companion_report_ai_phase",
+            "arguments": {
+                "phase": "thinking",
+                "message": format!("Connection test from {source_label}"),
+                "autoReturnMs": 2200
             }
-        });
-        let list = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "tools/list",
-            "params": {}
-        });
-        writeln!(stdin, "{initialize}").map_err(|error| error.to_string())?;
-        writeln!(stdin, "{list}").map_err(|error| error.to_string())?;
-    }
+        }
+    });
 
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "MCP stdout unavailable".to_string())?;
-    let mut lines = std::io::BufReader::new(stdout).lines();
-    let init_line = lines
-        .next()
-        .transpose()
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "MCP server did not return initialize response".to_string())?;
-    let tools_line = lines
-        .next()
-        .transpose()
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "MCP server did not return tools/list response".to_string())?;
-    let _ = child.kill();
-    let init: serde_json::Value =
-        serde_json::from_str(&init_line).map_err(|error| error.to_string())?;
-    let tools: serde_json::Value =
-        serde_json::from_str(&tools_line).map_err(|error| error.to_string())?;
+    let probe_result = async {
+        let mut lines = tokio::io::BufReader::new(stdout).lines();
+        let timeout = Duration::from_secs(5);
+
+        write_mcp_probe_request(&mut stdin, &initialize).await?;
+        let init = read_mcp_probe_response(&mut lines, 1, "initialize", timeout).await?;
+        if init.get("error").is_some() {
+            return Err("The local AI connection rejected initialization.".to_string());
+        }
+
+        write_mcp_probe_request(&mut stdin, &initialized).await?;
+        write_mcp_probe_request(&mut stdin, &list_tools).await?;
+        let tools = read_mcp_probe_response(&mut lines, 2, "tools/list", timeout).await?;
+
+        write_mcp_probe_request(&mut stdin, &report_phase).await?;
+        let phase = read_mcp_probe_response(&mut lines, 3, "phase report", timeout).await?;
+        drop(stdin);
+        Ok::<_, String>((init, tools, phase))
+    }
+    .await;
+
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+    let (init, tools, phase) = probe_result?;
     let tool_count = tools
         .get("result")
         .and_then(|result| result.get("tools"))
@@ -1973,7 +2005,14 @@ fn test_ai_integration(
         .map(|tools| tools.len())
         .unwrap_or(0);
     if init.get("error").is_some() || tools.get("error").is_some() || tool_count == 0 {
-        return Err("MCP server started but did not expose tools.".to_string());
+        return Err(
+            "The local AI connection started but did not expose companion tools.".to_string(),
+        );
+    }
+    if phase.get("error").is_some() {
+        return Err(
+            "The local AI connection started but could not send a live work update.".to_string(),
+        );
     }
     Ok(serde_json::json!({
         "ok": true,
@@ -1981,8 +2020,56 @@ fn test_ai_integration(
         "toolCount": tool_count,
         "source": preview.integration.source,
         "sourceLabel": preview.integration.source_label,
-        "command": preview.command
+        "command": preview.command,
+        "phaseReported": true
     }))
+}
+
+async fn read_mcp_probe_response<R>(
+    lines: &mut tokio::io::Lines<R>,
+    expected_id: i64,
+    label: &str,
+    timeout: Duration,
+) -> Result<serde_json::Value, String>
+where
+    R: tokio::io::AsyncBufRead + Unpin,
+{
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(format!("MCP {label} response timed out"));
+        }
+        let line = tokio::time::timeout(remaining, lines.next_line())
+            .await
+            .map_err(|_| format!("MCP {label} response timed out"))?
+            .map_err(|error| format!("Failed to read MCP {label} response: {error}"))?
+            .ok_or_else(|| format!("MCP server did not return {label} response"))?;
+        let response = serde_json::from_str::<serde_json::Value>(&line)
+            .map_err(|error| format!("Invalid MCP {label} response: {error}"))?;
+        if response.get("id").and_then(|value| value.as_i64()) == Some(expected_id) {
+            return Ok(response);
+        }
+    }
+}
+
+async fn write_mcp_probe_request<W>(
+    stdin: &mut W,
+    request: &serde_json::Value,
+) -> Result<(), String>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    use tokio::io::AsyncWriteExt;
+
+    stdin
+        .write_all(format!("{request}\n").as_bytes())
+        .await
+        .map_err(|error| format!("Failed to write MCP request: {error}"))?;
+    stdin
+        .flush()
+        .await
+        .map_err(|error| format!("Failed to flush MCP request: {error}"))
 }
 
 #[tauri::command]
@@ -3127,6 +3214,36 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn mcp_probe_response_has_a_deadline() {
+        use tokio::io::AsyncBufReadExt;
+
+        let (_writer, reader) = tokio::io::duplex(64);
+        let mut lines = tokio::io::BufReader::new(reader).lines();
+        let error =
+            read_mcp_probe_response(&mut lines, 1, "test", Duration::from_millis(10))
+                .await
+                .unwrap_err();
+        assert!(error.contains("timed out"));
+    }
+
+    #[tokio::test]
+    async fn mcp_probe_matches_responses_by_json_rpc_id() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+
+        let (mut writer, reader) = tokio::io::duplex(256);
+        writer
+            .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":99,\"result\":{}}\n{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[]}}\n")
+            .await
+            .unwrap();
+        let mut lines = tokio::io::BufReader::new(reader).lines();
+        let response =
+            read_mcp_probe_response(&mut lines, 2, "tools/list", Duration::from_millis(50))
+                .await
+                .unwrap();
+        assert_eq!(response["id"], 2);
+    }
 
     #[test]
     fn encodes_spine_asset_file_names_for_urls() {

@@ -91,7 +91,9 @@ fn phase_schema() -> Value {
                 "enum": ["thinking", "editing", "running", "reviewing", "succeeded", "failed", "waiting"]
             },
             "message": { "type": "string" },
-            "source": { "type": "string" }
+            "source": { "type": "string" },
+            "autoReturnMs": { "type": "integer", "minimum": 0 },
+            "returnTo": { "type": "string", "enum": STATES }
         },
         "required": ["phase"]
     })
@@ -226,11 +228,18 @@ fn phase_payload(arguments: &Value, source: &SourceInfo) -> Value {
         .get("phase")
         .and_then(|value| value.as_str())
         .unwrap_or("thinking");
-    json!({
+    let mut payload = json!({
         "state": phase_to_state(phase),
         "source": payload_source(arguments, source),
         "message": arguments.get("message").and_then(|value| value.as_str()).unwrap_or(phase)
-    })
+    });
+    if let Some(value) = arguments.get("autoReturnMs").and_then(|value| value.as_u64()) {
+        payload["autoReturnMs"] = json!(value);
+    }
+    if let Some(value) = arguments.get("returnTo").and_then(|value| value.as_str()) {
+        payload["returnTo"] = json!(value);
+    }
+    payload
 }
 
 fn mcp_config_dir() -> std::path::PathBuf {
@@ -406,5 +415,24 @@ mod tests {
         let payload = phase_payload(&json!({ "phase": "reviewing" }), &source);
         assert_eq!(payload["state"], "reviewing");
         assert_eq!(payload["source"], "mimocode-mcp");
+    }
+
+    #[test]
+    fn phase_payload_preserves_explicit_auto_return() {
+        let source = SourceInfo {
+            source: "opencode-mcp".to_string(),
+            label: "OpenCode".to_string(),
+        };
+        let payload = phase_payload(
+            &json!({
+                "phase": "thinking",
+                "message": "Testing the connection",
+                "autoReturnMs": 2200
+            }),
+            &source,
+        );
+        assert_eq!(payload["state"], "working");
+        assert_eq!(payload["source"], "opencode-mcp");
+        assert_eq!(payload["autoReturnMs"], 2200);
     }
 }
