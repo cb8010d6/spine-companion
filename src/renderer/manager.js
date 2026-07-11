@@ -1,14 +1,16 @@
 import "./manager.css";
 import { initTauriBridge, isTauri } from "./tauri-bridge.js";
 import { h, render } from "./lib/dom.js";
-import { createI18n, t } from "../shared/i18n.js";
+import { createI18n, getLocale, t } from "../shared/i18n.js";
 import { avatarActionKey, avatarResultToastKey, avatarStatusKey } from "./avatar-ui.js";
 import {
   INTEGRATION_FILTERS,
   integrationCompletion,
+  integrationErrorKey,
   integrationMatchesFilter,
   integrationPrimaryAction,
   integrationSummaryKey,
+  integrationTestResult,
   selectFilteredIntegration
 } from "./integration-ui.js";
 import { modelPreview } from "./model-preview.js";
@@ -63,7 +65,7 @@ function closeModal() {
 function showModal(title, bodyText, actions = []) {
   document.getElementById("modal-title").textContent = title;
   document.getElementById("modal-body").textContent = bodyText;
-  document.getElementById("modal-actions").replaceChildren(...actions);
+  document.getElementById("modal-actions").replaceChildren(...actions.filter(Boolean));
   modalContainer.classList.remove("hidden");
   document.addEventListener("keydown", trapModalKeys);
   window.setTimeout(() => modalContainer.querySelector("button")?.focus(), 0);
@@ -369,6 +371,11 @@ async function importLocalModel() {
 
 async function refreshIntegrations() {
   integrations = await window.companion?.listAiIntegrations?.() || [];
+  integrationTestResults.clear();
+  for (const item of integrations) {
+    const persisted = integrationTestResult(item);
+    if (persisted) integrationTestResults.set(item.id, persisted);
+  }
   return integrations;
 }
 
@@ -629,6 +636,16 @@ async function copyIntegrationTemplate(id = null) {
   showToast(t("manager.status.templateCopied"));
 }
 
+async function openIntegrationConfig(id) {
+  try {
+    await window.companion?.openAiIntegrationConfig?.(id);
+  } catch (error) {
+    showModal(t("manager.actions.openConfig"), error.message || String(error), [
+      h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.close"))
+    ]);
+  }
+}
+
 async function generateCustomTemplate(form) {
   const text = await window.companion?.copyCustomAiIntegrationTemplate?.({
     toolName: form.querySelector("[name=toolName]")?.value || "",
@@ -669,10 +686,22 @@ async function installAgentInstructions(id) {
       h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.cancel")),
       h("button", { class: "btn btn-primary", type: "button", onClick: async () => {
         closeModal();
-        const result = await window.companion?.installAiIntegrationInstructions?.(id);
-        await refreshIntegrations();
-        showToast(t("manager.status.instructionsInstalled", { name, path: result?.targetPath || "" }));
-        renderView("integrations");
+        try {
+          const result = await window.companion?.installAiIntegrationInstructions?.(id);
+          await refreshIntegrations();
+          await renderView("integrations");
+          showModal(t("manager.modal.instructionsInstalledTitle", { name }), t("manager.modal.instructionsInstalledBody", {
+            path: result?.targetPath || "",
+            backup: result?.backupPath || t("manager.integrations.noBackupCreated")
+          }), [
+            h("button", { class: "btn btn-primary", type: "button", onClick: closeModal }, t("manager.actions.close"))
+          ]);
+        } catch (error) {
+          showModal(t("manager.actions.agentInstructions"), error.message || String(error), [
+            h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.close")),
+            h("button", { class: "btn btn-primary", type: "button", onClick: () => installAgentInstructions(id) }, t("manager.actions.retry"))
+          ]);
+        }
       } }, t("manager.actions.installInstructions"))
     ]);
   } catch (error) {
@@ -696,10 +725,23 @@ async function configureIntegration(id) {
       h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.cancel")),
       h("button", { class: "btn btn-primary", type: "button", onClick: async () => {
         closeModal();
-        const result = await window.companion?.configureAiIntegration?.(id);
-        await refreshIntegrations();
-        showToast(t("manager.status.integrationConfigured", { name: result?.integration?.name || name }));
-        renderView("integrations");
+        try {
+          const result = await window.companion?.configureAiIntegration?.(id);
+          await refreshIntegrations();
+          await renderView("integrations");
+          showModal(t(result?.needsRestart ? "manager.modal.integrationUpdatedTitle" : "manager.modal.integrationUnchangedTitle", { name }), t(result?.needsRestart ? "manager.modal.integrationUpdatedBody" : "manager.modal.integrationUnchangedBody", {
+            name,
+            path: result?.targetPath || "",
+            backup: result?.backupPath || t("manager.integrations.noBackupCreated")
+          }), [
+            h("button", { class: "btn btn-primary", type: "button", onClick: closeModal }, t("manager.actions.close"))
+          ]);
+        } catch (error) {
+          showModal(t("manager.integrations.title"), error.message || String(error), [
+            h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.close")),
+            h("button", { class: "btn btn-primary", type: "button", onClick: () => configureIntegration(id) }, t("manager.actions.retry"))
+          ]);
+        }
       } }, t("manager.actions.confirmConfigure"))
     ]);
   } catch (error) {
@@ -709,10 +751,71 @@ async function configureIntegration(id) {
   }
 }
 
+async function acknowledgeIntegrationRestart(id) {
+  try {
+    await window.companion?.acknowledgeAiIntegrationRestart?.(id);
+    await refreshIntegrations();
+    await renderView("integrations");
+    showToast(t("manager.status.restartAcknowledged"));
+  } catch (error) {
+    showModal(t("manager.integrations.title"), error.message || String(error), [
+      h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.close")),
+      h("button", { class: "btn btn-primary", type: "button", onClick: () => acknowledgeIntegrationRestart(id) }, t("manager.actions.retry"))
+    ]);
+  }
+}
+
+async function showRestoredIntegrationResult(name, result) {
+  const body = t("manager.modal.restoreIntegrationDoneBody", {
+    path: result?.targetPath || "",
+    safety: result?.safetyBackupPath || "",
+    name
+  });
+  try {
+    await refreshIntegrations();
+    await renderView("integrations");
+    showModal(t("manager.modal.restoreIntegrationDoneTitle", { name }), body, [
+      h("button", { class: "btn btn-primary", type: "button", onClick: closeModal }, t("manager.actions.close"))
+    ]);
+  } catch (error) {
+    showModal(t("manager.modal.restoreIntegrationDoneTitle", { name }), `${body}\n\n${t("manager.modal.restoreIntegrationRefreshWarning", {
+      error: error.message || String(error)
+    })}`, [
+      h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.close")),
+      h("button", { class: "btn btn-primary", type: "button", onClick: () => showRestoredIntegrationResult(name, result) }, t("manager.actions.retry"))
+    ]);
+  }
+}
+
+async function restoreIntegration(id) {
+  const item = integrations.find((integration) => integration.id === id);
+  const name = item?.name || id;
+  showModal(t("manager.modal.restoreIntegrationTitle", { name }), t("manager.modal.restoreIntegrationPrompt", {
+    path: item?.configPath || "",
+    backup: item?.lastBackupPath || t("manager.integrations.createdConfigRestore")
+  }), [
+    h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.cancel")),
+    h("button", { class: "btn btn-danger", type: "button", onClick: async () => {
+      closeModal();
+      let result;
+      try {
+        result = await window.companion?.restoreAiIntegrationBackup?.(id);
+      } catch (error) {
+        showModal(t("manager.modal.restoreIntegrationTitle", { name }), error.message || String(error), [
+          h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.close")),
+          h("button", { class: "btn btn-primary", type: "button", onClick: () => restoreIntegration(id) }, t("manager.actions.retry"))
+        ]);
+        return;
+      }
+      await showRestoredIntegrationResult(name, result);
+    } }, t("manager.actions.restoreBackup"))
+  ]);
+}
+
 async function testIntegration(id) {
   try {
     const result = await window.companion?.testAiIntegration?.(id);
-    integrationTestResults.set(id, { ok: true, testedAt: Date.now() });
+    await refreshIntegrations();
     if (activeView === "integrations") await renderView("integrations");
     showModal(t("manager.integrations.testTitle"), t("manager.integrations.testOk", {
       label: result?.sourceLabel || result?.source || id,
@@ -721,10 +824,14 @@ async function testIntegration(id) {
       h("button", { class: "btn btn-primary", type: "button", onClick: closeModal }, t("manager.actions.close"))
     ]);
   } catch (error) {
-    integrationTestResults.set(id, { ok: false, testedAt: Date.now() });
+    await refreshIntegrations().catch(() => {});
     if (activeView === "integrations") await renderView("integrations");
-    showModal(t("manager.integrations.testTitle"), error.message || String(error), [
-      h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.close"))
+    const item = integrations.find((integration) => integration.id === id);
+    const rawError = error.message || String(error);
+    showModal(t("manager.integrations.testTitle"), `${t(integrationErrorKey(rawError))}\n\n${t("manager.integrations.technicalDetails")}: ${rawError}`, [
+      h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.close")),
+      item?.configPath ? h("button", { class: "btn", type: "button", onClick: () => openIntegrationConfig(id) }, t("manager.actions.openConfig")) : null,
+      h("button", { class: "btn btn-primary", type: "button", onClick: () => testIntegration(id) }, t("manager.actions.retry"))
     ]);
   }
 }
@@ -764,6 +871,7 @@ async function integrationsView() {
     if (!selected) return null;
     if (action === "configure") return h("button", { class: "btn btn-primary", type: "button", onClick: () => configureIntegration(selected.id) }, t("manager.actions.configure"));
     if (action === "instructions") return h("button", { class: "btn btn-primary", type: "button", onClick: () => installAgentInstructions(selected.id) }, t("manager.actions.installInstructions"));
+    if (action === "restart") return h("button", { class: "btn btn-primary", type: "button", onClick: () => acknowledgeIntegrationRestart(selected.id) }, t("manager.actions.restartedTool"));
     if (action === "test" || action === "retest") return h("button", { class: "btn btn-primary", type: "button", onClick: () => testIntegration(selected.id) }, t(action === "retest" ? "manager.actions.retestMcp" : "manager.actions.testMcp"));
     if (action === "custom") return h("button", { class: "btn btn-primary", type: "button", onClick: () => copyIntegrationTemplate(null) }, t("manager.actions.copyTemplate"));
     return h("button", { class: "btn btn-primary", type: "button", onClick: () => copyIntegrationTemplate(selected.id) }, t("manager.actions.manualSetup"));
@@ -827,8 +935,19 @@ async function integrationsView() {
           statusStep(t("manager.integrations.step.detected"), selected.installed || selected.configFound || selected.configured, selected.installed ? t("manager.integrations.installed") : t("manager.integrations.notDetected")),
           statusStep(t("manager.integrations.step.config"), selected.configured, selected.configured ? t("manager.integrations.configured") : t("manager.integrations.step.configHelp")),
           statusStep(t("manager.integrations.step.instructions"), selected.instructionsFound, selected.instructionsFound ? t("manager.integrations.instructionsFound") : t("manager.integrations.step.instructionsHelp")),
-          statusStep(t("manager.integrations.step.test"), testResult?.ok === true, testResult?.ok ? t("manager.integrations.testPassed") : t("manager.integrations.step.testHelp"))
+          statusStep(t("manager.integrations.step.test"), testResult?.ok === true, selected.needsRestart
+            ? t("manager.integrations.step.restartHelp", { name: selected.name })
+            : testResult?.ok
+              ? t("manager.integrations.testPassedAt", { time: testResult.testedAt ? new Intl.DateTimeFormat(getLocale(), { dateStyle: "medium", timeStyle: "short" }).format(new Date(testResult.testedAt)) : "" })
+              : testResult?.error ? t(integrationErrorKey(testResult.error)) : t("manager.integrations.step.testHelp"))
         ) : customForm,
+        testResult?.ok === false && testResult.error ? h("div", { class: "integration-alert", role: "status" },
+          h("strong", {}, t(integrationErrorKey(testResult.error))),
+          h("details", {},
+            h("summary", {}, t("manager.integrations.technicalDetails")),
+            h("p", {}, testResult.error)
+          )
+        ) : null,
         selected.configPath ? h("p", { class: "integration-path", title: selected.configPath }, `${t("manager.integrations.config")}: ${selected.configPath}`) : null,
         h("div", { class: "integration-primary-actions" }, primaryAction(),
           selected.configFormat !== "templateOnly" && selected.configured && !selected.instructionsFound
@@ -840,7 +959,8 @@ async function integrationsView() {
           h("div", { class: "integration-advanced-actions" },
             h("button", { class: "btn", type: "button", onClick: () => previewIntegration(selected.id) }, t("manager.actions.preview")),
             selected.configFormat !== "templateOnly" ? h("button", { class: "btn", type: "button", onClick: () => showAgentInstructions(selected.id) }, t("manager.actions.agentInstructions")) : null,
-            selected.configPath ? h("button", { class: "btn", type: "button", onClick: () => window.companion?.openAiIntegrationConfig?.(selected.id) }, t("manager.actions.openConfig")) : null,
+            selected.configPath ? h("button", { class: "btn", type: "button", onClick: () => openIntegrationConfig(selected.id) }, t("manager.actions.openConfig")) : null,
+            selected.restoreAvailable ? h("button", { class: "btn btn-danger", type: "button", onClick: () => restoreIntegration(selected.id) }, t("manager.actions.restoreBackup")) : null,
             h("button", { class: "btn", type: "button", onClick: () => copyIntegrationTemplate(selected.configFormat === "templateOnly" ? null : selected.id) }, t("manager.actions.copyTemplate"))
           ),
           h("p", { class: "integration-path" }, `${t("manager.integrations.command")}: ${selected.source} / ${selected.sourceLabel}`)

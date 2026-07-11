@@ -807,6 +807,28 @@ input[type="checkbox"] {
   font-size: 10px;
 }
 
+.integration-alert {
+  margin: 12px 0;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--danger) 42%, var(--border));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--danger) 9%, var(--surface));
+  color: var(--text);
+}
+
+.integration-alert strong {
+  color: var(--danger);
+  font-size: 11px;
+}
+
+.integration-alert p {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
 .integration-primary-actions,
 .integration-advanced-actions {
   display: flex;

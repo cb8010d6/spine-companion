@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   integrationCompletion,
+  integrationErrorKey,
   integrationMatchesFilter,
   integrationPrimaryAction,
   integrationSummaryKey,
+  integrationTestResult,
   selectFilteredIntegration
 } from "../src/renderer/integration-ui.js";
 
@@ -39,5 +41,28 @@ describe("AI integration presentation model", () => {
   it("does not select an unrelated integration when a filter is empty", () => {
     expect(selectFilteredIntegration([], "codex")).toBeNull();
     expect(selectFilteredIntegration([{ id: "vscode" }], "codex")).toEqual({ id: "vscode" });
+  });
+
+  it("uses persisted test state after the Manager is reopened", () => {
+    const item = { ...base, configured: true, instructionsFound: true, lastTestOk: true, lastTestedAt: 42 };
+    expect(integrationTestResult(item)).toEqual({ ok: true, testedAt: 42, error: "" });
+    expect(integrationPrimaryAction(item)).toBe("retest");
+    expect(integrationCompletion(item)).toEqual({ completed: 4, total: 4, state: "ready" });
+  });
+
+  it("requires restart acknowledgement before a connection test", () => {
+    const item = { ...base, configured: true, instructionsFound: true, needsRestart: true, lastTestOk: true };
+    expect(integrationPrimaryAction(item)).toBe("restart");
+    expect(integrationSummaryKey(item)).toBe("manager.integrations.summaryRestart");
+    expect(integrationMatchesFilter(item, "attention")).toBe(true);
+    expect(integrationCompletion(item)).toEqual({ completed: 3, total: 4, state: "setup" });
+  });
+
+  it("keeps persisted test errors available for recovery UI", () => {
+    const item = { ...base, configured: true, instructionsFound: true, lastTestOk: false, lastTestError: "MCP timed out" };
+    expect(integrationTestResult(item)).toEqual({ ok: false, testedAt: 0, error: "MCP timed out" });
+    expect(integrationPrimaryAction(item)).toBe("test");
+    expect(integrationErrorKey("MCP initialize response timed out")).toBe("manager.integrations.error.timeout");
+    expect(integrationErrorKey("Failed to start MCP server")).toBe("manager.integrations.error.start");
   });
 });

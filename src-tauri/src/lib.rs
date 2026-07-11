@@ -40,6 +40,7 @@ struct AppData {
     drag_state: Arc<Mutex<Option<DragState>>>,
     passthrough_generation: Arc<AtomicU64>,
     renderer_health: Arc<Mutex<RendererHealth>>,
+    ai_integration_lock: Arc<Mutex<()>>,
 }
 
 #[derive(Clone, Debug)]
@@ -1733,8 +1734,14 @@ fn set_auto_launch(_enabled: bool) -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
-fn list_ai_integrations() -> Result<Vec<ai_integrations::AiIntegration>, String> {
-    Ok(ai_integrations::list_ai_integrations())
+fn list_ai_integrations(
+    data: State<'_, AppData>,
+) -> Result<Vec<ai_integrations::AiIntegration>, String> {
+    let _guard = data
+        .ai_integration_lock
+        .lock()
+        .map_err(|_| "AI integration state lock is poisoned".to_string())?;
+    ai_integrations::list_ai_integrations_with_state(&data.config_dir)
 }
 
 fn require_manager_window(window: &WebviewWindow) -> Result<(), String> {
@@ -1762,13 +1769,26 @@ fn configure_ai_integration(
     tool_id: String,
 ) -> Result<ai_integrations::IntegrationApplyResult, String> {
     require_manager_window(&window)?;
+    let _guard = data
+        .ai_integration_lock
+        .lock()
+        .map_err(|_| "AI integration state lock is poisoned".to_string())?;
     let exe = current_mcp_exe_path()?;
     let api = companion_api_origin_from_data(&data);
-    ai_integrations::configure_ai_integration(&tool_id, &exe, &api)
+    ai_integrations::configure_ai_integration_managed(&data.config_dir, &tool_id, &exe, &api)
 }
 
 #[tauri::command]
-fn open_ai_integration_config(data: State<'_, AppData>, tool_id: String) -> Result<(), String> {
+fn open_ai_integration_config(
+    window: WebviewWindow,
+    data: State<'_, AppData>,
+    tool_id: String,
+) -> Result<(), String> {
+    require_manager_window(&window)?;
+    let _guard = data
+        .ai_integration_lock
+        .lock()
+        .map_err(|_| "AI integration state lock is poisoned".to_string())?;
     let exe = current_mcp_exe_path()?;
     let api = companion_api_origin_from_data(&data);
     let preview = ai_integrations::preview_ai_integration_config(&tool_id, &exe, &api)?;
@@ -1825,10 +1845,49 @@ fn generate_ai_integration_instructions(
 #[tauri::command]
 fn install_ai_integration_instructions(
     window: WebviewWindow,
+    data: State<'_, AppData>,
     tool_id: String,
 ) -> Result<ai_integrations::AgentInstructionInstallResult, String> {
     require_manager_window(&window)?;
-    ai_integrations::install_agent_instructions(&tool_id)
+    let _guard = data
+        .ai_integration_lock
+        .lock()
+        .map_err(|_| "AI integration state lock is poisoned".to_string())?;
+    let result = ai_integrations::install_agent_instructions(&tool_id)?;
+    ai_integrations::record_instruction_change(
+        &data.config_dir,
+        &tool_id,
+        result.created || result.updated,
+    )?;
+    Ok(result)
+}
+
+#[tauri::command]
+fn acknowledge_ai_integration_restart(
+    window: WebviewWindow,
+    data: State<'_, AppData>,
+    tool_id: String,
+) -> Result<(), String> {
+    require_manager_window(&window)?;
+    let _guard = data
+        .ai_integration_lock
+        .lock()
+        .map_err(|_| "AI integration state lock is poisoned".to_string())?;
+    ai_integrations::acknowledge_restart(&data.config_dir, &tool_id)
+}
+
+#[tauri::command]
+fn restore_ai_integration_backup(
+    window: WebviewWindow,
+    data: State<'_, AppData>,
+    tool_id: String,
+) -> Result<ai_integrations::IntegrationRestoreResult, String> {
+    require_manager_window(&window)?;
+    let _guard = data
+        .ai_integration_lock
+        .lock()
+        .map_err(|_| "AI integration state lock is poisoned".to_string())?;
+    ai_integrations::restore_ai_integration(&data.config_dir, &tool_id)
 }
 
 #[tauri::command]
@@ -1882,13 +1941,48 @@ async fn import_avatar_pack(
 
 #[tauri::command]
 async fn test_ai_integration(
+    window: WebviewWindow,
     data: State<'_, AppData>,
     tool_id: String,
+) -> Result<serde_json::Value, String> {
+    require_manager_window(&window)?;
+    let revision = {
+        let _guard = data
+            .ai_integration_lock
+            .lock()
+            .map_err(|_| "AI integration state lock is poisoned".to_string())?;
+        ai_integrations::integration_revision(&data.config_dir, &tool_id)?
+    };
+    let result = test_ai_integration_inner(&data, &tool_id).await;
+    let persisted = {
+        let _guard = data
+            .ai_integration_lock
+            .lock()
+            .map_err(|_| "AI integration state lock is poisoned".to_string())?;
+        ai_integrations::record_test_result_if_revision(
+            &data.config_dir,
+            &tool_id,
+            revision,
+            &result,
+        )
+    };
+    match (result, persisted) {
+        (Ok(value), Ok(_)) => Ok(value),
+        (Ok(_), Err(error)) => Err(format!(
+            "Connection test passed, but its result could not be saved: {error}"
+        )),
+        (Err(error), _) => Err(error),
+    }
+}
+
+async fn test_ai_integration_inner(
+    data: &AppData,
+    tool_id: &str,
 ) -> Result<serde_json::Value, String> {
     use tokio::io::AsyncBufReadExt;
 
     let exe = current_mcp_exe_path()?;
-    let api = companion_api_origin_from_data(&data);
+    let api = companion_api_origin_from_data(data);
     let preview = ai_integrations::preview_ai_integration_config(&tool_id, &exe, &api)?;
     let mut child = tokio::process::Command::new(&exe)
         .arg("--mcp")
@@ -2796,7 +2890,7 @@ fn current_mcp_exe_path() -> Result<PathBuf, String> {
     std::env::current_exe().map_err(|error| error.to_string())
 }
 
-fn companion_api_origin_from_data(data: &State<'_, AppData>) -> String {
+fn companion_api_origin_from_data(data: &AppData) -> String {
     let public = public_config_with_ui(data);
     public
         .get("server")
@@ -2878,6 +2972,7 @@ pub fn run() {
             drag_state: Arc::new(Mutex::new(None)),
             passthrough_generation: Arc::new(AtomicU64::new(0)),
             renderer_health: Arc::new(Mutex::new(RendererHealth::default())),
+            ai_integration_lock: Arc::new(Mutex::new(())),
         })
         .setup(move |app| {
             // Bind the local API server before the hidden window is revealed.
@@ -3192,6 +3287,8 @@ pub fn run() {
             copy_custom_ai_integration_template,
             generate_ai_integration_instructions,
             install_ai_integration_instructions,
+            acknowledge_ai_integration_restart,
+            restore_ai_integration_backup,
             avatar_requirements,
             validate_avatar_pack,
             import_avatar_pack,
