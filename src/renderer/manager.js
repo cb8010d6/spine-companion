@@ -1,4 +1,16 @@
 import "./manager.css";
+import {
+  Activity,
+  Bot,
+  Box,
+  Download,
+  House,
+  Library,
+  PackageCheck,
+  Settings,
+  Sparkles,
+  createElement
+} from "lucide";
 import { initTauriBridge, isTauri } from "./tauri-bridge.js";
 import { h, render } from "./lib/dom.js";
 import { createI18n, getLocale, t } from "../shared/i18n.js";
@@ -27,8 +39,21 @@ import {
 const viewContainer = document.getElementById("view-container");
 const navButtons = document.querySelectorAll("nav button");
 const topbarStatus = document.getElementById("topbar-status");
+const topbarTitle = document.getElementById("topbar-title");
 const modalContainer = document.getElementById("modal-container");
 const runtimeLabel = document.getElementById("runtime-label");
+const topbarRuntimeLabel = document.getElementById("topbar-runtime-label");
+
+const NAV_ICONS = {
+  dashboard: House,
+  library: Library,
+  installed: PackageCheck,
+  downloads: Download,
+  integrations: Bot,
+  avatar: Sparkles,
+  settings: Settings,
+  diagnostics: Activity
+};
 
 let activeView = "dashboard";
 let config = { models: { catalog: [] }, ui: {}, spine: {} };
@@ -104,6 +129,7 @@ function trapModalKeys(event) {
 function navTo(viewName) {
   activeView = viewName;
   for (const button of navButtons) button.classList.toggle("active", button.dataset.view === viewName);
+  if (topbarTitle) topbarTitle.textContent = t(`manager.nav.${viewName}`);
   renderView(viewName);
 }
 
@@ -176,13 +202,20 @@ function applyUiLocale() {
   const theme = config.ui?.theme || "dark";
   document.documentElement.dataset.theme = theme;
   document.body.dataset.theme = theme;
-  if (runtimeLabel) runtimeLabel.textContent = runtimeName();
+  const runtime = runtimeName();
+  if (runtimeLabel) runtimeLabel.textContent = runtime;
+  if (topbarRuntimeLabel) topbarRuntimeLabel.textContent = runtime;
   for (const button of navButtons) {
     const label = t(`manager.nav.${button.dataset.view}`);
-    button.textContent = label;
+    const Icon = NAV_ICONS[button.dataset.view] || Box;
+    const icon = createElement(Icon);
+    icon.classList.add("nav-icon");
+    icon.setAttribute("aria-hidden", "true");
+    button.replaceChildren(icon, h("span", { class: "nav-label" }, label));
     button.setAttribute("aria-label", label);
     button.title = label;
   }
+  if (topbarTitle) topbarTitle.textContent = t(`manager.nav.${activeView}`);
 }
 
 async function refreshConfig() {
@@ -629,7 +662,8 @@ function field(label, control) {
 function check(label, checked, onChange, hint = "") {
   return h("label", { class: "checkbox-label" },
     h("input", { type: "checkbox", checked, onChange: (e) => onChange(e.target.checked) }),
-    h("span", {},
+    h("span", { class: "switch-track", "aria-hidden": "true" }, h("span", { class: "switch-thumb" })),
+    h("span", { class: "checkbox-copy" },
       label,
       hint ? h("small", {}, hint) : null
     )
