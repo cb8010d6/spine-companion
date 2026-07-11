@@ -145,6 +145,26 @@ function badge(label, tone = "") {
   return h("span", { class: `badge ${tone}`.trim() }, label);
 }
 
+function localizedDiagnosticMessage(message) {
+  const keys = {
+    "No active asset directory.": "manager.diagnostics.message.noAssetDirectory",
+    "No recoverable downloaded catalog model was found.": "manager.diagnostics.message.noRecoverableModel",
+    "Spine asset set is healthy.": "manager.diagnostics.message.assetsHealthy",
+    "Global shortcuts are not implemented in the Tauri runtime yet.": "manager.diagnostics.message.shortcutUnavailable",
+    "WebView2 uses hardware acceleration.": "manager.diagnostics.message.hardwareAcceleration",
+    "WebView2 uses software rendering because hardware acceleration is disabled in Settings.": "manager.diagnostics.message.softwareRendering",
+    "If Windows reports LiveKernelEvent 141 or display driver reset, restart the renderer or clear WebView GPU cache.": "manager.diagnostics.message.tdrAdvice"
+  };
+  return keys[message] ? t(keys[message]) : message || "";
+}
+
+function localizedRendererState(status) {
+  const normalized = String(status || "unknown").replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+  const key = `manager.diagnostics.rendererState.${normalized}`;
+  const translated = t(key);
+  return translated === key ? String(status || t("manager.diagnostics.rendererState.unknown")) : translated;
+}
+
 function runtimeName() {
   if (isTauri()) return "Tauri";
   return config.version === "preview" ? t("manager.status.previewRuntime") : t("manager.status.legacyRuntime");
@@ -1013,15 +1033,15 @@ async function diagnosticsView() {
         diagnostics.localConfigPath ? h("p", { class: "model-meta", title: diagnostics.localConfigPath }, diagnostics.localConfigPath) : null,
         ...(diagnostics.configWarnings || []).map((warning) => h("p", { class: "error-text selectable", title: warning.file }, t("manager.diagnostics.configWarning", { message: warning.message }))),
         row(t("manager.diagnostics.spineAssets"), diagnostics.assetDirExists && diagnostics.hasSkel && diagnostics.hasAtlas && diagnostics.hasPng, "skel / atlas / png"),
-        row(t("manager.diagnostics.modelHealth"), diagnostics.modelHealth?.ok, diagnostics.modelHealth?.message),
+        row(t("manager.diagnostics.modelHealth"), diagnostics.modelHealth?.ok, localizedDiagnosticMessage(diagnostics.modelHealth?.message)),
         row(t("manager.diagnostics.shortcut"), diagnostics.shortcut?.registered || diagnostics.shortcut?.enabled === false,
           diagnostics.shortcut?.enabled === false
             ? t("manager.status.disabled")
-            : diagnostics.shortcut?.error || diagnostics.shortcut?.accelerator),
-        diagnostics.gpu ? row(t("manager.diagnostics.gpu"), true, diagnostics.gpu.message || diagnostics.gpu.mode) : null,
-        diagnostics.gpu?.renderer ? row(t("manager.diagnostics.renderer"), diagnostics.gpu.renderer.status !== "context-lost", t("manager.diagnostics.rendererSummary", { status: diagnostics.gpu.renderer.status, count: diagnostics.gpu.renderer.recoveryCount || 0 })) : null,
+            : localizedDiagnosticMessage(diagnostics.shortcut?.error) || diagnostics.shortcut?.accelerator),
+        diagnostics.gpu ? row(t("manager.diagnostics.gpu"), true, localizedDiagnosticMessage(diagnostics.gpu.message) || diagnostics.gpu.mode) : null,
+        diagnostics.gpu?.renderer ? row(t("manager.diagnostics.renderer"), diagnostics.gpu.renderer.status !== "context-lost", t("manager.diagnostics.rendererSummary", { status: localizedRendererState(diagnostics.gpu.renderer.status), count: diagnostics.gpu.renderer.recoveryCount || 0 })) : null,
         diagnostics.gpu?.webviewCacheDir ? h("p", { class: "model-meta", title: diagnostics.gpu.webviewCacheDir }, diagnostics.gpu.webviewCacheDir) : null,
-        diagnostics.gpu?.tdrNote ? h("p", { class: "model-meta" }, diagnostics.gpu.tdrNote) : null,
+        diagnostics.gpu?.tdrNote ? h("p", { class: "model-meta" }, localizedDiagnosticMessage(diagnostics.gpu.tdrNote)) : null,
         row(t("manager.diagnostics.runtime"), true, runtimeName()),
         h("div", { class: "model-actions" },
           h("button", { class: "btn", type: "button", onClick: () => window.companion?.openFolder?.(config.paths?.configDir) }, t("manager.actions.openConfigFolder")),

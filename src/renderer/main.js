@@ -4,9 +4,10 @@ import { createStateProvider, loadRuntimeConfig } from "./providers.js";
 import { SpinePlayer } from "./spine-player.js";
 import { stateLabels } from "./state.js";
 import { createOnboarding, shouldShowOnboarding } from "./onboarding.js";
-import { createErrorCard } from "./error-boundary.js";
+import { createErrorCard, friendlyError } from "./error-boundary.js";
 import { bindManagerButton } from "./manager-action.js";
 import { defaultMessageForState, isAiSource, notificationForState, shouldNotifyState, sourceDisplayName } from "../shared/notification-policy.js";
+import { createI18n, getLocale, t } from "../shared/i18n.js";
 
 const stage = document.getElementById("stage");
 const shell = document.getElementById("stage-shell");
@@ -487,7 +488,7 @@ function renderModelCatalog(config) {
 async function importSelectedModel(source = "settings") {
   const id = modelSelect.value || runtimeConfig?.models?.catalog?.[0]?.id;
   if (!id || !window.companion?.importModel) return;
-  modelStatus.textContent = "Downloading model...";
+  modelStatus.textContent = t("app.model.downloading");
   modelImport.disabled = true;
   emptyImport.disabled = true;
   try {
@@ -502,9 +503,9 @@ async function importSelectedModel(source = "settings") {
       }
     };
     await loadPlayer(runtimeConfig);
-    modelStatus.textContent = `Imported and loaded from ${result.assetDir}.`;
+    modelStatus.textContent = t("app.model.importedFrom", { path: result.assetDir });
     if (!emptyState.hidden) {
-      emptyState.querySelector("span").textContent = "Model imported and loaded.";
+      emptyState.querySelector("span").textContent = t("app.model.imported");
       emptyStatePath.textContent = result.localConfigPath;
     }
     if (source === "empty") settingsPanel.hidden = false;
@@ -519,10 +520,11 @@ async function importSelectedModel(source = "settings") {
 
 function showEmptyState(error, config) {
   emptyState.hidden = false;
-  emptyState.querySelector("span").textContent = error.message;
+  emptyState.querySelector("strong").textContent = t("app.empty.title");
+  emptyState.querySelector("span").textContent = friendlyError(error, config);
   const localPath = config?.paths?.localConfigPath;
   emptyStatePath.textContent = localPath
-    ? `Put companion.local.json here: ${localPath}`
+    ? t("app.empty.configPath", { path: localPath })
     : "";
 }
 
@@ -805,10 +807,19 @@ function wireMousePassthrough() {
   window.addEventListener("mouseleave", () => setMousePassthrough(true));
 }
 
+function applyMainLocale(config = {}) {
+  createI18n(config);
+  document.documentElement.lang = getLocale();
+  emptyRetry.textContent = t("error.retry");
+  emptyImport.textContent = t("onboarding.download");
+  emptyManager.textContent = t("error.openManager");
+}
+
 async function boot() {
   // Initialize Tauri bridge if running under Tauri (no-op under Electron)
   if (isTauri()) await initTauriBridge();
   const config = await loadRuntimeConfig();
+  applyMainLocale(config);
   runtimeConfig = config;
   applyUiSettings(config.ui);
   provider = createStateProvider(config);
@@ -867,6 +878,8 @@ async function boot() {
         ...(config.spine || {})
       }
     };
+    applyMainLocale(runtimeConfig);
+    showOnboardingIfNeeded(runtimeConfig);
     await hotReloadPlayer(runtimeConfig);
   });
 
@@ -880,7 +893,7 @@ async function boot() {
     updateBubble({
       state: "reminder",
       source: "update-checker",
-      message: `Spine Companion ${status.latestVersion} is available.`
+      message: t("app.updateAvailable", { version: status.latestVersion })
     });
   });
 
@@ -928,7 +941,7 @@ window.addEventListener("unhandledrejection", (event) => {
 
 boot().catch((error) => {
   emptyState.hidden = false;
-  emptyState.querySelector("strong").textContent = "Startup failed";
+  emptyState.querySelector("strong").textContent = t("app.startupFailed");
   emptyState.querySelector("span").textContent = error.message;
   window.companion?.rendererReady?.();
 });
