@@ -243,11 +243,7 @@ fn phase_payload(arguments: &Value, source: &SourceInfo) -> Value {
 }
 
 fn mcp_config_dir() -> std::path::PathBuf {
-    std::env::var("LOCALAPPDATA")
-        .or_else(|_| std::env::var("XDG_DATA_HOME"))
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| std::env::temp_dir())
-        .join("Spine Companion")
+    crate::user_config_dir().unwrap_or_else(std::env::temp_dir)
 }
 
 async fn call_tool(name: &str, arguments: Value, source: &SourceInfo) -> Result<Value, String> {
@@ -300,8 +296,31 @@ async fn call_tool(name: &str, arguments: Value, source: &SourceInfo) -> Result<
         }
         "companion_import_avatar_pack" => {
             let path = arguments.get("path").and_then(|value| value.as_str()).unwrap_or("");
-            let result = avatar::import_pack(std::path::Path::new(path), &mcp_config_dir())?;
-            Ok(text_result(serde_json::to_value(result).unwrap_or_else(|_| json!({})), source))
+            let path = std::path::Path::new(path);
+            let validation = avatar::validate_pack(path);
+            let value = if validation.runtime_ready {
+                let result = avatar::install_runtime_pack(path, &mcp_config_dir())?;
+                json!({
+                    "imported": true,
+                    "installed": result.installed,
+                    "activated": false,
+                    "validation": result.validation,
+                    "registryPath": result.registry_path,
+                    "runtimePath": result.runtime_path,
+                    "note": "Runtime assets were installed. Activate the model in Spine Companion Manager."
+                })
+            } else {
+                let result = avatar::register_pack(path, &mcp_config_dir())?;
+                json!({
+                    "imported": result.imported,
+                    "installed": false,
+                    "activated": false,
+                    "validation": result.validation,
+                    "registryPath": result.registry_path,
+                    "note": "Draft pack saved. A valid Spine runtime export is required before activation."
+                })
+            };
+            Ok(text_result(value, source))
         }
         _ => Err(format!("Unknown MCP tool: {name}")),
     }
@@ -434,5 +453,13 @@ mod tests {
         assert_eq!(payload["state"], "working");
         assert_eq!(payload["source"], "opencode-mcp");
         assert_eq!(payload["autoReturnMs"], 2200);
+    }
+
+    #[test]
+    fn avatar_import_uses_the_tauri_config_directory() {
+        assert_eq!(
+            mcp_config_dir(),
+            crate::user_config_dir().unwrap_or_else(std::env::temp_dir)
+        );
     }
 }

@@ -275,7 +275,7 @@ fn read_json_if_exists(path: &Path) -> Option<serde_json::Value> {
         .and_then(|text| serde_json::from_str(&text).ok())
 }
 
-fn user_config_dir() -> Option<PathBuf> {
+pub(crate) fn user_config_dir() -> Option<PathBuf> {
     if let Ok(value) = std::env::var("SPINE_COMPANION_CONFIG_DIR") {
         return Some(PathBuf::from(value));
     }
@@ -385,87 +385,8 @@ fn resolve_asset_dir(root: &Path, value: &str) -> String {
     }
 }
 
-fn atlas_texture_refs(text: &str) -> Vec<String> {
-    text.lines()
-        .filter_map(|line| {
-            let trimmed = line.trim();
-            let lower = trimmed.to_ascii_lowercase();
-            let top_level = !line
-                .chars()
-                .next()
-                .map(|ch| ch.is_whitespace())
-                .unwrap_or(false);
-            if top_level
-                && !trimmed.is_empty()
-                && (lower.ends_with(".png")
-                    || lower.ends_with(".jpg")
-                    || lower.ends_with(".jpeg")
-                    || lower.ends_with(".webp"))
-            {
-                Some(trimmed.to_string())
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
 fn validate_spine_asset_dir(asset_dir: &Path, skel: &str) -> Result<(), String> {
-    let skel_path = asset_dir.join(skel);
-    if skel.is_empty()
-        || skel_path
-            .extension()
-            .and_then(|value| value.to_str())
-            .map(|value| value.eq_ignore_ascii_case("skel"))
-            != Some(true)
-    {
-        return Err("Choose a Spine .skel file.".to_string());
-    }
-    if !skel_path.is_file() {
-        return Err(format!(
-            "Spine skeleton file does not exist: {}",
-            skel_path.to_string_lossy()
-        ));
-    }
-    let mut atlas_files = Vec::new();
-    let mut has_png = false;
-    for entry in std::fs::read_dir(asset_dir).map_err(|error| error.to_string())? {
-        let path = entry.map_err(|error| error.to_string())?.path();
-        if let Some(ext) = path.extension().and_then(|value| value.to_str()) {
-            if ext.eq_ignore_ascii_case("atlas") {
-                atlas_files.push(path.clone());
-            }
-            if ext.eq_ignore_ascii_case("png") {
-                has_png = true;
-            }
-        }
-    }
-    if atlas_files.is_empty() || !has_png {
-        return Err("The selected .skel folder must also contain at least one .atlas file and one .png texture.".to_string());
-    }
-    let mut missing = Vec::new();
-    for atlas in atlas_files {
-        let text = std::fs::read_to_string(&atlas).map_err(|error| error.to_string())?;
-        for texture in atlas_texture_refs(&text) {
-            if !asset_dir.join(&texture).is_file() {
-                missing.push(format!(
-                    "{} -> {}",
-                    atlas
-                        .file_name()
-                        .and_then(|value| value.to_str())
-                        .unwrap_or("atlas"),
-                    texture
-                ));
-            }
-        }
-    }
-    if !missing.is_empty() {
-        return Err(format!(
-            "Missing atlas texture file(s): {}",
-            missing.join(", ")
-        ));
-    }
-    Ok(())
+    avatar::spine_assets::validate_spine_asset_dir(asset_dir, skel).map(|_| ())
 }
 
 fn ui_settings_from_config(config: &serde_json::Value) -> UiSettings {
@@ -1567,18 +1488,17 @@ fn get_current_model(data: State<'_, AppData>) -> Result<CurrentModel, String> {
     })
 }
 
-#[tauri::command]
-async fn set_active_model(
-    app: tauri::AppHandle,
-    data: State<'_, AppData>,
-    id: String,
+async fn activate_installed_model(
+    app: &tauri::AppHandle,
+    data: &AppData,
+    id: &str,
 ) -> Result<ImportModelResult, String> {
     if id.contains("..") || id.contains('/') || id.contains('\\') {
         return Err("Invalid model ID".to_string());
     }
     let public = public_config_with_ui(&data);
-    let model = model_by_id(&public, &id);
-    let model_dir = data.config_dir.join("models").join(&id);
+    let model = model_by_id(&public, id);
+    let model_dir = data.config_dir.join("models").join(id);
     if !model_dir.exists() {
         return Err(format!("Model is not installed: {}", id));
     }
@@ -1627,11 +1547,11 @@ async fn set_active_model(
         .and_then(|origin| origin.as_str())
         .unwrap_or("http://127.0.0.1:17388");
     let result = ImportModelResult {
-        id: id.clone(),
+        id: id.to_string(),
         name: model
             .as_ref()
             .and_then(|m| m.get("name").and_then(|v| v.as_str()))
-            .unwrap_or(&id)
+            .unwrap_or(id)
             .to_string(),
         asset_dir: canonical_model_dir.to_string_lossy().to_string(),
         skel: skel.clone(),
@@ -1642,6 +1562,15 @@ async fn set_active_model(
     let _ = app.emit("companion:model-imported", result.clone());
     let _ = app.emit("companion:config-changed", public_config_with_ui(&data));
     Ok(result)
+}
+
+#[tauri::command]
+async fn set_active_model(
+    app: tauri::AppHandle,
+    data: State<'_, AppData>,
+    id: String,
+) -> Result<ImportModelResult, String> {
+    activate_installed_model(&app, &data, &id).await
 }
 
 #[tauri::command]
@@ -1892,11 +1821,37 @@ fn validate_avatar_pack(input: avatar::AvatarPackInput) -> Result<avatar::Avatar
 }
 
 #[tauri::command]
-fn import_avatar_pack(
+async fn import_avatar_pack(
+    app: tauri::AppHandle,
     data: State<'_, AppData>,
     input: avatar::AvatarPackInput,
-) -> Result<avatar::AvatarImportResult, String> {
-    avatar::import_pack(&avatar::path_from_input(input), &data.config_dir)
+) -> Result<serde_json::Value, String> {
+    let path = avatar::path_from_input(input);
+    let validation = avatar::validate_pack(&path);
+    if !validation.ok {
+        return Err(format!("Avatar pack is invalid: {}", validation.errors.join("; ")));
+    }
+    if !validation.runtime_ready {
+        let result = avatar::register_pack(&path, &data.config_dir)?;
+        return Ok(serde_json::json!({
+            "imported": result.imported,
+            "installed": false,
+            "activated": false,
+            "validation": result.validation,
+            "registryPath": result.registry_path
+        }));
+    }
+    let installed = avatar::install_runtime_pack(&path, &data.config_dir)?;
+    let activated = activate_installed_model(&app, &data, &installed.validation.id).await?;
+    Ok(serde_json::json!({
+        "imported": true,
+        "installed": installed.installed,
+        "activated": true,
+        "validation": installed.validation,
+        "registryPath": installed.registry_path,
+        "runtimePath": installed.runtime_path,
+        "model": activated
+    }))
 }
 
 #[tauri::command]
@@ -2788,7 +2743,27 @@ fn write_local_model_config(path: &Path, asset_dir: &Path, skel: &str) -> Result
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
     let text = serde_json::to_string_pretty(&config).map_err(|error| error.to_string())?;
-    std::fs::write(path, format!("{}\n", text)).map_err(|error| error.to_string())
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let temporary = path.with_extension(format!("tmp-{}-{suffix}", std::process::id()));
+    let backup = path.with_extension(format!("previous-{}-{suffix}", std::process::id()));
+    std::fs::write(&temporary, format!("{}\n", text)).map_err(|error| error.to_string())?;
+    let had_previous = path.exists();
+    if had_previous {
+        let _ = std::fs::remove_file(&backup);
+        std::fs::rename(path, &backup).map_err(|error| error.to_string())?;
+    }
+    if let Err(error) = std::fs::rename(&temporary, path) {
+        if had_previous {
+            let _ = std::fs::rename(&backup, path);
+        }
+        let _ = std::fs::remove_file(&temporary);
+        return Err(error.to_string());
+    }
+    let _ = std::fs::remove_file(&backup);
+    Ok(())
 }
 
 fn current_mcp_exe_path() -> Result<PathBuf, String> {

@@ -2,6 +2,7 @@ import "./manager.css";
 import { initTauriBridge, isTauri } from "./tauri-bridge.js";
 import { h, render } from "./lib/dom.js";
 import { createI18n, t } from "../shared/i18n.js";
+import { avatarActionKey, avatarResultToastKey, avatarStatusKey } from "./avatar-ui.js";
 import { modelPreview } from "./model-preview.js";
 import { renderSpinePreview } from "./spine-preview.js";
 import {
@@ -835,10 +836,15 @@ async function diagnosticsView() {
 function avatarStudioView() {
   const pathInput = h("input", { class: "input", type: "text", placeholder: "C:/path/to/avatar-pack", "aria-label": t("manager.avatar.packPath") });
   const resultRoot = h("div", { class: "avatar-validation" });
+  let latestValidation = null;
+  const importButton = h("button", { class: "btn btn-primary", type: "button" }, t("manager.avatar.saveDraft"));
   const renderValidation = (result) => {
+    latestValidation = result || null;
     const ok = result?.ok === true;
+    importButton.textContent = t(avatarActionKey(result));
+    importButton.disabled = !ok;
     resultRoot.replaceChildren(
-      h("p", { class: ok ? "status-value status-ok" : "status-value status-err" }, ok ? t("manager.avatar.valid") : t("manager.avatar.invalid")),
+      h("p", { class: ok ? "status-value status-ok" : "status-value status-err" }, t(avatarStatusKey(result))),
       result?.id || result?.name ? h("p", { class: "model-meta" }, `${result.name || result.id} (${result.id || ""})`) : null,
       ...(result?.errors || []).map((item) => h("p", { class: "error-text" }, item)),
       ...(result?.warnings || []).map((item) => h("p", { class: "model-meta" }, item))
@@ -849,6 +855,26 @@ function avatarStudioView() {
     renderValidation(result);
     return result;
   };
+  importButton.disabled = true;
+  pathInput.addEventListener("input", () => {
+    latestValidation = null;
+    importButton.disabled = true;
+    importButton.textContent = t("manager.avatar.saveDraft");
+    resultRoot.replaceChildren();
+  });
+  importButton.addEventListener("click", async () => {
+    try {
+      const validation = latestValidation || await validate();
+      if (!validation?.ok) return;
+      const result = await window.companion?.importAvatarPack?.(pathInput.value.trim());
+      renderValidation(result?.validation);
+      const name = result?.validation?.name || result?.validation?.id || "avatar pack";
+      showToast(t(avatarResultToastKey(result), { name }));
+    } catch (error) {
+      resultRoot.replaceChildren(h("p", { class: "error-text" }, error?.message || String(error)));
+      showToast(t("manager.avatar.importFailed"));
+    }
+  });
   return h("section", {},
     h("div", { class: "view-header" },
       h("div", {},
@@ -867,11 +893,7 @@ function avatarStudioView() {
         h("div", { class: "avatar-pack-form" },
           pathInput,
           h("button", { class: "btn", type: "button", onClick: validate }, t("manager.avatar.validate")),
-          h("button", { class: "btn btn-primary", type: "button", onClick: async () => {
-            const result = await window.companion?.importAvatarPack?.(pathInput.value.trim());
-            renderValidation(result?.validation);
-            showToast(result?.imported ? t("manager.status.loadedModel", { name: result.validation?.name || result.validation?.id || "avatar pack" }) : t("manager.avatar.invalid"));
-          } }, t("manager.avatar.import"))
+          importButton
         ),
         resultRoot
       ),
