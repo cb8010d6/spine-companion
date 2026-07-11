@@ -1,11 +1,21 @@
 export const INTEGRATION_FILTERS = ["all", "detected", "configured", "attention"];
 
+export function integrationTestResult(item, override = null) {
+  if (override) return override;
+  if (typeof item?.lastTestOk !== "boolean") return null;
+  return {
+    ok: item.lastTestOk,
+    testedAt: item.lastTestedAt || 0,
+    error: item.lastTestError || ""
+  };
+}
+
 export function integrationCompletion(item, testResult = null) {
   if (item?.configFormat === "templateOnly") return { completed: 0, total: 0, state: "custom" };
   const detected = item?.installed || item?.configFound || item?.configured;
   const configured = item?.configured === true;
   const instructed = item?.instructionsFound === true;
-  const tested = testResult?.ok === true;
+  const tested = item?.needsRestart !== true && integrationTestResult(item, testResult)?.ok === true;
   const completed = [detected, configured, instructed, tested].filter(Boolean).length;
   return {
     completed,
@@ -18,6 +28,7 @@ export function integrationMatchesFilter(item, filter, testResult = null) {
   if (filter === "detected") return item?.installed || item?.configFound || item?.configured;
   if (filter === "configured") return item?.configured === true;
   if (filter === "attention") {
+    if (item?.needsRestart) return true;
     const progress = integrationCompletion(item, testResult);
     return progress.state !== "custom" && progress.state !== "ready";
   }
@@ -30,10 +41,21 @@ export function integrationPrimaryAction(item, testResult = null) {
   if (!detected) return "manual";
   if (!item.configured) return "configure";
   if (!item.instructionsFound) return "instructions";
-  return testResult?.ok ? "retest" : "test";
+  if (item.needsRestart) return "restart";
+  return integrationTestResult(item, testResult)?.ok ? "retest" : "test";
+}
+
+export function integrationErrorKey(error) {
+  const message = String(error || "").toLowerCase();
+  if (message.includes("timed out") || message.includes("timeout")) return "manager.integrations.error.timeout";
+  if (message.includes("failed to start") || message.includes("could not start")) return "manager.integrations.error.start";
+  if (message.includes("did not expose") || message.includes("no tools")) return "manager.integrations.error.noTools";
+  if (message.includes("could not send") || message.includes("work update")) return "manager.integrations.error.report";
+  return "manager.integrations.error.generic";
 }
 
 export function integrationSummaryKey(item, testResult = null) {
+  if (item?.needsRestart) return "manager.integrations.summaryRestart";
   const progress = integrationCompletion(item, testResult);
   if (progress.state === "custom") return "manager.integrations.summaryCustom";
   if (progress.state === "ready") return "manager.integrations.summaryReady";

@@ -1,6 +1,6 @@
 [package]
 name = "spine-companion"
-version = "0.2.5-rc.5"
+version = "0.2.5-rc.6"
 description = "Open-source desktop companion shell for local Spine 3.8 models."
 authors = ["Spine Companion contributors"]
 edition = "2021"
@@ -20,6 +20,7 @@ tauri-plugin-notification = "2"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 tokio = { version = "1", features = ["full"] }
 axum = { version = "0.7", features = ["ws"] }
 tower-http = { version = "0.6", features = ["cors"] }
