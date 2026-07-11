@@ -1737,6 +1737,14 @@ fn list_ai_integrations() -> Result<Vec<ai_integrations::AiIntegration>, String>
     Ok(ai_integrations::list_ai_integrations())
 }
 
+fn require_manager_window(window: &WebviewWindow) -> Result<(), String> {
+    if window.label() == "manager" {
+        Ok(())
+    } else {
+        Err("This operation is only available from the Manager window.".to_string())
+    }
+}
+
 #[tauri::command]
 fn preview_ai_integration_config(
     data: State<'_, AppData>,
@@ -1749,9 +1757,11 @@ fn preview_ai_integration_config(
 
 #[tauri::command]
 fn configure_ai_integration(
+    window: WebviewWindow,
     data: State<'_, AppData>,
     tool_id: String,
 ) -> Result<ai_integrations::IntegrationApplyResult, String> {
+    require_manager_window(&window)?;
     let exe = current_mcp_exe_path()?;
     let api = companion_api_origin_from_data(&data);
     ai_integrations::configure_ai_integration(&tool_id, &exe, &api)
@@ -1800,7 +1810,9 @@ fn copy_custom_ai_integration_template(
 ) -> Result<String, String> {
     let exe = current_mcp_exe_path()?;
     let api = companion_api_origin_from_data(&data);
-    Ok(ai_integrations::templates_for_custom_input(&exe, &api, input))
+    Ok(ai_integrations::templates_for_custom_input(
+        &exe, &api, input,
+    ))
 }
 
 #[tauri::command]
@@ -1811,12 +1823,23 @@ fn generate_ai_integration_instructions(
 }
 
 #[tauri::command]
+fn install_ai_integration_instructions(
+    window: WebviewWindow,
+    tool_id: String,
+) -> Result<ai_integrations::AgentInstructionInstallResult, String> {
+    require_manager_window(&window)?;
+    ai_integrations::install_agent_instructions(&tool_id)
+}
+
+#[tauri::command]
 fn avatar_requirements() -> Result<serde_json::Value, String> {
     Ok(avatar::requirements())
 }
 
 #[tauri::command]
-fn validate_avatar_pack(input: avatar::AvatarPackInput) -> Result<avatar::AvatarValidation, String> {
+fn validate_avatar_pack(
+    input: avatar::AvatarPackInput,
+) -> Result<avatar::AvatarValidation, String> {
     Ok(avatar::validate_pack(&avatar::path_from_input(input)))
 }
 
@@ -1829,7 +1852,10 @@ async fn import_avatar_pack(
     let path = avatar::path_from_input(input);
     let validation = avatar::validate_pack(&path);
     if !validation.ok {
-        return Err(format!("Avatar pack is invalid: {}", validation.errors.join("; ")));
+        return Err(format!(
+            "Avatar pack is invalid: {}",
+            validation.errors.join("; ")
+        ));
     }
     if !validation.runtime_ready {
         let result = avatar::register_pack(&path, &data.config_dir)?;
@@ -2899,6 +2925,10 @@ pub fn run() {
                 }
             });
 
+            if std::env::var("SPINE_COMPANION_OPEN_MANAGER").as_deref() == Ok("1") {
+                let _ = show_manager_window(app.handle());
+            }
+
             // Build minimal tray menu
             let show_item =
                 MenuItem::with_id(app, "show_companion", "Show Companion", true, None::<&str>)?;
@@ -3161,6 +3191,7 @@ pub fn run() {
             copy_ai_integration_template,
             copy_custom_ai_integration_template,
             generate_ai_integration_instructions,
+            install_ai_integration_instructions,
             avatar_requirements,
             validate_avatar_pack,
             import_avatar_pack,
@@ -3196,10 +3227,9 @@ mod tests {
 
         let (_writer, reader) = tokio::io::duplex(64);
         let mut lines = tokio::io::BufReader::new(reader).lines();
-        let error =
-            read_mcp_probe_response(&mut lines, 1, "test", Duration::from_millis(10))
-                .await
-                .unwrap_err();
+        let error = read_mcp_probe_response(&mut lines, 1, "test", Duration::from_millis(10))
+            .await
+            .unwrap_err();
         assert!(error.contains("timed out"));
     }
 

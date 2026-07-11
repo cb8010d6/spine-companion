@@ -1,9 +1,17 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(target_os = "windows")]
+use std::os::windows::ffi::OsStrExt;
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::Storage::FileSystem::ReplaceFileW;
+
 const SERVER_NAME: &str = "spine_companion";
+const INSTRUCTION_BLOCK_START: &str = "<!-- spine-companion-status -->";
+const INSTRUCTION_BLOCK_END: &str = "<!-- /spine-companion-status -->";
 
 #[derive(Clone, Debug)]
 pub struct IntegrationEnv {
@@ -101,6 +109,16 @@ pub struct AgentInstructions {
     pub exists: bool,
     pub title: String,
     pub body: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentInstructionInstallResult {
+    pub integration: AiIntegration,
+    pub target_path: String,
+    pub backup_path: String,
+    pub created: bool,
+    pub updated: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -343,6 +361,14 @@ fn read_text(path: &Path) -> String {
     std::fs::read_to_string(path).unwrap_or_default()
 }
 
+fn read_text_if_exists(path: &Path) -> Result<String, String> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(text),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(error) => Err(format!("Cannot read {}: {error}", path.display())),
+    }
+}
+
 fn is_configured(path: &Path) -> bool {
     read_text(path).contains(SERVER_NAME) || read_text(path).contains("spine-companion")
 }
@@ -366,22 +392,32 @@ fn integration_status(
     }
 }
 
-fn instructions_path_for_def(def: &IntegrationDefinition) -> Option<PathBuf> {
-    let env = IntegrationEnv::current()?;
+fn instructions_path_for_def(env: &IntegrationEnv, def: &IntegrationDefinition) -> Option<PathBuf> {
     match def.id {
         "codex" => Some(env.home.join(".codex").join("AGENTS.md")),
         "vscode" => Some(env.home.join(".github").join("copilot-instructions.md")),
-        "cursor" => Some(env.home.join(".cursor").join("rules").join("spine-companion.md")),
+        "cursor" => Some(
+            env.home
+                .join(".cursor")
+                .join("rules")
+                .join("spine-companion.md"),
+        ),
         "claude-desktop" => Some(env.home.join(".claude").join("CLAUDE.md")),
         "opencode" => Some(env.home.join(".config").join("opencode").join("AGENTS.md")),
-        "mimocode" => Some(env.home.join(".local").join("share").join("mimocode").join("AGENTS.md")),
+        "mimocode" => Some(
+            env.home
+                .join(".local")
+                .join("share")
+                .join("mimocode")
+                .join("AGENTS.md"),
+        ),
         "roo-cline" => Some(env.home.join(".cline").join("spine-companion.md")),
         "gemini-antigravity" => Some(env.home.join(".gemini").join("GEMINI.md")),
         _ => None,
     }
 }
 
-fn integration_from_def(def: &IntegrationDefinition) -> AiIntegration {
+fn integration_from_def(env: &IntegrationEnv, def: &IntegrationDefinition) -> AiIntegration {
     let config_path = selected_config_path(def);
     let config_found = config_path
         .as_ref()
@@ -398,10 +434,11 @@ fn integration_from_def(def: &IntegrationDefinition) -> AiIntegration {
         None
     };
     let supported = def.format != IntegrationFormat::TemplateOnly || def.id == "custom";
-    let instructions_path = instructions_path_for_def(def)
+    let instructions_path = instructions_path_for_def(env, def)
         .map(|path| path.to_string_lossy().to_string())
         .unwrap_or_default();
-    let instructions_found = !instructions_path.is_empty() && Path::new(&instructions_path).exists();
+    let instructions_found =
+        !instructions_path.is_empty() && Path::new(&instructions_path).exists();
     AiIntegration {
         id: def.id.to_string(),
         name: def.name.to_string(),
@@ -457,12 +494,21 @@ Do not spam updates for tiny steps. Report at meaningful phase boundaries and co
 pub fn generate_agent_instructions(id: &str) -> Result<AgentInstructions, String> {
     let env =
         IntegrationEnv::current().ok_or_else(|| "Cannot locate user home directory".to_string())?;
-    let def = find_definition(&env, id)?;
+    generate_agent_instructions_with_env(&env, id)
+}
+
+fn generate_agent_instructions_with_env(
+    env: &IntegrationEnv,
+    id: &str,
+) -> Result<AgentInstructions, String> {
+    let def = find_definition(env, id)?;
     if def.format == IntegrationFormat::TemplateOnly {
-        return Err("Custom integrations use editable templates instead of agent files.".to_string());
+        return Err(
+            "Custom integrations use editable templates instead of agent files.".to_string(),
+        );
     }
-    let integration = integration_from_def(&def);
-    let target = instructions_path_for_def(&def)
+    let integration = integration_from_def(env, &def);
+    let target = instructions_path_for_def(env, &def)
         .ok_or_else(|| "No instruction target is defined for this tool".to_string())?;
     let body = instruction_body(&def);
     Ok(AgentInstructions {
@@ -475,13 +521,200 @@ pub fn generate_agent_instructions(id: &str) -> Result<AgentInstructions, String
 }
 
 pub fn list_ai_integrations_with_env(env: &IntegrationEnv) -> Vec<AiIntegration> {
-    definitions(env).iter().map(integration_from_def).collect()
+    definitions(env)
+        .iter()
+        .map(|def| integration_from_def(env, def))
+        .collect()
 }
 
 pub fn list_ai_integrations() -> Vec<AiIntegration> {
     IntegrationEnv::current()
         .map(|env| list_ai_integrations_with_env(&env))
         .unwrap_or_default()
+}
+
+fn managed_instruction_block(def: &IntegrationDefinition) -> String {
+    format!(
+        "{INSTRUCTION_BLOCK_START}\n{}\n{INSTRUCTION_BLOCK_END}",
+        instruction_body(def).trim_end()
+    )
+}
+
+fn upsert_managed_instruction_block(current: &str, block: &str) -> String {
+    if let Some(start) = current.find(INSTRUCTION_BLOCK_START) {
+        let search_start = start + INSTRUCTION_BLOCK_START.len();
+        if let Some(end_offset) = current[search_start..].find(INSTRUCTION_BLOCK_END) {
+            let end = search_start + end_offset + INSTRUCTION_BLOCK_END.len();
+            return format!("{}{}{}", &current[..start], block, &current[end..]);
+        }
+    }
+
+    if current.is_empty() {
+        return format!("{block}\n");
+    }
+
+    let separator = if current.ends_with('\n') {
+        "\n"
+    } else {
+        "\n\n"
+    };
+    format!("{current}{separator}{block}\n")
+}
+
+fn timestamp_nanos() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0)
+}
+
+fn instruction_backup_path(path: &Path) -> PathBuf {
+    PathBuf::from(format!(
+        "{}.bak-{}",
+        path.to_string_lossy(),
+        timestamp_nanos()
+    ))
+}
+
+fn write_backup_text(path: &Path, contents: &str) -> Result<(), String> {
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|error| error.to_string())?;
+    file.write_all(contents.as_bytes())
+        .map_err(|error| error.to_string())?;
+    file.sync_all().map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn replace_file_atomically(temporary: &Path, target: &Path) -> Result<(), String> {
+    if !target.exists() {
+        return std::fs::rename(temporary, target).map_err(|error| error.to_string());
+    }
+    let target_wide = target
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let temporary_wide = temporary
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let replaced = unsafe {
+        ReplaceFileW(
+            target_wide.as_ptr(),
+            temporary_wide.as_ptr(),
+            std::ptr::null(),
+            0,
+            std::ptr::null(),
+            std::ptr::null(),
+        )
+    };
+    if replaced == 0 {
+        Err(std::io::Error::last_os_error().to_string())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn replace_file_atomically(temporary: &Path, target: &Path) -> Result<(), String> {
+    std::fs::rename(temporary, target).map_err(|error| error.to_string())
+}
+
+fn atomic_write_text(path: &Path, contents: &str) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("Instruction path has no parent: {}", path.display()))?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("instructions");
+    let temporary = parent.join(format!(
+        ".{file_name}.tmp-{}-{}",
+        timestamp_nanos(),
+        std::process::id()
+    ));
+
+    let result = (|| -> Result<(), String> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|error| error.to_string())?;
+        file.write_all(contents.as_bytes())
+            .map_err(|error| error.to_string())?;
+        file.sync_all().map_err(|error| error.to_string())?;
+        drop(file);
+
+        replace_file_atomically(&temporary, path)
+    })();
+
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
+}
+
+pub fn install_agent_instructions(id: &str) -> Result<AgentInstructionInstallResult, String> {
+    let env =
+        IntegrationEnv::current().ok_or_else(|| "Cannot locate user home directory".to_string())?;
+    install_agent_instructions_with_env(&env, id)
+}
+
+fn install_agent_instructions_with_env(
+    env: &IntegrationEnv,
+    id: &str,
+) -> Result<AgentInstructionInstallResult, String> {
+    let def = find_definition(env, id)?;
+    if def.format == IntegrationFormat::TemplateOnly {
+        return Err("Custom integrations are template-only.".to_string());
+    }
+    let target = instructions_path_for_def(env, &def)
+        .ok_or_else(|| "No instruction target is defined for this tool".to_string())?;
+    let existed = target.exists();
+    let current = if existed {
+        std::fs::read_to_string(&target).map_err(|error| error.to_string())?
+    } else {
+        String::new()
+    };
+    let next = upsert_managed_instruction_block(&current, &managed_instruction_block(&def));
+
+    if next == current {
+        return Ok(AgentInstructionInstallResult {
+            integration: integration_from_def(env, &def),
+            target_path: target.to_string_lossy().to_string(),
+            backup_path: String::new(),
+            created: false,
+            updated: false,
+        });
+    }
+
+    let parent = target
+        .parent()
+        .ok_or_else(|| format!("Instruction path has no parent: {}", target.display()))?;
+    std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+
+    let backup = if existed {
+        let path = instruction_backup_path(&target);
+        write_backup_text(&path, &current)?;
+        Some(path)
+    } else {
+        None
+    };
+    atomic_write_text(&target, &next)?;
+
+    Ok(AgentInstructionInstallResult {
+        integration: integration_from_def(env, &def),
+        target_path: target.to_string_lossy().to_string(),
+        backup_path: backup
+            .map(|path| path.to_string_lossy().to_string())
+            .unwrap_or_default(),
+        created: !existed,
+        updated: existed,
+    })
 }
 
 fn json_entry_for_format(
@@ -705,11 +938,12 @@ fn parse_json_or_jsonc(input: &str) -> serde_json::Result<Value> {
 }
 
 fn backup_path(path: &Path) -> String {
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0);
-    format!("{}.bak-{}", path.to_string_lossy(), ts)
+    format!(
+        "{}.bak-{}-{}",
+        path.to_string_lossy(),
+        timestamp_nanos(),
+        std::process::id()
+    )
 }
 
 fn find_definition(env: &IntegrationEnv, id: &str) -> Result<IntegrationDefinition, String> {
@@ -727,7 +961,7 @@ pub fn preview_ai_integration_config(
     let env =
         IntegrationEnv::current().ok_or_else(|| "Cannot locate user home directory".to_string())?;
     let def = find_definition(&env, id)?;
-    let integration = integration_from_def(&def);
+    let integration = integration_from_def(&env, &def);
     if def.format == IntegrationFormat::TemplateOnly {
         return Ok(IntegrationPreview {
             integration,
@@ -741,7 +975,7 @@ pub fn preview_ai_integration_config(
     }
     let target =
         selected_config_path(&def).ok_or_else(|| "No config path available".to_string())?;
-    let current = read_text(&target);
+    let current = read_text_if_exists(&target)?;
     let preview = render_config_text(&def, &current, exe_path, api)?;
     Ok(IntegrationPreview {
         integration,
@@ -761,25 +995,47 @@ pub fn configure_ai_integration(
 ) -> Result<IntegrationApplyResult, String> {
     let env =
         IntegrationEnv::current().ok_or_else(|| "Cannot locate user home directory".to_string())?;
+    configure_ai_integration_with_env(&env, id, exe_path, api)
+}
+
+fn configure_ai_integration_with_env(
+    env: &IntegrationEnv,
+    id: &str,
+    exe_path: &Path,
+    api: &str,
+) -> Result<IntegrationApplyResult, String> {
     let def = find_definition(&env, id)?;
     if def.format == IntegrationFormat::TemplateOnly {
         return Err("Custom integrations are template-only.".to_string());
     }
     let target =
         selected_config_path(&def).ok_or_else(|| "No config path available".to_string())?;
-    let current = read_text(&target);
-    let next = render_config_text(&def, &current, exe_path, api)?;
+    let current = read_text_if_exists(&target)?;
+    let next = format!(
+        "{}\n",
+        render_config_text(&def, &current, exe_path, api)?.trim_end()
+    );
+    let integration = integration_from_def(&env, &def);
+    if next == current {
+        return Ok(IntegrationApplyResult {
+            integration,
+            target_path: target.to_string_lossy().to_string(),
+            backup_path: String::new(),
+            configured: true,
+            needs_restart: false,
+        });
+    }
     if let Some(parent) = target.parent() {
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
-    let backup = backup_path(&target);
-    if target.exists() {
-        std::fs::copy(&target, &backup).map_err(|error| error.to_string())?;
+    let backup = if target.exists() {
+        let path = PathBuf::from(backup_path(&target));
+        write_backup_text(&path, &current)?;
+        path.to_string_lossy().to_string()
     } else {
-        std::fs::write(&backup, "").map_err(|error| error.to_string())?;
-    }
-    std::fs::write(&target, format!("{}\n", next.trim_end())).map_err(|error| error.to_string())?;
-    let integration = integration_from_def(&def);
+        String::new()
+    };
+    atomic_write_text(&target, &next)?;
     Ok(IntegrationApplyResult {
         integration,
         target_path: target.to_string_lossy().to_string(),
@@ -914,6 +1170,48 @@ mod tests {
     }
 
     #[test]
+    fn configure_is_idempotent_and_preserves_the_original_backup() {
+        let root = temp_root("configure-idempotent");
+        let env = fixture_env(&root);
+        let target = env.home.join(".codex").join("config.toml");
+        let original = "model = \"gpt-test\"\n";
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(&target, original).unwrap();
+        let exe = PathBuf::from("C:/Program Files/Spine Companion/spine-companion.exe");
+
+        let first =
+            configure_ai_integration_with_env(&env, "codex", &exe, "http://127.0.0.1:17388")
+                .unwrap();
+        let installed = fs::read_to_string(&target).unwrap();
+        let second =
+            configure_ai_integration_with_env(&env, "codex", &exe, "http://127.0.0.1:17388")
+                .unwrap();
+
+        assert!(first.needs_restart);
+        assert_eq!(fs::read_to_string(&first.backup_path).unwrap(), original);
+        assert!(!second.needs_restart);
+        assert!(second.backup_path.is_empty());
+        assert_eq!(fs::read_to_string(&target).unwrap(), installed);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn configure_new_file_does_not_create_an_empty_backup() {
+        let root = temp_root("configure-new");
+        let env = fixture_env(&root);
+        let exe = PathBuf::from("C:/Program Files/Spine Companion/spine-companion.exe");
+
+        let result =
+            configure_ai_integration_with_env(&env, "codex", &exe, "http://127.0.0.1:17388")
+                .unwrap();
+
+        assert!(result.needs_restart);
+        assert!(result.backup_path.is_empty());
+        assert!(Path::new(&result.target_path).exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn mimocode_command_array_writes_source_env() {
         let exe = PathBuf::from("C:/Spine/spine-companion.exe");
         let value = upsert_json_value(
@@ -980,6 +1278,114 @@ mod tests {
         assert!(body.contains("mimocode-mcp"));
         assert!(body.contains("MiMoCode"));
         assert!(body.contains("companion_report_ai_phase"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn installs_instruction_file_for_new_target() {
+        let root = temp_root("instruction-new");
+        let env = fixture_env(&root);
+
+        let result = install_agent_instructions_with_env(&env, "codex").unwrap();
+        let target = PathBuf::from(&result.target_path);
+
+        assert!(result.created);
+        assert!(!result.updated);
+        assert!(target.exists());
+        assert!(result.backup_path.is_empty());
+        let installed = fs::read_to_string(target).unwrap();
+        assert!(installed.contains(INSTRUCTION_BLOCK_START));
+        assert!(installed.contains(INSTRUCTION_BLOCK_END));
+        assert!(installed.contains("codex-mcp"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn instruction_install_is_idempotent() {
+        let root = temp_root("instruction-idempotent");
+        let env = fixture_env(&root);
+
+        let first = install_agent_instructions_with_env(&env, "codex").unwrap();
+        let first_contents = fs::read_to_string(&first.target_path).unwrap();
+        let second = install_agent_instructions_with_env(&env, "codex").unwrap();
+
+        assert!(!second.created);
+        assert!(!second.updated);
+        assert!(second.backup_path.is_empty());
+        assert_eq!(
+            fs::read_to_string(&second.target_path).unwrap(),
+            first_contents
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn instruction_install_preserves_unrelated_content() {
+        let root = temp_root("instruction-preserve");
+        let env = fixture_env(&root);
+        let target = env.home.join(".codex").join("AGENTS.md");
+        let unrelated = "# Team instructions\n\nKeep this paragraph exactly.\n";
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(&target, unrelated).unwrap();
+
+        let result = install_agent_instructions_with_env(&env, "codex").unwrap();
+        let installed = fs::read_to_string(&target).unwrap();
+
+        assert!(!result.created);
+        assert!(result.updated);
+        assert!(installed.starts_with(unrelated));
+        assert!(installed.contains(INSTRUCTION_BLOCK_START));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn instruction_install_updates_prior_managed_block() {
+        let root = temp_root("instruction-update");
+        let env = fixture_env(&root);
+        let target = env.home.join(".codex").join("AGENTS.md");
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(
+            &target,
+            format!(
+                "# Existing instructions\n\n{INSTRUCTION_BLOCK_START}\nold managed text\n{INSTRUCTION_BLOCK_END}\n"
+            ),
+        )
+        .unwrap();
+
+        let result = install_agent_instructions_with_env(&env, "codex").unwrap();
+        let installed = fs::read_to_string(&target).unwrap();
+
+        assert!(result.updated);
+        assert!(installed.contains("# Existing instructions"));
+        assert!(!installed.contains("old managed text"));
+        assert!(installed.contains("codex-mcp"));
+        assert_eq!(installed.matches(INSTRUCTION_BLOCK_START).count(), 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn instruction_install_backs_up_existing_content_before_update() {
+        let root = temp_root("instruction-backup");
+        let env = fixture_env(&root);
+        let target = env.home.join(".codex").join("AGENTS.md");
+        let original = "# Existing instructions\n";
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(&target, original).unwrap();
+
+        let result = install_agent_instructions_with_env(&env, "codex").unwrap();
+
+        assert!(result.backup_path.contains("AGENTS.md.bak-"));
+        assert_eq!(fs::read_to_string(&result.backup_path).unwrap(), original);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn instruction_install_rejects_invalid_and_template_only_tools() {
+        let root = temp_root("instruction-rejected");
+        let env = fixture_env(&root);
+
+        assert!(install_agent_instructions_with_env(&env, "missing-tool").is_err());
+        assert!(install_agent_instructions_with_env(&env, "custom").is_err());
         let _ = fs::remove_dir_all(root);
     }
 
