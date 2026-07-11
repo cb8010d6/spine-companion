@@ -7,9 +7,24 @@ const previewIntegrations = [
 ];
 
 export function installManagerPreviewBridge() {
-  if (!import.meta.env.DEV || new URLSearchParams(window.location.search).get("preview") !== "integrations") return false;
+  const params = new URLSearchParams(window.location.search);
+  if (!import.meta.env.DEV || !["integrations", "manager"].includes(params.get("preview"))) return false;
+  const previewConfig = {
+    version: "preview",
+    ui: {
+      locale: params.get("locale") || "zh-CN",
+      theme: params.get("theme") || "dark"
+    },
+    models: { catalog: [] },
+    spine: {}
+  };
   window.companion = {
-    getConfig: async () => ({ version: "preview", ui: { locale: "zh-CN" }, models: { catalog: [] }, spine: {} }),
+    getConfig: async () => previewConfig,
+    saveSettings: async (patch = {}) => {
+      previewConfig.ui = { ...previewConfig.ui, ...(patch.ui || {}) };
+      previewConfig.spine = { ...previewConfig.spine, ...(patch.spine || {}) };
+      return previewConfig;
+    },
     getInstalledModels: async () => [],
     listReminders: async () => [],
     checkUpdates: async () => ({ currentVersion: "preview", updateAvailable: false, channel: "prerelease" }),

@@ -28,6 +28,7 @@ const viewContainer = document.getElementById("view-container");
 const navButtons = document.querySelectorAll("nav button");
 const topbarStatus = document.getElementById("topbar-status");
 const modalContainer = document.getElementById("modal-container");
+const runtimeLabel = document.getElementById("runtime-label");
 
 let activeView = "dashboard";
 let config = { models: { catalog: [] }, ui: {}, spine: {} };
@@ -43,6 +44,7 @@ const integrationTestResults = new Map();
 let integrationFilter = "all";
 let selectedIntegrationId = "";
 let dashboardRenderRevision = 0;
+let modalReturnFocus = null;
 
 function setStatus(text) {
   topbarStatus.textContent = text;
@@ -60,9 +62,15 @@ function closeModal() {
   modalContainer.classList.add("hidden");
   document.getElementById("modal-actions").replaceChildren();
   document.removeEventListener("keydown", trapModalKeys);
+  const returnFocus = modalReturnFocus;
+  modalReturnFocus = null;
+  window.setTimeout(() => {
+    if (returnFocus?.isConnected) returnFocus.focus();
+  }, 0);
 }
 
 function showModal(title, bodyText, actions = []) {
+  if (modalContainer.classList.contains("hidden")) modalReturnFocus = document.activeElement;
   document.getElementById("modal-title").textContent = title;
   document.getElementById("modal-body").textContent = bodyText;
   document.getElementById("modal-actions").replaceChildren(...actions.filter(Boolean));
@@ -137,13 +145,29 @@ function badge(label, tone = "") {
   return h("span", { class: `badge ${tone}`.trim() }, label);
 }
 
+function runtimeName() {
+  if (isTauri()) return "Tauri";
+  return config.version === "preview" ? t("manager.status.previewRuntime") : t("manager.status.legacyRuntime");
+}
+
+function applyUiLocale() {
+  createI18n(config);
+  document.documentElement.lang = getLocale();
+  const theme = config.ui?.theme || "dark";
+  document.documentElement.dataset.theme = theme;
+  document.body.dataset.theme = theme;
+  if (runtimeLabel) runtimeLabel.textContent = runtimeName();
+  for (const button of navButtons) {
+    const label = t(`manager.nav.${button.dataset.view}`);
+    button.textContent = label;
+    button.setAttribute("aria-label", label);
+    button.title = label;
+  }
+}
+
 async function refreshConfig() {
   config = await window.companion?.getConfig?.() || config;
-  createI18n(config);
-  document.body.dataset.theme = config.ui?.theme || "dark";
-  for (const button of navButtons) {
-    button.textContent = t(`manager.nav.${button.dataset.view}`);
-  }
+  applyUiLocale();
   installedModels = await window.companion?.getInstalledModels?.() || [];
 }
 
@@ -212,7 +236,7 @@ async function dashboardView({ refreshData = true } = {}) {
     : diagnostics.apiOk
       ? t("manager.dashboard.connectionWaitingDetail")
       : t("manager.dashboard.connectionOfflineDetail");
-  const card = (title, value, detail, actions = []) => h("article", { class: "card dashboard-card" },
+  const card = (title, value, detail, actions = [], tone = "neutral") => h("article", { class: "card dashboard-card", "data-tone": tone },
     h("div", { class: "dashboard-card-title" }, title),
     h("div", { class: "dashboard-card-value" }, value || "-"),
     detail ? h("p", { class: "model-meta" }, detail) : null,
@@ -225,19 +249,19 @@ async function dashboardView({ refreshData = true } = {}) {
         h("p", { class: "empty-text" }, t("manager.dashboard.subtitle"))
       )
     ),
-    h("div", { class: "grid-2" },
+    h("div", { class: "dashboard-grid" },
       card(t("manager.dashboard.model"), activeModelLabel(), config.spine?.assetDir || "", [
         h("button", { class: "btn", type: "button", onClick: () => navTo("library") }, t("manager.dashboard.openLibrary"))
-      ]),
+      ], "model"),
       card(t("manager.dashboard.ai"), sourceLabel || configuredIntegrations[0]?.sourceLabel || t("manager.dashboard.local"), lastState.message || t("manager.dashboard.noActiveTask"), [
         h("button", { class: "btn", type: "button", onClick: () => navTo("integrations") }, t("manager.dashboard.openIntegrations"))
-      ]),
-      card(t("manager.dashboard.bridge"), bridgeValue, bridgeDetail),
-      card(t("manager.dashboard.reminders"), String(reminders.length), reminders[0]?.message || t("manager.empty.noReminders")),
-      card(t("manager.dashboard.updates"), updateStatus?.updateAvailable ? t("manager.status.updateAvailable", { version: updateStatus.latestVersion }) : t("manager.status.upToDate", { version: updateStatus?.currentVersion || config.version || "" }), updateStatus?.channel || "stable"),
+      ], "ai"),
+      card(t("manager.dashboard.bridge"), bridgeValue, bridgeDetail, [], bridgeReady ? "success" : "warning"),
+      card(t("manager.dashboard.reminders"), String(reminders.length), reminders[0]?.message || t("manager.empty.noReminders"), [], "reminder"),
+      card(t("manager.dashboard.updates"), updateStatus?.updateAvailable ? t("manager.status.updateAvailable", { version: updateStatus.latestVersion }) : t("manager.status.upToDate", { version: updateStatus?.currentVersion || config.version || "" }), updateStatus?.channel || "stable", [], "update"),
       card(t("manager.dashboard.renderer"), rendererStatus, rendererHealth.recoveryCount > 0
         ? t("manager.dashboard.rendererRecovered", { count: rendererHealth.recoveryCount })
-        : t("manager.dashboard.rendererHealthyDetail"))
+        : t("manager.dashboard.rendererHealthyDetail"), [], rendererHealthCategory(rendererHealth.status) === "healthy" ? "success" : "neutral")
     )
   );
 }
@@ -259,15 +283,15 @@ const dashboardRefresh = createCoalescedRefresh(() => {
 });
 
 async function startDownload(id) {
-  downloads[id] = { status: "pending", current: 0, total: 1, file: "Initializing..." };
+  downloads[id] = { status: "pending", current: 0, total: 1, file: t("manager.download.initializing") };
   renderView(activeView);
   try {
     const result = await window.companion?.importModel?.({ id });
-    downloads[id] = { ...(downloads[id] || {}), status: "succeeded", current: downloads[id]?.total || 1, total: downloads[id]?.total || 1, file: "Done" };
+    downloads[id] = { ...(downloads[id] || {}), status: "succeeded", current: downloads[id]?.total || 1, total: downloads[id]?.total || 1, file: t("manager.download.done") };
     await refreshConfig();
     setStatus(t("manager.status.loadedModel", { name: result.name || id }));
   } catch (error) {
-    downloads[id] = { ...(downloads[id] || {}), status: "failed", error: error.message || "Download failed", current: 0, total: downloads[id]?.total || 1 };
+    downloads[id] = { ...(downloads[id] || {}), status: "failed", error: error.message || t("manager.error.downloadFailed"), current: 0, total: downloads[id]?.total || 1 };
     setStatus(t("manager.status.downloadFailed", { id }));
   }
   if (activeView === "library" || activeView === "downloads" || activeView === "installed") renderView(activeView);
@@ -298,18 +322,18 @@ function libraryView() {
               type: "button",
               disabled: active,
               onClick: () => activateModel(model.id)
-            }, active ? "Active" : t("manager.actions.setActive"))
+            }, active ? t("manager.status.active") : t("manager.actions.setActive"))
           : h("button", {
               class: "btn btn-primary",
               type: "button",
               disabled: download?.status === "downloading",
               onClick: () => confirmDownload(model)
-            }, download?.status === "downloading" ? "Downloading..." : t("manager.actions.download"));
+            }, download?.status === "downloading" ? t("manager.status.downloading") : t("manager.actions.download"));
         return h("article", { class: "model-card fade-in" },
           previewNode(model),
           h("div", { class: "model-info" },
             h("div", { class: "model-title", title: model.name || model.id }, model.name || model.id),
-            h("div", { class: "model-meta" }, t("manager.model.source", { source: model.source || "Unknown" })),
+            h("div", { class: "model-meta" }, t("manager.model.source", { source: model.source || t("manager.model.unknownSource") })),
             h("div", { class: "model-actions" },
               installed ? badge(t("manager.status.installed"), "badge-success") : null,
               active ? badge(t("manager.status.active"), "badge-warning") : null,
@@ -361,7 +385,7 @@ async function importLocalModel() {
     setStatus(t("manager.status.localModelLoaded", { name: result.skel || result.name }));
     renderView(activeView);
   } catch (error) {
-    const message = error.message || "Local import failed";
+    const message = error.message || t("manager.error.localImportFailed");
     setStatus(message);
     showModal(t("manager.modal.importFailed"), message, [
       h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.close"))
@@ -427,7 +451,7 @@ function confirmRemove(id) {
       await window.companion?.removeModel?.(id);
       await refreshConfig();
       renderView("installed");
-    } }, "Remove")
+    } }, t("manager.actions.remove"))
   ]);
 }
 
@@ -571,8 +595,8 @@ function rangeNumber(label, id, value, min, max, step, onCommit = null) {
       commitTimer = window.setTimeout(() => onCommit(), 240);
     }
   };
-  const range = h("input", { id: rangeId, type: "range", min, max, step, value });
-  const number = h("input", { id: numberId, class: "input", type: "number", min, max, step, value });
+  const range = h("input", { id: rangeId, type: "range", min, max, step, value, "aria-label": t("manager.accessibility.slider", { label }) });
+  const number = h("input", { id: numberId, class: "input", type: "number", min, max, step, value, "aria-label": t("manager.accessibility.numberValue", { label }) });
   range.addEventListener("input", () => sync(range, number));
   number.addEventListener("input", () => sync(number, range));
   return field(label, h("div", { class: "setting-inline" }, range, number));
@@ -977,17 +1001,17 @@ async function diagnosticsView() {
   if (!updateStatus) await refreshUpdateStatus({ silent: true });
   const row = (label, ok, value) => h("div", { class: "status-row" },
     h("span", { class: "status-label" }, label),
-    h("span", { class: ok ? "status-value status-ok" : "status-value status-err" }, value || (ok ? "OK" : "Needs attention"))
+    h("span", { class: ok ? "status-value status-ok" : "status-value status-err" }, value || (ok ? t("manager.diagnostics.ok") : t("manager.diagnostics.needsAttention")))
   );
   return h("section", {},
     h("h2", { class: "view-title" }, t("manager.diagnostics.title")),
     h("div", { class: "grid-2" },
       h("article", { class: "card diag-card" },
-        row(t("manager.diagnostics.localApi"), diagnostics.apiOk, diagnostics.apiOk ? "ONLINE" : "UNREACHABLE"),
-        row(t("manager.diagnostics.mcpConfigured"), diagnostics.mcpConfigured, diagnostics.mcpConfigured ? "YES" : "NO"),
-        row(t("manager.diagnostics.localConfig"), diagnostics.localConfigExists, diagnostics.localConfigExists ? "FOUND" : "MISSING"),
+        row(t("manager.diagnostics.localApi"), diagnostics.apiOk, diagnostics.apiOk ? t("manager.diagnostics.online") : t("manager.diagnostics.unreachable")),
+        row(t("manager.diagnostics.mcpConfigured"), diagnostics.mcpConfigured, diagnostics.mcpConfigured ? t("manager.diagnostics.yes") : t("manager.diagnostics.no")),
+        row(t("manager.diagnostics.localConfig"), diagnostics.localConfigExists, diagnostics.localConfigExists ? t("manager.diagnostics.found") : t("manager.diagnostics.missing")),
         diagnostics.localConfigPath ? h("p", { class: "model-meta", title: diagnostics.localConfigPath }, diagnostics.localConfigPath) : null,
-        ...(diagnostics.configWarnings || []).map((warning) => h("p", { class: "error-text", title: warning.file }, `Config warning: ${warning.message}`)),
+        ...(diagnostics.configWarnings || []).map((warning) => h("p", { class: "error-text selectable", title: warning.file }, t("manager.diagnostics.configWarning", { message: warning.message }))),
         row(t("manager.diagnostics.spineAssets"), diagnostics.assetDirExists && diagnostics.hasSkel && diagnostics.hasAtlas && diagnostics.hasPng, "skel / atlas / png"),
         row(t("manager.diagnostics.modelHealth"), diagnostics.modelHealth?.ok, diagnostics.modelHealth?.message),
         row(t("manager.diagnostics.shortcut"), diagnostics.shortcut?.registered || diagnostics.shortcut?.enabled === false,
@@ -995,10 +1019,10 @@ async function diagnosticsView() {
             ? t("manager.status.disabled")
             : diagnostics.shortcut?.error || diagnostics.shortcut?.accelerator),
         diagnostics.gpu ? row(t("manager.diagnostics.gpu"), true, diagnostics.gpu.message || diagnostics.gpu.mode) : null,
-        diagnostics.gpu?.renderer ? row(t("manager.diagnostics.renderer"), diagnostics.gpu.renderer.status !== "context-lost", `${diagnostics.gpu.renderer.status}; recoveries ${diagnostics.gpu.renderer.recoveryCount || 0}`) : null,
+        diagnostics.gpu?.renderer ? row(t("manager.diagnostics.renderer"), diagnostics.gpu.renderer.status !== "context-lost", t("manager.diagnostics.rendererSummary", { status: diagnostics.gpu.renderer.status, count: diagnostics.gpu.renderer.recoveryCount || 0 })) : null,
         diagnostics.gpu?.webviewCacheDir ? h("p", { class: "model-meta", title: diagnostics.gpu.webviewCacheDir }, diagnostics.gpu.webviewCacheDir) : null,
         diagnostics.gpu?.tdrNote ? h("p", { class: "model-meta" }, diagnostics.gpu.tdrNote) : null,
-        row(t("manager.diagnostics.runtime"), !isTauri(), isTauri() ? t("manager.status.tauriExperimental") : "Electron"),
+        row(t("manager.diagnostics.runtime"), true, runtimeName()),
         h("div", { class: "model-actions" },
           h("button", { class: "btn", type: "button", onClick: () => window.companion?.openFolder?.(config.paths?.configDir) }, t("manager.actions.openConfigFolder")),
           h("button", { class: "btn", type: "button", onClick: async () => {
@@ -1025,7 +1049,7 @@ async function diagnosticsView() {
       ),
       h("article", { class: "card diag-card" },
         h("h3", {}, t("manager.diagnostics.updates")),
-        h("p", { class: "model-meta" }, updateStatus?.error || `Channel ${updateStatus?.channel || "stable"} | Current ${updateStatus?.currentVersion || ""}, latest ${updateStatus?.latestVersion || ""}`),
+        h("p", { class: "model-meta" }, updateStatus?.error || t("manager.diagnostics.updateSummary", { channel: updateStatus?.channel || "stable", current: updateStatus?.currentVersion || "", latest: updateStatus?.latestVersion || "" })),
         updateStatus?.source ? h("p", { class: "model-meta", title: updateStatus.source }, t("manager.diagnostics.updateSource", { source: updateStatus.source })) : null,
         updateStatus?.recommendedAsset
           ? h("p", { class: "model-meta" }, t("manager.diagnostics.recommended", { name: updateStatus.recommendedAsset.name }))
@@ -1175,7 +1199,7 @@ async function boot() {
   });
   window.companion?.onConfigChanged?.(async (nextConfig) => {
     config = nextConfig || await window.companion?.getConfig?.() || config;
-    createI18n(config);
+    applyUiLocale();
     if (activeView === "settings" || activeView === "installed" || activeView === "library" || activeView === "dashboard") renderView(activeView);
   });
   window.companion?.onReminders?.((nextReminders) => {

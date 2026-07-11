@@ -1,7 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { createI18n, detectLocale, setLocale, t } from "../src/shared/i18n.js";
+import { createI18n, detectLocale, dictionaries, setLocale, t } from "../src/shared/i18n.js";
 
 describe("i18n", () => {
+  it("keeps English and Chinese keys and placeholders aligned", () => {
+    const englishKeys = Object.keys(dictionaries.en).sort();
+    const chineseKeys = Object.keys(dictionaries["zh-CN"]).sort();
+    expect(chineseKeys).toEqual(englishKeys);
+    for (const key of englishKeys) {
+      const placeholders = (value) => [...value.matchAll(/\{(\w+)\}/g)].map((match) => match[1]).sort();
+      expect(placeholders(dictionaries["zh-CN"][key]), key).toEqual(placeholders(dictionaries.en[key]));
+    }
+  });
+
   it("detects Chinese locale from navigator", () => {
     expect(detectLocale({}, { language: "zh-CN" })).toBe("zh-CN");
   });
