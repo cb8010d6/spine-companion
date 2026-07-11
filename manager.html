@@ -9,7 +9,25 @@
     <div id="manager-app">
       <aside id="sidebar">
         <div class="sidebar-header">
-          <span class="sidebar-brand-mark" aria-hidden="true">SC</span>
+          <span class="sidebar-brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 40 40" role="presentation">
+              <defs>
+                <linearGradient id="brand-ribbon-a" x1="5" y1="4" x2="33" y2="34" gradientUnits="userSpaceOnUse">
+                  <stop stop-color="#55D8FF" />
+                  <stop offset="0.52" stop-color="#65D8AF" />
+                  <stop offset="1" stop-color="#FFD36E" />
+                </linearGradient>
+                <linearGradient id="brand-ribbon-b" x1="34" y1="8" x2="11" y2="35" gradientUnits="userSpaceOnUse">
+                  <stop stop-color="#8098FF" />
+                  <stop offset="0.52" stop-color="#D980E8" />
+                  <stop offset="1" stop-color="#FF7D8C" />
+                </linearGradient>
+              </defs>
+              <path d="M7 12.5C7 8.9 9.9 6 13.5 6H23c4.4 0 8 3.6 8 8v2H20.5c-2.5 0-4.5 2-4.5 4.5V34l-5.1-4.1A10.3 10.3 0 0 1 7 21.9v-9.4Z" fill="url(#brand-ribbon-a)" />
+              <path d="M33 16v7.5c0 5.8-4.7 10.5-10.5 10.5H16V20.5c0-2.5 2-4.5 4.5-4.5H33Z" fill="url(#brand-ribbon-b)" />
+              <circle cx="23.8" cy="24.6" r="2.2" fill="white" fill-opacity=".9" />
+            </svg>
+          </span>
           <span class="sidebar-brand-copy">
             <strong>Spine Companion</strong>
             <small>Manager</small>
@@ -29,7 +47,11 @@
       </aside>
       <div class="main-wrapper">
         <header class="topbar">
-          <div id="topbar-status">Loading...</div>
+          <div class="topbar-page">
+            <strong id="topbar-title">Dashboard</strong>
+            <span id="topbar-status">Loading...</span>
+          </div>
+          <div class="topbar-runtime"><span class="runtime-dot" aria-hidden="true"></span><span id="topbar-runtime-label">Tauri</span></div>
         </header>
         <main id="view-container"></main>
       </div>
