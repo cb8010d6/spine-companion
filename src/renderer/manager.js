@@ -4,6 +4,13 @@ import { h, render } from "./lib/dom.js";
 import { createI18n, t } from "../shared/i18n.js";
 import { modelPreview } from "./model-preview.js";
 import { renderSpinePreview } from "./spine-preview.js";
+import {
+  createCoalescedRefresh,
+  integrationLabelForState,
+  latestCompanionState,
+  rendererHealthCategory,
+  rendererHealthFromDiagnostics
+} from "./dashboard-model.js";
 
 const viewContainer = document.getElementById("view-container");
 const navButtons = document.querySelectorAll("nav button");
@@ -18,7 +25,10 @@ let history = [];
 let reminders = [];
 let integrations = [];
 let updateStatus = null;
+let liveState = null;
 const downloads = {};
+const integrationTestResults = new Map();
+let dashboardRenderRevision = 0;
 
 function setStatus(text) {
   topbarStatus.textContent = text;
@@ -164,14 +174,30 @@ function activeModelLabel() {
   return model?.name || id || config.spine?.skel || t("panel.model.noModel");
 }
 
-async function dashboardView() {
-  diagnostics = await window.companion?.getDiagnostics?.() || diagnostics || {};
-  history = await window.companion?.getHistory?.() || history || [];
-  reminders = await window.companion?.listReminders?.() || reminders || [];
-  integrations = await window.companion?.listAiIntegrations?.() || integrations || [];
-  if (!updateStatus) await refreshUpdateStatus({ silent: true });
-  const lastState = history[history.length - 1] || {};
+async function dashboardView({ refreshData = true } = {}) {
+  if (refreshData) {
+    diagnostics = await window.companion?.getDiagnostics?.() || diagnostics || {};
+    history = await window.companion?.getHistory?.() || history || [];
+    reminders = await window.companion?.listReminders?.() || reminders || [];
+    integrations = await window.companion?.listAiIntegrations?.() || integrations || [];
+    if (!updateStatus) await refreshUpdateStatus({ silent: true });
+  }
+  const lastState = latestCompanionState(liveState, history);
   const configuredIntegrations = integrations.filter((item) => item.configured);
+  const sourceLabel = integrationLabelForState(lastState, integrations);
+  const rendererHealth = rendererHealthFromDiagnostics(diagnostics);
+  const rendererStatus = t(`manager.dashboard.rendererStatus.${rendererHealthCategory(rendererHealth.status)}`);
+  const bridgeReady = diagnostics.apiOk && diagnostics.mcpConfigured;
+  const bridgeValue = bridgeReady
+    ? t("manager.dashboard.connectionReady")
+    : diagnostics.apiOk
+      ? t("manager.dashboard.connectionWaiting")
+      : t("manager.dashboard.connectionOffline");
+  const bridgeDetail = bridgeReady
+    ? t("manager.dashboard.connectionReadyDetail")
+    : diagnostics.apiOk
+      ? t("manager.dashboard.connectionWaitingDetail")
+      : t("manager.dashboard.connectionOfflineDetail");
   const card = (title, value, detail, actions = []) => h("article", { class: "card dashboard-card" },
     h("div", { class: "dashboard-card-title" }, title),
     h("div", { class: "dashboard-card-value" }, value || "-"),
@@ -182,23 +208,41 @@ async function dashboardView() {
     h("div", { class: "view-header" },
       h("div", {},
         h("h2", { class: "view-title" }, t("manager.dashboard.title")),
-        h("p", { class: "empty-text" }, t("manager.integrations.subtitle"))
+        h("p", { class: "empty-text" }, t("manager.dashboard.subtitle"))
       )
     ),
     h("div", { class: "grid-2" },
       card(t("manager.dashboard.model"), activeModelLabel(), config.spine?.assetDir || "", [
         h("button", { class: "btn", type: "button", onClick: () => navTo("library") }, t("manager.dashboard.openLibrary"))
       ]),
-      card(t("manager.dashboard.ai"), lastState.source || configuredIntegrations[0]?.sourceLabel || "Local", lastState.message || `${configuredIntegrations.length} configured`, [
+      card(t("manager.dashboard.ai"), sourceLabel || configuredIntegrations[0]?.sourceLabel || t("manager.dashboard.local"), lastState.message || t("manager.dashboard.noActiveTask"), [
         h("button", { class: "btn", type: "button", onClick: () => navTo("integrations") }, t("manager.dashboard.openIntegrations"))
       ]),
-      card(t("manager.dashboard.bridge"), diagnostics.apiOk ? t("panel.bridge.connected") : t("panel.bridge.offline"), diagnostics.mcpConfigured ? "MCP configured" : "MCP not configured"),
+      card(t("manager.dashboard.bridge"), bridgeValue, bridgeDetail),
       card(t("manager.dashboard.reminders"), String(reminders.length), reminders[0]?.message || t("manager.empty.noReminders")),
       card(t("manager.dashboard.updates"), updateStatus?.updateAvailable ? t("manager.status.updateAvailable", { version: updateStatus.latestVersion }) : t("manager.status.upToDate", { version: updateStatus?.currentVersion || config.version || "" }), updateStatus?.channel || "stable"),
-      card(t("manager.dashboard.renderer"), diagnostics.rendererHealth?.status || diagnostics.gpu?.mode || "hardware", diagnostics.rendererHealth?.lastReason || "")
+      card(t("manager.dashboard.renderer"), rendererStatus, rendererHealth.recoveryCount > 0
+        ? t("manager.dashboard.rendererRecovered", { count: rendererHealth.recoveryCount })
+        : t("manager.dashboard.rendererHealthyDetail"))
     )
   );
 }
+
+async function renderDashboard({ refreshData = true, showLoading = true } = {}) {
+  const revision = ++dashboardRenderRevision;
+  if (showLoading) {
+    viewContainer.replaceChildren(h("p", { class: "empty-text" }, t("manager.status.loading")));
+  }
+  const content = await dashboardView({ refreshData });
+  if (revision !== dashboardRenderRevision || activeView !== "dashboard") return;
+  render(content, viewContainer);
+}
+
+const dashboardRefresh = createCoalescedRefresh(() => {
+  if (activeView === "dashboard") {
+    renderDashboard({ refreshData: false, showLoading: false });
+  }
+});
 
 async function startDownload(id) {
   downloads[id] = { status: "pending", current: 0, total: 1, file: "Initializing..." };
@@ -528,6 +572,11 @@ function integrationStatusBadges(item) {
     badges.push(badge(t("manager.integrations.instructionsMissing"), "badge-warning"));
   }
   if (item.configFormat === "templateOnly") badges.push(badge(t("manager.integrations.templateOnly"), ""));
+  if (integrationTestResults.get(item.id)?.ok) {
+    badges.push(badge(t("manager.integrations.testPassed"), "badge-success"));
+  } else if (integrationTestResults.has(item.id)) {
+    badges.push(badge(t("manager.integrations.testFailed"), "badge-warning"));
+  }
   if (!badges.length) badges.push(badge(t("manager.integrations.notDetected"), ""));
   return badges;
 }
@@ -613,6 +662,8 @@ async function configureIntegration(id) {
 async function testIntegration(id) {
   try {
     const result = await window.companion?.testAiIntegration?.(id);
+    integrationTestResults.set(id, { ok: true, testedAt: Date.now() });
+    if (activeView === "integrations") await renderView("integrations");
     showModal(t("manager.integrations.testTitle"), t("manager.integrations.testOk", {
       label: result?.sourceLabel || result?.source || id,
       count: result?.toolCount || 0
@@ -620,6 +671,8 @@ async function testIntegration(id) {
       h("button", { class: "btn btn-primary", type: "button", onClick: closeModal }, t("manager.actions.close"))
     ]);
   } catch (error) {
+    integrationTestResults.set(id, { ok: false, testedAt: Date.now() });
+    if (activeView === "integrations") await renderView("integrations");
     showModal(t("manager.integrations.testTitle"), error.message || String(error), [
       h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.close"))
     ]);
@@ -838,10 +891,14 @@ function avatarStudioView() {
 }
 
 async function renderView(viewName) {
+  if (viewName === "dashboard") {
+    setStatus(t("manager.status.viewing", { view: t("manager.nav.dashboard") }));
+    await renderDashboard();
+    return;
+  }
   viewContainer.replaceChildren(h("p", { class: "empty-text" }, t("manager.status.loading")));
-  setStatus(t("manager.status.viewing", { view: viewName }));
-  if (viewName === "dashboard") render(await dashboardView(), viewContainer);
-  else if (viewName === "library") render(libraryView(), viewContainer);
+  setStatus(t("manager.status.viewing", { view: t(`manager.nav.${viewName}`) }));
+  if (viewName === "library") render(libraryView(), viewContainer);
   else if (viewName === "installed") render(installedView(), viewContainer);
   else if (viewName === "downloads") render(downloadsView(), viewContainer);
   else if (viewName === "settings") {
@@ -881,8 +938,13 @@ async function boot() {
   window.companion?.onReminders?.((nextReminders) => {
     reminders = Array.isArray(nextReminders) ? nextReminders : [];
     if (activeView === "settings") renderView("settings");
+    else if (activeView === "dashboard") dashboardRefresh.schedule();
   });
-  navTo("library");
+  window.companion?.onState?.((nextState) => {
+    liveState = nextState || null;
+    if (activeView === "dashboard") dashboardRefresh.schedule();
+  });
+  navTo("dashboard");
 }
 
 boot().catch((error) => {
