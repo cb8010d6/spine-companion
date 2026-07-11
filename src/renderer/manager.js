@@ -3,8 +3,17 @@ import { initTauriBridge, isTauri } from "./tauri-bridge.js";
 import { h, render } from "./lib/dom.js";
 import { createI18n, t } from "../shared/i18n.js";
 import { avatarActionKey, avatarResultToastKey, avatarStatusKey } from "./avatar-ui.js";
+import {
+  INTEGRATION_FILTERS,
+  integrationCompletion,
+  integrationMatchesFilter,
+  integrationPrimaryAction,
+  integrationSummaryKey,
+  selectFilteredIntegration
+} from "./integration-ui.js";
 import { modelPreview } from "./model-preview.js";
 import { renderSpinePreview } from "./spine-preview.js";
+import { installManagerPreviewBridge } from "./manager-preview.js";
 import {
   createCoalescedRefresh,
   integrationLabelForState,
@@ -29,6 +38,8 @@ let updateStatus = null;
 let liveState = null;
 const downloads = {};
 const integrationTestResults = new Map();
+let integrationFilter = "all";
+let selectedIntegrationId = "";
 let dashboardRenderRevision = 0;
 
 function setStatus(text) {
@@ -460,43 +471,29 @@ function settingsView() {
     config.ui = { ...(config.ui || {}), ...patch };
     showToast(t("manager.status.settingsSaved"));
   };
+  const section = (title, description, ...content) => h("section", { class: "settings-section" },
+    h("div", { class: "settings-section-header" },
+      h("div", {}, h("h3", {}, title), h("p", {}, description))
+    ),
+    h("div", { class: "settings-section-body" }, ...content)
+  );
   return h("section", {},
-    h("h2", { class: "view-title" }, t("manager.settings.title")),
-    h("div", { class: "settings-grid" },
-      h("article", { class: "card form-card" },
-        h("h3", {}, t("manager.section.spine")),
+    h("div", { class: "view-header" },
+      h("div", {},
+        h("h2", { class: "view-title" }, t("manager.settings.title")),
+        h("p", { class: "empty-text" }, t("manager.settings.subtitle"))
+      ),
+      h("button", { class: "btn", type: "button", onClick: resetExperience }, t("manager.actions.resetDisplayDefaults"))
+    ),
+    h("div", { class: "settings-shell" },
+      section(t("manager.settings.appearance"), t("manager.settings.appearanceHelp"),
         h("button", { class: "btn", type: "button", onClick: importLocalModel }, t("manager.actions.importLocal")),
         rangeNumber(t("manager.field.scale"), "set-scale", Number(spine.scale || 1), 0.2, 2.5, 0.01, saveSpine),
         rangeNumber(t("manager.field.offsetX"), "set-offset-x", Number(spine.offsetX || 0), -240, 240, 1, saveSpine),
         rangeNumber(t("manager.field.offsetY"), "set-offset-y", Number(spine.offsetY || 0), -240, 240, 1, saveSpine),
-        h("div", { class: "model-actions" },
-          h("button", { class: "btn btn-primary", type: "button", onClick: saveSpine }, t("manager.actions.saveConfiguration")),
-          h("button", { class: "btn", type: "button", onClick: resetExperience }, t("manager.actions.resetDefaults"))
-        )
-      ),
-      h("article", { class: "card form-card" },
-        h("h3", {}, t("manager.section.interface")),
-        check(t("manager.field.showStatusPanel"), ui.hudVisible !== false, (checked) => saveUi({ hudVisible: checked })),
-        check(t("manager.field.showProgressBubble"), ui.bubbleVisible !== false, (checked) => saveUi({ bubbleVisible: checked })),
-        check(t("manager.field.autoShowCodex"), ui.autoRevealOnMcp !== false, (checked) => saveUi({ autoRevealOnMcp: checked })),
-        check(t("manager.field.systemNotifications"), ui.systemNotifications !== false, (checked) => saveUi({ systemNotifications: checked })),
-        check(t("manager.field.updateAutoCheck"), ui.updateAutoCheck !== false, (checked) => saveUi({ updateAutoCheck: checked })),
-        check(t("manager.field.shortcutEnabled"), ui.shortcutEnabled !== false, (checked) => saveUi({ shortcutEnabled: checked })),
-        field(t("manager.field.shortcutAccelerator"), h("input", {
-          class: "input",
-          value: ui.shortcutAccelerator || "CommandOrControl+Shift+S",
-          onChange: (e) => saveUi({ shortcutAccelerator: e.target.value })
-        })),
-        rangeNumber(t("manager.field.maxDpr"), "set-max-dpr", Number(ui.maxDevicePixelRatio || 2), 1, 3, 0.25, () => saveUi({ maxDevicePixelRatio: numeric("set-max-dpr-number") })),
-        rangeNumber(t("manager.field.hitboxPadding"), "set-hitbox-padding", Number(ui.hitboxPadding || 8), 0, 48, 1, () => saveUi({ hitboxPadding: numeric("set-hitbox-padding-number") })),
-        check(t("manager.field.debugHitbox"), ui.debugHitbox === true, (checked) => saveUi({ debugHitbox: checked })),
-        check(t("manager.field.hardwareAcceleration"), (ui.gpuMode || "hardware") !== "software", (checked) => {
-          saveUi({ gpuMode: checked ? "hardware" : "software" });
-          showToast(t("manager.status.restartRequired"));
-        }, t("manager.hint.hardwareAcceleration")),
         check(t("manager.field.bubbleShadow"), ui.bubbleShadow !== false, (checked) => saveUi({ bubbleShadow: checked })),
         field(t("manager.field.bubbleTheme"), h("select", { class: "select", value: ui.bubbleBackground || "solid", onChange: (e) => saveUi({ bubbleBackground: e.target.value }) },
-          ["solid", "soft", "clear", "light"].map((value) => h("option", { value, selected: (ui.bubbleBackground || "solid") === value }, value))
+          ["solid", "soft", "clear", "light"].map((value) => h("option", { value, selected: (ui.bubbleBackground || "solid") === value }, t(`manager.option.bubble.${value}`)))
         )),
         field(t("manager.field.theme"), h("select", { class: "select", value: ui.theme || "dark", onChange: (e) => saveUi({ theme: e.target.value }) },
           h("option", { value: "dark" }, t("manager.option.dark")),
@@ -506,10 +503,37 @@ function settingsView() {
           h("option", { value: "auto" }, t("manager.option.auto")),
           h("option", { value: "en" }, "English"),
           h("option", { value: "zh-CN" }, "中文")
-        ))
+        )),
+        h("button", { class: "btn btn-primary", type: "button", onClick: saveSpine }, t("manager.actions.saveConfiguration"))
       ),
-      h("article", { class: "card form-card" },
-        h("h3", {}, t("manager.section.reminders")),
+      section(t("manager.settings.behavior"), t("manager.settings.behaviorHelp"),
+        check(t("manager.field.showStatusPanel"), ui.hudVisible !== false, (checked) => saveUi({ hudVisible: checked })),
+        check(t("manager.field.showProgressBubble"), ui.bubbleVisible !== false, (checked) => saveUi({ bubbleVisible: checked })),
+        check(t("manager.field.autoShowCodex"), ui.autoRevealOnMcp !== false, (checked) => saveUi({ autoRevealOnMcp: checked })),
+        check(t("manager.field.systemNotifications"), ui.systemNotifications !== false, (checked) => saveUi({ systemNotifications: checked })),
+        check(t("manager.field.updateAutoCheck"), ui.updateAutoCheck !== false, (checked) => saveUi({ updateAutoCheck: checked }))
+      ),
+      section(t("manager.settings.interaction"), t("manager.settings.interactionHelp"),
+        check(t("manager.field.shortcutEnabled"), ui.shortcutEnabled !== false, (checked) => saveUi({ shortcutEnabled: checked })),
+        field(t("manager.field.shortcutAccelerator"), h("input", {
+          class: "input",
+          value: ui.shortcutAccelerator || "CommandOrControl+Shift+S",
+          onChange: (e) => saveUi({ shortcutAccelerator: e.target.value })
+        })),
+        rangeNumber(t("manager.field.hitboxPadding"), "set-hitbox-padding", Number(ui.hitboxPadding || 8), 0, 48, 1, () => saveUi({ hitboxPadding: numeric("set-hitbox-padding-number") }))
+      ),
+      section(t("manager.settings.compatibility"), t("manager.settings.compatibilityHelp"),
+        rangeNumber(t("manager.field.maxDpr"), "set-max-dpr", Number(ui.maxDevicePixelRatio || 2), 1, 3, 0.25, () => saveUi({ maxDevicePixelRatio: numeric("set-max-dpr-number") })),
+        check(t("manager.field.hardwareAcceleration"), (ui.gpuMode || "hardware") !== "software", (checked) => {
+          saveUi({ gpuMode: checked ? "hardware" : "software" });
+          showToast(t("manager.status.restartRequired"));
+        }, t("manager.hint.hardwareAcceleration")),
+        h("details", { class: "settings-advanced" },
+          h("summary", {}, t("manager.settings.advanced")),
+          check(t("manager.field.debugHitbox"), ui.debugHitbox === true, (checked) => saveUi({ debugHitbox: checked }))
+        )
+      ),
+      section(t("manager.section.reminders"), t("manager.settings.remindersHelp"),
         reminders.length
           ? reminders.map((reminder) => h("div", { class: "reminder-row" },
               h("div", {},
@@ -633,6 +657,31 @@ async function showAgentInstructions(id) {
   }
 }
 
+async function installAgentInstructions(id) {
+  try {
+    const preview = await window.companion?.generateAiIntegrationInstructions?.(id);
+    const name = preview?.integration?.name || id;
+    const body = t("manager.modal.instructionsPrompt", {
+      path: preview?.targetPath || "",
+      name
+    });
+    showModal(t("manager.modal.instructionsTitle", { name }), body, [
+      h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.cancel")),
+      h("button", { class: "btn btn-primary", type: "button", onClick: async () => {
+        closeModal();
+        const result = await window.companion?.installAiIntegrationInstructions?.(id);
+        await refreshIntegrations();
+        showToast(t("manager.status.instructionsInstalled", { name, path: result?.targetPath || "" }));
+        renderView("integrations");
+      } }, t("manager.actions.installInstructions"))
+    ]);
+  } catch (error) {
+    showModal(t("manager.actions.agentInstructions"), error.message || String(error), [
+      h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.close"))
+    ]);
+  }
+}
+
 async function configureIntegration(id) {
   try {
     const preview = await window.companion?.previewAiIntegrationConfig?.(id);
@@ -698,55 +747,106 @@ async function integrationsView() {
   if (!available) {
     return h("section", {},
       h("h2", { class: "view-title" }, t("manager.integrations.title")),
-      h("article", { class: "card" }, h("p", { class: "empty-text" }, "AI Integrations are available in the Tauri runtime."))
+      h("article", { class: "card" }, h("p", { class: "empty-text" }, t("manager.integrations.runtimeUnavailable")))
     );
   }
-  const cards = integrations.map((item) => {
-    const canConfigure = item.configFormat !== "templateOnly" && (item.installed || item.configFound || item.configured);
-    const customForm = item.configFormat === "templateOnly" ? h("form", { class: "custom-integration-form", onSubmit: (event) => {
-      event.preventDefault();
-      generateCustomTemplate(event.currentTarget);
-    } },
-      h("input", { class: "input", name: "toolName", placeholder: t("manager.integrations.customTool") }),
-      h("input", { class: "input", name: "source", placeholder: "my-tool-mcp" }),
-      h("input", { class: "input", name: "sourceLabel", placeholder: t("manager.integrations.customLabel") }),
-      h("button", { class: "btn btn-primary", type: "submit" }, t("manager.actions.generateCustomTemplate"))
-    ) : null;
-    return h("article", { class: "card integration-card" },
-      h("div", { class: "integration-header" },
-        h("div", {},
-          h("h3", {}, item.name),
-          h("p", { class: "model-meta" }, item.note || "")
-        ),
-        h("span", { class: item.configured ? "status-value status-ok" : "status-value" }, item.status)
-      ),
-      h("div", { class: "integration-badges" }, integrationStatusBadges(item)),
-      item.configPath ? h("p", { class: "integration-path", title: item.configPath }, `${t("manager.integrations.config")}: ${item.configPath}`) : null,
-      item.instructionsPath ? h("p", { class: "integration-path", title: item.instructionsPath }, `${t("manager.integrations.instructions")}: ${item.instructionsPath}`) : null,
-      h("p", { class: "integration-path" }, `${t("manager.integrations.command")}: ${item.source} / ${item.sourceLabel}`),
-      customForm,
-      h("div", { class: "model-actions" },
-        item.configFormat === "templateOnly"
-          ? h("button", { class: "btn btn-primary", type: "button", onClick: () => copyIntegrationTemplate(null) }, t("manager.actions.copyTemplate"))
-          : canConfigure
-            ? h("button", { class: "btn btn-primary", type: "button", onClick: () => configureIntegration(item.id) }, t("manager.actions.configure"))
-            : null,
-        h("button", { class: "btn", type: "button", onClick: () => previewIntegration(item.id) }, t("manager.actions.preview")),
-        item.configFormat !== "templateOnly" ? h("button", { class: "btn", type: "button", onClick: () => testIntegration(item.id) }, t("manager.actions.testMcp")) : null,
-        item.configFormat !== "templateOnly" ? h("button", { class: "btn", type: "button", onClick: () => showAgentInstructions(item.id) }, t("manager.actions.agentInstructions")) : null,
-        item.configPath ? h("button", { class: "btn", type: "button", onClick: () => window.companion?.openAiIntegrationConfig?.(item.id) }, t("manager.actions.openConfig")) : null,
-        item.configFormat !== "templateOnly" ? h("button", { class: "btn", type: "button", onClick: () => copyIntegrationTemplate(item.id) }, t("manager.actions.copyTemplate")) : null
-      )
-    );
-  });
+  const filtered = integrations.filter((item) => integrationMatchesFilter(item, integrationFilter, integrationTestResults.get(item.id)));
+  const selected = selectFilteredIntegration(filtered, selectedIntegrationId);
+  selectedIntegrationId = selected?.id || "";
+  const testResult = selected ? integrationTestResults.get(selected.id) : null;
+  const progress = selected ? integrationCompletion(selected, testResult) : null;
+  const action = selected ? integrationPrimaryAction(selected, testResult) : "manual";
+  const statusStep = (label, done, detail) => h("div", { class: `setup-step${done ? " done" : ""}` },
+    h("span", { class: "setup-step-mark", "aria-hidden": "true" }, done ? "✓" : "·"),
+    h("div", {}, h("strong", {}, label), detail ? h("small", {}, detail) : null)
+  );
+  const primaryAction = () => {
+    if (!selected) return null;
+    if (action === "configure") return h("button", { class: "btn btn-primary", type: "button", onClick: () => configureIntegration(selected.id) }, t("manager.actions.configure"));
+    if (action === "instructions") return h("button", { class: "btn btn-primary", type: "button", onClick: () => installAgentInstructions(selected.id) }, t("manager.actions.installInstructions"));
+    if (action === "test" || action === "retest") return h("button", { class: "btn btn-primary", type: "button", onClick: () => testIntegration(selected.id) }, t(action === "retest" ? "manager.actions.retestMcp" : "manager.actions.testMcp"));
+    if (action === "custom") return h("button", { class: "btn btn-primary", type: "button", onClick: () => copyIntegrationTemplate(null) }, t("manager.actions.copyTemplate"));
+    return h("button", { class: "btn btn-primary", type: "button", onClick: () => copyIntegrationTemplate(selected.id) }, t("manager.actions.manualSetup"));
+  };
+  const customForm = selected?.configFormat === "templateOnly" ? h("form", { class: "custom-integration-form", onSubmit: (event) => {
+    event.preventDefault();
+    generateCustomTemplate(event.currentTarget);
+  } },
+    field(t("manager.integrations.customTool"), h("input", { class: "input", name: "toolName", placeholder: t("manager.integrations.customTool"), required: true })),
+    field(t("manager.integrations.customSource"), h("input", { class: "input", name: "source", placeholder: "my-tool-mcp" })),
+    field(t("manager.integrations.customLabel"), h("input", { class: "input", name: "sourceLabel", placeholder: t("manager.integrations.customLabel") })),
+    h("button", { class: "btn", type: "submit" }, t("manager.actions.generateCustomTemplate"))
+  ) : null;
   return h("section", {},
     h("div", { class: "view-header" },
       h("div", {},
         h("h2", { class: "view-title" }, t("manager.integrations.title")),
         h("p", { class: "empty-text" }, t("manager.integrations.subtitle"))
+      ),
+      h("div", { class: "integration-overview" },
+        h("strong", {}, integrations.filter((item) => item.configured).length),
+        h("span", {}, t("manager.integrations.configuredCount", { total: integrations.length }))
       )
     ),
-    h("div", { class: "grid-2" }, cards)
+    h("div", { class: "integration-filters", role: "group", "aria-label": t("manager.integrations.filterLabel") },
+      INTEGRATION_FILTERS.map((filter) => h("button", {
+        class: integrationFilter === filter ? "active" : "",
+        type: "button",
+        "aria-pressed": integrationFilter === filter,
+        onClick: () => { integrationFilter = filter; renderView("integrations"); }
+      }, t(`manager.integrations.filter.${filter}`)))
+    ),
+    h("div", { class: "integration-workspace" },
+      h("div", { class: "integration-list" },
+        filtered.length ? filtered.map((item) => {
+          const itemProgress = integrationCompletion(item, integrationTestResults.get(item.id));
+          return h("button", {
+            class: `integration-row${item.id === selected?.id ? " active" : ""}`,
+            type: "button",
+            onClick: () => { selectedIntegrationId = item.id; renderView("integrations"); }
+          },
+            h("span", { class: `integration-monogram state-${itemProgress.state}` }, item.name.slice(0, 1).toUpperCase()),
+            h("span", { class: "integration-row-copy" },
+              h("strong", {}, item.name),
+              h("small", {}, t(integrationSummaryKey(item, integrationTestResults.get(item.id))))
+            ),
+            itemProgress.total ? h("span", { class: "integration-progress" }, `${itemProgress.completed}/${itemProgress.total}`) : null
+          );
+        }) : h("p", { class: "empty-text integration-empty" }, t("manager.integrations.noMatches"))
+      ),
+      selected ? h("article", { class: "integration-detail" },
+        h("div", { class: "integration-detail-header" },
+          h("div", {},
+            h("p", { class: "integration-kicker" }, selected.sourceLabel || selected.source),
+            h("h3", {}, selected.name),
+            h("p", { class: "model-meta" }, t(integrationSummaryKey(selected, testResult)))
+          ),
+          h("span", { class: progress?.state === "ready" ? "status-value status-ok" : "status-value" }, t(integrationSummaryKey(selected, testResult)))
+        ),
+        selected.configFormat !== "templateOnly" ? h("div", { class: "setup-checklist" },
+          statusStep(t("manager.integrations.step.detected"), selected.installed || selected.configFound || selected.configured, selected.installed ? t("manager.integrations.installed") : t("manager.integrations.notDetected")),
+          statusStep(t("manager.integrations.step.config"), selected.configured, selected.configured ? t("manager.integrations.configured") : t("manager.integrations.step.configHelp")),
+          statusStep(t("manager.integrations.step.instructions"), selected.instructionsFound, selected.instructionsFound ? t("manager.integrations.instructionsFound") : t("manager.integrations.step.instructionsHelp")),
+          statusStep(t("manager.integrations.step.test"), testResult?.ok === true, testResult?.ok ? t("manager.integrations.testPassed") : t("manager.integrations.step.testHelp"))
+        ) : customForm,
+        selected.configPath ? h("p", { class: "integration-path", title: selected.configPath }, `${t("manager.integrations.config")}: ${selected.configPath}`) : null,
+        h("div", { class: "integration-primary-actions" }, primaryAction(),
+          selected.configFormat !== "templateOnly" && selected.configured && !selected.instructionsFound
+            ? h("button", { class: "btn", type: "button", onClick: () => showAgentInstructions(selected.id) }, t("manager.actions.previewInstructions"))
+            : null
+        ),
+        h("details", { class: "integration-advanced" },
+          h("summary", {}, t("manager.integrations.advanced")),
+          h("div", { class: "integration-advanced-actions" },
+            h("button", { class: "btn", type: "button", onClick: () => previewIntegration(selected.id) }, t("manager.actions.preview")),
+            selected.configFormat !== "templateOnly" ? h("button", { class: "btn", type: "button", onClick: () => showAgentInstructions(selected.id) }, t("manager.actions.agentInstructions")) : null,
+            selected.configPath ? h("button", { class: "btn", type: "button", onClick: () => window.companion?.openAiIntegrationConfig?.(selected.id) }, t("manager.actions.openConfig")) : null,
+            h("button", { class: "btn", type: "button", onClick: () => copyIntegrationTemplate(selected.configFormat === "templateOnly" ? null : selected.id) }, t("manager.actions.copyTemplate"))
+          ),
+          h("p", { class: "integration-path" }, `${t("manager.integrations.command")}: ${selected.source} / ${selected.sourceLabel}`)
+        )
+      ) : h("article", { class: "integration-detail" }, h("p", { class: "empty-text" }, t("manager.integrations.noMatches")))
+    )
   );
 }
 
@@ -933,6 +1033,7 @@ async function renderView(viewName) {
 }
 
 async function boot() {
+  installManagerPreviewBridge();
   if (isTauri()) await initTauriBridge();
   await refreshConfig();
   refreshUpdateStatus({ silent: true }).then((status) => {

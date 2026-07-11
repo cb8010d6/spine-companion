@@ -55,6 +55,7 @@ export async function initTauriBridge() {
     copyAiIntegrationTemplate: (id = null) => _tauriInvoke("copy_ai_integration_template", { toolId: id }),
     copyCustomAiIntegrationTemplate: (input) => _tauriInvoke("copy_custom_ai_integration_template", { input }),
     generateAiIntegrationInstructions: (id) => _tauriInvoke("generate_ai_integration_instructions", { toolId: id }),
+    installAiIntegrationInstructions: (id) => _tauriInvoke("install_ai_integration_instructions", { toolId: id }),
     testAiIntegration: (id) => _tauriInvoke("test_ai_integration", { toolId: id }),
     avatarRequirements: () => _tauriInvoke("avatar_requirements"),
     validateAvatarPack: (path) => _tauriInvoke("validate_avatar_pack", { input: { path } }),
