@@ -1,21 +1,22 @@
 import { h } from "./lib/dom.js";
 import { bindManagerButton } from "./manager-action.js";
+import { t } from "../shared/i18n.js";
 
 export function friendlyError(error, config = {}) {
-  const message = error?.message || String(error || "Unknown error");
+  const message = error?.message || String(error || t("error.unknown"));
   if (message.includes("XMLHttpRequest") || message.includes("status: 0")) {
-    return "Unable to load the Spine asset. Check that the local API is running and the model files exist.";
+    return t("error.assetLoad");
   }
   if (!config.spine?.assetDirConfigured) {
-    return "No model is configured yet. Open Manager and download or activate a model.";
+    return t("error.noModel");
   }
   return message;
 }
 
-export function createErrorCard({ title = "Something went wrong", error, config, onRetry, onManager }) {
+export function createErrorCard({ title = t("error.title"), error, config, onRetry, onManager }) {
   const managerStatus = h("span", { class: "error-action-status", role: "status" });
   const managerButton = bindManagerButton(
-    h("button", { type: "button", class: "btn" }, "Open Manager"),
+    h("button", { type: "button", class: "btn" }, t("error.openManager")),
     managerStatus,
     onManager
   );
@@ -23,7 +24,7 @@ export function createErrorCard({ title = "Something went wrong", error, config,
     h("strong", {}, title),
     h("span", {}, friendlyError(error, config)),
     h("div", { class: "error-actions" },
-      h("button", { type: "button", class: "btn btn-primary", onClick: onRetry }, "Retry"),
+      h("button", { type: "button", class: "btn btn-primary", onClick: onRetry }, t("error.retry")),
       managerButton
     ),
     managerStatus

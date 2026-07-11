@@ -1,8 +1,10 @@
+import { t } from "../shared/i18n.js";
+
 export function bindManagerButton(button, statusNode, onManager, labels = {}) {
   if (!button) return button;
-  const idle = labels.idle || button.textContent || "Open Manager";
-  const pending = labels.pending || "Opening Manager...";
-  const errorText = labels.error || "Unable to open Manager";
+  const idle = labels.idle || button.textContent || t("error.openManager");
+  const pending = labels.pending || t("error.openingManager");
+  const errorText = labels.error || t("error.openManagerFailed");
   button.textContent = idle;
   button.addEventListener("click", async () => {
     if (!onManager) return;
