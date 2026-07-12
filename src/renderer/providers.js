@@ -5,7 +5,7 @@ export class IpcStateProvider {
   }
 
   async start(onState) {
-    if (!window.companion) throw new Error("Electron companion bridge is not available.");
+    if (!window.companion) throw new Error("Desktop companion bridge is not available.");
     this.unsubscribe = window.companion.onState(onState);
     onState(await window.companion.getState());
   }

@@ -1,6 +1,6 @@
 [package]
 name = "spine-companion"
-version = "0.2.6-rc.4"
+version = "0.2.6-rc.5"
 description = "Open-source desktop companion shell for local Spine 3.8 models."
 authors = ["Spine Companion contributors"]
 edition = "2021"
@@ -33,3 +33,6 @@ tauri-plugin-dialog = "2.7.1"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }

@@ -2,8 +2,8 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-Spine Companion 是一个开源桌面陪伴应用 MVP，面向 Spine 3.8 模型。当前运行时重点是
-Tauri，旧 Electron 路径仍保留用于兼容。渲染器基于 `pixi.js@6.5.10` 和
+Spine Companion 是一个面向 Spine 3.8 模型的开源桌面陪伴应用。桌面运行时统一为
+Tauri。渲染器基于 `pixi.js@6.5.10` 和
 `pixi-spine@3.1.2`，可以直接渲染 `.skel/.atlas/.png`，并提供透明背景、窗口置顶、
 拖拽、缩放、点击互动、状态切换、本地状态 API、MCP 桥接、进度气泡、托盘控制、
 简单提醒和工具化的 Manager 窗口。
@@ -19,7 +19,8 @@ Tauri，旧 Electron 路径仍保留用于兼容。渲染器基于 `pixi.js@6.5.
 
 ### 使用 Release 构建
 
-1. 从 GitHub Release 下载最新的 Windows 安装包或便携包。
+1. 从 GitHub Release 下载对应平台的安装包。Windows 是主要支持平台；rc.5 中未签名的
+   macOS 和 Linux 包属于实验预览。
 2. 推荐把 `companion.local.json` 放到当前用户的配置目录：
 
 ```text
@@ -48,11 +49,7 @@ bun run setup:assets -- "C:\path\to\amiya_spine"
 bun run dev
 ```
 
-从源码运行 Tauri 候选版本：
-
-```bash
-bun run tauri:dev
-```
+`bun run dev` 和 `bun run tauri:dev` 都会启动 Tauri 应用。
 
 部署、启动、MCP 和排障步骤见 [docs/deployment.zh-CN.md](docs/deployment.zh-CN.md)。
 偏 UI 的使用说明见 [docs/user-guide.zh-CN.md](docs/user-guide.zh-CN.md)。
@@ -64,7 +61,7 @@ bun run tauri:dev
 http://127.0.0.1:17389?api=http://127.0.0.1:17388
 ```
 
-如果只想在浏览器中预览 API 和渲染器，不启动 Electron：
+如果只想在浏览器中预览 API 和渲染器，不启动桌面应用：
 
 ```bash
 bun run dev:renderer
@@ -154,7 +151,7 @@ plugins/spine-companion-status
 
 渲染器支持这些状态来源：
 
-- Electron IPC，桌面应用使用。
+- Tauri 的 `window.companion` bridge，桌面应用使用。
 - 本地 HTTP 轮询，浏览器预览和简单集成使用。
 - JSON 轮询，适合写入状态文件的脚本。
 - WebSocket，适合 push 风格的桥接服务。
@@ -182,8 +179,8 @@ MCP bridge 只有在 companion 应用或本地 API 运行时才可用。运行
 `bun run mcp:install:codex`，重启 Codex，然后检查 Manager > Diagnostics。
 
 **应该使用哪个 runtime？**
-当前测试请优先使用 Tauri release 构建。Electron 路径仍保留在仓库中用于兼容，但新的
-用户可见功能会优先面向 Tauri。
+使用 Tauri release 构建。Electron 已在 v0.2.6-rc.5 退役，不再发布、测试或作为第二套
+桌面后端保留。
 
 ## 开源说明
 
@@ -192,11 +189,23 @@ MCP bridge 只有在 companion 应用或本地 API 运行时才可用。运行
 - 使用 `companion.config.example.json` 作为公开配置模板。
 - `assets/` 下的占位目录只用于说明素材放置方式。
 
+## 平台支持
+
+| 平台 | rc.5 状态 | 安装包 |
+| --- | --- | --- |
+| Windows 10/11 x64 | 主要支持 | NSIS `.exe` |
+| macOS Apple Silicon | 实验性、未签名 | `.dmg` |
+| macOS Intel | 实验性、未签名 | `.dmg` |
+| Linux x64 | 实验性 | `.AppImage`、`.deb` |
+
+macOS/Linux 与 Windows 使用同一套 Tauri 应用和 renderer，但透明窗口、托盘、鼠标穿透、
+Wayland/X11 和 GPU 驱动行为可能不同。反馈平台问题时请附上 Diagnostics 导出的报告。
+
 ## macOS Release 签名
 
 GitHub Actions 可以构建未签名的 macOS 产物，但 Apple Silicon 用户可能会遇到 Gatekeeper
 提示，例如 “damaged” 或 “cannot be opened”。如果要提供公开 macOS 下载，请配置以下仓库
-secrets，让 electron-builder 对 DMG/ZIP 产物进行签名和 notarize：
+secrets，让 Tauri 构建执行签名和 notarize：
 
 - `MACOS_CERTIFICATE`
 - `MACOS_CERTIFICATE_PASSWORD`

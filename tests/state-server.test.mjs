@@ -4,7 +4,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 
-const { createCompanionServer, rewriteAtlasTextureUrls } = require("../src/main/state-server.cjs");
+const { createCompanionServer, rewriteAtlasTextureUrls } = require("../src/backend/state-server.cjs");
 
 function request(url, options = {}) {
   return new Promise((resolve, reject) => {

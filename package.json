@@ -1,6 +1,6 @@
 {
   "name": "spine-companion",
-  "version": "0.2.6-rc.4",
+  "version": "0.2.6-rc.5",
   "description": "Open-source desktop companion shell for local Spine 3.8 models.",
   "license": "MIT",
   "packageManager": "bun@1.3.13",
@@ -8,20 +8,16 @@
     "name": "Spine Companion contributors",
     "email": "spine-companion@users.noreply.github.com"
   },
-  "main": "src/main/main.cjs",
   "scripts": {
-    "dev": "concurrently -k \"vite --host 127.0.0.1 --port 17389\" \"wait-on http://127.0.0.1:17389 && electron .\"",
+    "dev": "tauri dev",
     "dev:renderer": "vite --host 127.0.0.1 --port 17389",
     "dev:api": "bun scripts/dev-api.cjs",
     "build": "vite build",
-    "release:win": "bun run build && electron-builder --win portable --x64 --publish never",
-    "release:linux": "bun run build && electron-builder --linux AppImage deb --x64 --publish never",
-    "release:mac": "bun run build && electron-builder --mac dmg zip --x64 --arm64 --publish never",
-    "start": "bun scripts/start-local.cjs",
-    "start:electron": "electron .",
-    "doctor": "bun scripts/doctor.cjs",
+    "release:win": "tauri build --bundles nsis",
+    "release:linux": "tauri build --bundles deb,appimage",
+    "release:mac": "tauri build --bundles app,dmg",
+    "start": "tauri dev",
     "setup:assets": "bun scripts/setup-local-assets.cjs",
-    "capture:preview": "electron scripts/capture-preview.cjs",
     "mcp:server": "bun scripts/mcp-companion-server.mjs",
     "mcp:install:codex": "bun scripts/install-codex-mcp.cjs",
     "status:report": "bun scripts/report-status.cjs",
@@ -52,18 +48,8 @@
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.1",
     "@vitest/coverage-v8": "4.1.5",
-    "concurrently": "9.1.2",
-    "electron": "35.1.5",
-    "electron-builder": "^26.0.12",
     "happy-dom": "^20.0.11",
     "vite": "6.2.4",
-    "vitest": "^4.1.5",
-    "wait-on": "8.0.3"
-  },
-  "overrides": {
-    "@electron/node-gyp": "10.2.0-electron.2"
-  },
-  "resolutions": {
-    "@electron/node-gyp": "10.2.0-electron.2"
+    "vitest": "^4.1.5"
   }
 }

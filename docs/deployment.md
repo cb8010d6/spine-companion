@@ -7,7 +7,7 @@ assets, expose state APIs, and connect the optional Codex MCP bridge.
 
 ## 1. Requirements
 
-- Bun 1.3 or newer.
+- Bun 1.3 or newer and Rust stable for source development.
 - Git, if you want to clone or contribute.
 - A local Spine 3.8-compatible model folder containing `.skel`, `.atlas`, and
   texture files.
@@ -18,12 +18,23 @@ The app has been verified with:
 - `pixi-spine@3.1.2`
 - Spine 3.8 `.skel/.atlas/.png` assets
 
-## 2. Easiest Windows Release Startup
+Linux source builds also need WebKitGTK 4.1, AppIndicator, librsvg, and patchelf.
+Ubuntu/Debian example:
+
+```bash
+sudo apt install libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+```
+
+macOS source builds need Xcode Command Line Tools. Packages must be built on the
+matching operating system; the GitHub Actions release matrix handles this.
+
+## 2. Easiest Release Startup
 
 Use this path if you only want to run the app.
 
-1. Download the latest Windows installer or portable build from the GitHub
-   Release page.
+1. Download the Windows NSIS installer, macOS DMG, Linux AppImage, or Linux DEB
+   from the GitHub Release page. Windows is primary support; rc.5 macOS/Linux
+   packages are experimental previews.
 2. Open the tray menu and choose `Open Config Folder`, then create
    `companion.local.json` in that folder.
 3. Put this in the file and edit the two paths:
@@ -110,22 +121,17 @@ bun run dev
 
 ## 5. Start The Desktop App
 
-For the current MVP source workflow:
+Run the Tauri desktop application:
 
 ```bash
 bun run dev
 ```
 
-This starts:
+This starts Vite through Tauri's `beforeDevCommand`, the native desktop windows,
+and the Rust local API at `http://127.0.0.1:17388`. The window is frameless,
+transparent, always-on-top, draggable, and supports wheel scaling.
 
-- Vite renderer on `http://127.0.0.1:17389`
-- Electron desktop companion window
-- Companion API inside the Electron main process on `http://127.0.0.1:17388`
-
-The window is frameless, transparent, always-on-top, draggable, and supports
-wheel scaling over the model stage.
-
-Run the Tauri candidate build:
+The explicit alias is equivalent:
 
 ```bash
 bun run tauri:dev
@@ -304,17 +310,17 @@ bun run build
 `bun run build` builds the renderer into `dist/`. Packaging an installer is not
 required for normal development.
 
-Create a Windows portable release artifact:
+Build a package on the current operating system:
 
 ```bash
-bun run release:win
+bun run release:win    # Windows NSIS
+bun run release:mac    # macOS app + DMG
+bun run release:linux  # Linux DEB + AppImage
 ```
 
-The output is written to:
-
-```text
-release/spine-companion-0.1.2-windows-x64-portable.exe
-```
+Tauri writes native packages under `src-tauri/target/release/bundle/`. Native
+packages are built on their matching operating system; use GitHub Actions for
+the full platform matrix.
 
 Create a local Tauri portable-with-assets folder:
 

@@ -6,7 +6,7 @@ const {
   validateReminder,
   validateSaveSettings,
   validateSetState
-} = require("../src/main/ipc-schema.cjs");
+} = require("../src/backend/ipc-schema.cjs");
 
 describe("IPC schema validation", () => {
   it("accepts expected state and settings payloads", () => {

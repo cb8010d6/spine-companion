@@ -431,12 +431,13 @@ button:disabled {
   border: 1px solid var(--border);
   border-radius: 10px;
   overflow: hidden;
-  height: 100px;
+  min-height: 128px;
 }
 
 .model-preview {
-  width: 100px;
-  height: 100px;
+  width: 128px;
+  min-height: 128px;
+  flex: 0 0 128px;
   background: #0A0A0C;
   display: flex;
   align-items: center;
@@ -491,15 +492,15 @@ button:disabled {
 
 .model-info {
   flex: 1;
-  padding: 12px;
+  padding: 11px 12px 10px;
   display: flex;
   flex-direction: column;
   min-width: 0;
 }
 
 .model-title {
-  font-weight: 600;
-  font-size: 13px;
+  font-weight: 700;
+  font-size: 14px;
   color: var(--text);
   margin-bottom: 4px;
   white-space: nowrap;
@@ -507,16 +508,51 @@ button:disabled {
   text-overflow: ellipsis;
 }
 
+.model-id {
+  margin-bottom: 5px;
+  overflow: hidden;
+  color: var(--sc-text-subtle);
+  font-size: 10px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .model-meta {
   font-size: 11px;
   color: var(--text-muted);
-  margin-bottom: auto;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .model-actions {
   display: flex;
   gap: 6px;
   align-items: center;
+  margin-top: auto;
+}
+
+.model-action,
+.model-preview-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+}
+
+.model-action {
+  min-height: 28px;
+  padding: 4px 9px;
+  white-space: nowrap;
+}
+
+.btn-icon {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 13px;
+  stroke-width: 1.9;
 }
 
 .badge {
@@ -1373,7 +1409,7 @@ input[type="range"] {
 
 .library-toolbar {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) minmax(150px, 220px);
+  grid-template-columns: minmax(150px, 180px) minmax(220px, 1fr) minmax(150px, 180px) max-content;
   gap: 10px;
   margin-bottom: 14px;
 }

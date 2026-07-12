@@ -1,5 +1,5 @@
-const { loadConfig, getPublicConfig } = require("../src/main/config.cjs");
-const { createCompanionServer } = require("../src/main/state-server.cjs");
+const { loadConfig, getPublicConfig } = require("../src/backend/config.cjs");
+const { createCompanionServer } = require("../src/backend/state-server.cjs");
 
 async function main() {
   const config = loadConfig();

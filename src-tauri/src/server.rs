@@ -309,6 +309,22 @@ async fn get_preview_asset(
     }
 }
 
+fn build_router(app_state: AppState) -> Router {
+    Router::new()
+        .route("/health", get(health))
+        .route("/state", get(get_state).post(post_state))
+        .route("/config", get(get_config))
+        .route("/history", get(get_history))
+        .route("/state/:id", post(post_state_by_id))
+        .route("/reminders", get(get_reminders).post(post_reminder))
+        .route("/reminders/:id", delete(delete_reminder_route))
+        .route("/events", get(events))
+        .route("/assets/spine/*path", get(get_spine_asset))
+        .route("/assets/previews/:model_id/*path", get(get_preview_asset))
+        .layer(localhost_cors())
+        .with_state(app_state)
+}
+
 pub async fn start_api_server(
     store: StateStore,
     tx: StateBroadcast,
@@ -332,19 +348,7 @@ pub async fn start_api_server(
         history,
     };
 
-    let app = Router::new()
-        .route("/health", get(health))
-        .route("/state", get(get_state).post(post_state))
-        .route("/config", get(get_config))
-        .route("/history", get(get_history))
-        .route("/state/{id}", post(post_state_by_id))
-        .route("/reminders", get(get_reminders).post(post_reminder))
-        .route("/reminders/{id}", delete(delete_reminder_route))
-        .route("/events", get(events))
-        .route("/assets/spine/*path", get(get_spine_asset))
-        .route("/assets/previews/{model_id}/*path", get(get_preview_asset))
-        .layer(localhost_cors())
-        .with_state(app_state);
+    let app = build_router(app_state);
 
     let addr: SocketAddr = format!("{}:{}", host, port).parse()?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -360,7 +364,9 @@ pub async fn start_api_server(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{body::Body, http::Request};
     use crate::state::{create_reminder_broadcast, create_reminder_store, create_state_store};
+    use tower::ServiceExt;
 
     #[tokio::test]
     async fn file_type_matches_spine_assets() {
@@ -408,5 +414,40 @@ mod tests {
         let rewritten = rewrite_atlas_texture_urls(text);
         assert!(rewritten.starts_with("build_char_1001_amiya2_sale%2316.png\n"));
         assert!(rewritten.contains("\nB_HandD_FA\n"));
+    }
+
+    #[tokio::test]
+    async fn preview_asset_route_serves_a_cached_model_file() {
+        let root = std::env::temp_dir().join(format!(
+            "spine-companion-preview-route-{}",
+            std::process::id()
+        ));
+        let model_dir = root.join("amiya");
+        std::fs::create_dir_all(&model_dir).unwrap();
+        std::fs::write(model_dir.join("model.skel"), b"preview").unwrap();
+        let (store, tx) = create_state_store("idle");
+        let app = build_router(AppState {
+            store,
+            tx,
+            reminders: create_reminder_store(),
+            reminder_tx: create_reminder_broadcast(),
+            asset_root: Arc::new(RwLock::new(None)),
+            preview_root: root.clone(),
+            public_config: Arc::new(Mutex::new(json!({}))),
+            history: Arc::new(Mutex::new(Vec::new())),
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/assets/previews/amiya/model.skel")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let _ = std::fs::remove_dir_all(root);
     }
 }

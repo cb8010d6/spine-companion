@@ -1,9 +1,6 @@
 /**
- * Tauri bridge — replaces Electron's preload.cjs / contextBridge.
- *
- * The renderer checks for `window.companion` (Electron) first.
- * When running under Tauri, `window.__TAURI__` is defined instead.
- * This module detects the runtime and provides a unified API.
+ * Tauri bridge for the renderer's stable `window.companion` contract.
+ * This module detects the desktop runtime and provides the native API.
  */
 
 let _tauriInvoke = null;
@@ -28,7 +25,7 @@ export async function initTauriBridge() {
   if (!isTauri()) return;
   await loadTauri();
 
-  // Expose the same `window.companion` API that the Electron preload provides
+  // Expose one stable desktop API to the renderer.
   window.companion = {
     getConfig: () => _tauriInvoke("get_config"),
     getState: () => _tauriInvoke("get_state"),

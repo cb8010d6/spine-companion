@@ -3628,7 +3628,7 @@ dependencies = [
 
 [[package]]
 name = "spine-companion"
-version = "0.2.6-rc.4"
+version = "0.2.6-rc.5"
 dependencies = [
  "axum",
  "chrono",
@@ -3646,6 +3646,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tokio",
  "tokio-stream",
+ "tower",
  "tower-http",
  "windows-sys 0.61.2",
 ]

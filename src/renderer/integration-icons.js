@@ -1,6 +1,6 @@
 const GENERIC_INTEGRATION_PATH = "M9.4 3 8.7 5.6c-.5.2-1 .5-1.4.8L4.7 5.7 2.4 9.6l1.9 1.9a8 8 0 0 0 0 1L2.4 14.4l2.3 3.9 2.6-.7c.4.3.9.6 1.4.8l.7 2.6h4.5l.7-2.6c.5-.2 1-.5 1.4-.8l2.6.7 2.3-3.9-1.9-1.9a8 8 0 0 0 0-1l1.9-1.9-2.3-3.9-2.6.7c-.4-.3-.9-.6-1.4-.8L13.9 3zm2.3 5.4a3.6 3.6 0 1 1 0 7.2 3.6 3.6 0 0 1 0-7.2";
 
-// Keep these as local URLs so Electron builds do not depend on vendor CDNs.
+// Keep these as local URLs so desktop builds do not depend on vendor CDNs.
 const LOCAL_IMAGES = Object.freeze({
   openai: new URL("./assets/integrations/openai.png", import.meta.url).href,
   anthropic: new URL("./assets/integrations/anthropic.svg", import.meta.url).href,

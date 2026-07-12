@@ -7,7 +7,7 @@
 
 ## 1. 环境要求
 
-- Bun 1.3 或更新版本。
+- Bun 1.3 或更新版本；从源码开发还需要 Rust stable。
 - 如果要贡献代码，需要 Git。
 - 一个本地 Spine 3.8 兼容模型目录，包含 `.skel`、`.atlas` 和贴图文件。
 
@@ -17,9 +17,19 @@
 - `pixi-spine@3.1.2`
 - Spine 3.8 `.skel/.atlas/.png`
 
-## 2. 最简单的 Windows Release 启动
+Linux 源码构建还需要 WebKitGTK 4.1、AppIndicator、librsvg 和 patchelf。Ubuntu/Debian：
 
-1. 下载最新 Windows 安装包或便携包。
+```bash
+sudo apt install libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+```
+
+macOS 源码构建需要 Xcode Command Line Tools。原生安装包应在对应系统构建，GitHub
+Actions 的 release matrix 会分别执行。
+
+## 2. 最简单的 Release 启动
+
+1. 从 GitHub Release 下载 Windows NSIS、macOS DMG、Linux AppImage 或 DEB。
+   Windows 是主要支持平台，rc.5 的 macOS/Linux 包属于实验预览。
 2. 打开右下角托盘菜单，选择 `Open Config Folder`，在打开的目录里创建 `companion.local.json`。
 3. 写入并修改路径：
 
@@ -52,7 +62,7 @@ bun run setup:assets -- "C:\path\to\spine_model_folder"
 bun run dev
 ```
 
-Tauri 版候选运行：
+`bun run dev` 已直接启动 Tauri。以下别名与它等价：
 
 ```bash
 bun run tauri:dev
@@ -172,13 +182,16 @@ bun run check:mcp
 bun run build
 ```
 
-本地 Windows 打包：
+在当前操作系统构建原生安装包：
 
 ```bash
-bun run release:win
+bun run release:win    # Windows NSIS
+bun run release:mac    # macOS app + DMG
+bun run release:linux  # Linux DEB + AppImage
 ```
 
-macOS/Linux release 由 GitHub Actions 在对应 runner 上构建。
+产物位于 `src-tauri/target/release/bundle/`。原生包应在对应操作系统上构建；完整平台
+矩阵由 GitHub Actions 执行。
 
 本地自用 Tauri portable-with-assets 文件夹：
 
