@@ -1975,6 +1975,15 @@ fn avatar_requirements() -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
+fn list_avatar_packs(
+    window: WebviewWindow,
+    data: State<'_, AppData>,
+) -> Result<Vec<serde_json::Value>, String> {
+    require_manager_window(&window)?;
+    avatar::load_registry(&data.config_dir)
+}
+
+#[tauri::command]
 fn validate_avatar_pack(
     input: avatar::AvatarPackInput,
 ) -> Result<avatar::AvatarValidation, String> {
@@ -3266,6 +3275,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(win) = app.get_webview_window("main") {
                 show_companion_window(&win);
@@ -3373,6 +3383,7 @@ pub fn run() {
             tray_builder
                 .tooltip("Spine Companion")
                 .menu(&menu)
+                .show_menu_on_left_click(false)
                 .on_menu_event(move |app, event| match event.id.as_ref() {
                     "show_companion" => {
                         if let Some(win) = app.get_webview_window("main") {
@@ -3519,6 +3530,7 @@ pub fn run() {
             acknowledge_ai_integration_restart,
             restore_ai_integration_backup,
             avatar_requirements,
+            list_avatar_packs,
             validate_avatar_pack,
             import_avatar_pack,
             test_ai_integration,

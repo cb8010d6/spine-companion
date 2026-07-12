@@ -51,7 +51,18 @@
             <strong id="topbar-title">Dashboard</strong>
             <span id="topbar-status">Loading...</span>
           </div>
-          <div class="topbar-runtime"><span class="runtime-dot" aria-hidden="true"></span><span id="topbar-runtime-label">Tauri</span></div>
+          <div class="topbar-actions">
+            <label class="topbar-locale" for="topbar-locale-select">
+              <span id="topbar-locale-icon" class="topbar-locale-icon" aria-hidden="true"></span>
+              <span id="topbar-locale-label" class="sr-only">Language</span>
+              <select id="topbar-locale-select" aria-label="Language">
+                <option value="auto">System</option>
+                <option value="en">English</option>
+                <option value="zh-CN">中文</option>
+              </select>
+            </label>
+            <div class="topbar-runtime"><span class="runtime-dot" aria-hidden="true"></span><span id="topbar-runtime-label">Tauri</span></div>
+          </div>
         </header>
         <main id="view-container"></main>
       </div>

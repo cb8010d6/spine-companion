@@ -60,6 +60,11 @@ export async function initTauriBridge() {
     restoreAiIntegrationBackup: (id) => _tauriInvoke("restore_ai_integration_backup", { toolId: id }),
     testAiIntegration: (id) => _tauriInvoke("test_ai_integration", { toolId: id }),
     avatarRequirements: () => _tauriInvoke("avatar_requirements"),
+    listAvatarPacks: () => _tauriInvoke("list_avatar_packs"),
+    pickAvatarPackFolder: async () => {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      return open({ directory: true, multiple: false, title: "Select avatar pack folder" });
+    },
     validateAvatarPack: (path) => _tauriInvoke("validate_avatar_pack", { input: { path } }),
     importAvatarPack: (path) => _tauriInvoke("import_avatar_pack", { input: { path } }),
     removeModel: (id) => _tauriInvoke("remove_model", { id }),
