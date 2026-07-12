@@ -45,6 +45,9 @@ export async function initTauriBridge() {
     getHistory: () => _tauriInvoke("get_history"),
     getCurrentModel: () => _tauriInvoke("get_current_model"),
     setActiveModel: (id) => _tauriInvoke("set_active_model", { id }),
+    beginModelTrial: (id) => _tauriInvoke("begin_model_trial", { id }),
+    confirmModelTrial: () => _tauriInvoke("confirm_model_trial"),
+    cancelModelTrial: () => _tauriInvoke("cancel_model_trial"),
     checkUpdates: () => _tauriInvoke("check_updates"),
     openExternal: (url) => _tauriInvoke("open_url", { url }),
     setAutoLaunch: (enabled) => _tauriInvoke("set_auto_launch", { enabled: Boolean(enabled) }),
@@ -61,9 +64,24 @@ export async function initTauriBridge() {
     testAiIntegration: (id) => _tauriInvoke("test_ai_integration", { toolId: id }),
     avatarRequirements: () => _tauriInvoke("avatar_requirements"),
     listAvatarPacks: () => _tauriInvoke("list_avatar_packs"),
+    loadAvatarManifest: (path) => _tauriInvoke("load_avatar_manifest", { input: { path } }),
+    saveAvatarManifest: (path, manifest) => _tauriInvoke("save_avatar_manifest", { input: { path }, manifest }),
+    readAvatarAsset: (path, relativePath) => _tauriInvoke("read_avatar_asset", { input: { path }, relativePath }),
+    importAvatarLayers: (packPath, files) => _tauriInvoke("import_avatar_layers", { input: { packPath, files } }),
+    createAvatarPack: (input) => _tauriInvoke("create_avatar_pack", { input }),
+    duplicateAvatarPack: (input) => _tauriInvoke("duplicate_avatar_pack", { input }),
+    deleteAvatarPack: (path) => _tauriInvoke("delete_avatar_pack", { input: { path } }),
+    repackAvatarPack: (path) => _tauriInvoke("repack_avatar_pack", { input: { path } }),
+    refreshModelCatalogs: (sources) => _tauriInvoke("refresh_model_catalogs", { sources }),
+    searchModelCatalog: (models, request) => _tauriInvoke("search_model_catalog", { models, request }),
     pickAvatarPackFolder: async () => {
       const { open } = await import("@tauri-apps/plugin-dialog");
       return open({ directory: true, multiple: false, title: "Select avatar pack folder" });
+    },
+    pickAvatarLayerFiles: async () => {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const result = await open({ multiple: true, filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "webp"] }], title: "Add avatar layers" });
+      return Array.isArray(result) ? result : result ? [result] : [];
     },
     validateAvatarPack: (path) => _tauriInvoke("validate_avatar_pack", { input: { path } }),
     importAvatarPack: (path) => _tauriInvoke("import_avatar_pack", { input: { path } }),
@@ -76,6 +94,7 @@ export async function initTauriBridge() {
     quitApp: () => _tauriInvoke("quit_app"),
     emitScale: (payload) => _tauriInvoke("emit_scale_event", { input: payload }),
     importModel: (input) => _tauriInvoke("import_model", { input }),
+    importCatalogModel: (entry) => _tauriInvoke("import_catalog_model", { entry }),
     onState: (callback) => {
       // Listen for state updates from the Rust backend
       let unlisten = null;

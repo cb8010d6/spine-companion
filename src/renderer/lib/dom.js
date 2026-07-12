@@ -6,7 +6,10 @@ export function h(tag, props = {}, ...children) {
     else if (key === "dataset") {
       for (const [name, dataValue] of Object.entries(value)) element.dataset[name] = String(dataValue);
     } else if (key === "style" && typeof value === "object") {
-      Object.assign(element.style, value);
+      for (const [styleName, styleValue] of Object.entries(value)) {
+        if (styleName.startsWith("--")) element.style.setProperty(styleName, String(styleValue));
+        else element.style[styleName] = styleValue;
+      }
     } else if (key.startsWith("on") && typeof value === "function") {
       element.addEventListener(key.slice(2).toLowerCase(), value);
     } else if (key in element) {

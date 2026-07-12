@@ -1,10 +1,12 @@
 mod ai_integrations;
 mod avatar;
+mod catalog;
 mod mcp;
 mod server;
 mod source_registry;
 mod state;
 
+use sha2::{Digest, Sha256};
 use state::{
     create_reminder, create_reminder_broadcast, create_reminder_store, create_state_store,
     delete_reminder, list_reminders, set_state, CompanionState, CreateReminderInput, Reminder,
@@ -44,6 +46,7 @@ struct AppData {
     panel_interaction_locked: Arc<AtomicBool>,
     renderer_health: Arc<Mutex<RendererHealth>>,
     ai_integration_lock: Arc<Mutex<()>>,
+    model_trial_previous: Arc<Mutex<Option<CurrentModel>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -274,6 +277,13 @@ fn fallback_config() -> serde_json::Value {
             "debugHitbox": false
         },
         "models": {
+            "sources": [{
+                "id": "ark-models",
+                "label": "Ark-Models",
+                "catalogUrl": "https://raw.githubusercontent.com/cb8010d6/spine-companion/main/catalog/catalog.json",
+                "kind": "official",
+                "enabled": true
+            }],
             "catalog": [
                 {
                     "id": "ark-1001-amiya2-sale-16",
@@ -1002,6 +1012,15 @@ async fn import_model(
                 );
                 message
             })?;
+        if let Some(expected) = file.get("sha256").and_then(|value| value.as_str()) {
+            let actual = format!("{:x}", Sha256::digest(&bytes));
+            if !actual.eq_ignore_ascii_case(expected) {
+                let _ = remove_dir_if_exists_blocking(&temp_model_dir);
+                return Err(format!(
+                    "Integrity check failed for {file_name}: expected {expected}, got {actual}"
+                ));
+            }
+        }
         tokio::fs::write(temp_model_dir.join(file_name), bytes)
             .await
             .map_err(|error| {
@@ -1144,6 +1163,48 @@ async fn import_model(
     let _ = app.emit("companion:model-imported", result.clone());
     let _ = app.emit("companion:config-changed", public_config_with_ui(&data));
 
+    Ok(result)
+}
+
+#[tauri::command]
+async fn import_catalog_model(
+    app: tauri::AppHandle,
+    data: State<'_, AppData>,
+    entry: catalog::CatalogModelEntry,
+) -> Result<ImportModelResult, String> {
+    entry.model.validate()?;
+    let id = entry.model.id.clone();
+    let mut value = serde_json::to_value(&entry.model).map_err(|error| error.to_string())?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "catalogSourceId".to_string(),
+            serde_json::Value::String(entry.catalog_source_id),
+        );
+        object.insert(
+            "spineVersion".to_string(),
+            serde_json::Value::String(entry.model.spine.min.0.clone()),
+        );
+    }
+    {
+        let mut public = data
+            .public_config
+            .lock()
+            .map_err(|_| "Config lock is poisoned".to_string())?;
+        let catalog = public
+            .get_mut("models")
+            .and_then(|models| models.get_mut("catalog"))
+            .and_then(|catalog| catalog.as_array_mut())
+            .ok_or_else(|| "Model catalog config is unavailable".to_string())?;
+        catalog
+            .retain(|model| model.get("id").and_then(|value| value.as_str()) != Some(id.as_str()));
+        catalog.push(value.clone());
+    }
+    let result = import_model(app, data, ImportModelInput { id }).await?;
+    std::fs::write(
+        PathBuf::from(&result.asset_dir).join(".companion-model.json"),
+        serde_json::to_vec_pretty(&value).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| format!("Model installed but metadata could not be saved: {error}"))?;
     Ok(result)
 }
 
@@ -1469,9 +1530,14 @@ async fn get_diagnostics(data: State<'_, AppData>) -> Result<serde_json::Value, 
 }
 
 #[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct InstalledModel {
     id: String,
     dir: String,
+    name: String,
+    source: String,
+    version: String,
+    license: String,
 }
 
 #[tauri::command]
@@ -1484,7 +1550,36 @@ fn get_installed_models(data: State<'_, AppData>) -> Result<Vec<InstalledModel>,
                 if file_type.is_dir() {
                     let id = entry.file_name().to_string_lossy().to_string();
                     let dir = entry.path().to_string_lossy().to_string();
-                    models.push(InstalledModel { id, dir });
+                    let metadata =
+                        std::fs::read_to_string(entry.path().join(".companion-model.json"))
+                            .ok()
+                            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+                            .unwrap_or(serde_json::Value::Null);
+                    models.push(InstalledModel {
+                        name: metadata
+                            .get("name")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or(&id)
+                            .to_string(),
+                        source: metadata
+                            .get("source")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("Local")
+                            .to_string(),
+                        version: metadata
+                            .get("spine")
+                            .and_then(|value| value.get("min"))
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        license: metadata
+                            .get("license")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        id,
+                        dir,
+                    });
                 }
             }
         }
@@ -1541,7 +1636,14 @@ fn get_current_model(data: State<'_, AppData>) -> Result<CurrentModel, String> {
     let skel = string_at(&public, &["spine", "skel"])
         .unwrap_or("")
         .to_string();
-    let model = model_by_skel(&public, &skel);
+    let asset_dir = string_at(&public, &["spine", "assetDir"])
+        .unwrap_or("")
+        .to_string();
+    let model = model_by_skel(&public, &skel).or_else(|| {
+        std::fs::read_to_string(PathBuf::from(&asset_dir).join(".companion-model.json"))
+            .ok()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+    });
     Ok(CurrentModel {
         id: model
             .as_ref()
@@ -1554,9 +1656,7 @@ fn get_current_model(data: State<'_, AppData>) -> Result<CurrentModel, String> {
             .unwrap_or(if skel.is_empty() { "None" } else { &skel })
             .to_string(),
         skel,
-        asset_dir: string_at(&public, &["spine", "assetDir"])
-            .unwrap_or("")
-            .to_string(),
+        asset_dir,
         source: model
             .as_ref()
             .and_then(|m| m.get("source").and_then(|v| v.as_str()))
@@ -1574,8 +1674,12 @@ async fn activate_installed_model(
         return Err("Invalid model ID".to_string());
     }
     let public = public_config_with_ui(&data);
-    let model = model_by_id(&public, id);
     let model_dir = data.config_dir.join("models").join(id);
+    let model = model_by_id(&public, id).or_else(|| {
+        std::fs::read_to_string(model_dir.join(".companion-model.json"))
+            .ok()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+    });
     if !model_dir.exists() {
         return Err(format!("Model is not installed: {}", id));
     }
@@ -1648,6 +1752,85 @@ async fn set_active_model(
     id: String,
 ) -> Result<ImportModelResult, String> {
     activate_installed_model(&app, &data, &id).await
+}
+
+#[tauri::command]
+async fn begin_model_trial(
+    app: tauri::AppHandle,
+    data: State<'_, AppData>,
+    id: String,
+) -> Result<ImportModelResult, String> {
+    let current = get_current_model(data.clone())?;
+    {
+        let mut previous = data
+            .model_trial_previous
+            .lock()
+            .map_err(|_| "Model trial lock is poisoned".to_string())?;
+        if previous.is_some() {
+            return Err("Finish the current model trial before starting another one.".to_string());
+        }
+        *previous = Some(current);
+    }
+    match activate_installed_model(&app, &data, &id).await {
+        Ok(result) => Ok(result),
+        Err(error) => {
+            if let Ok(mut previous) = data.model_trial_previous.lock() {
+                *previous = None;
+            }
+            Err(error)
+        }
+    }
+}
+
+#[tauri::command]
+fn confirm_model_trial(data: State<'_, AppData>) -> Result<(), String> {
+    let mut previous = data
+        .model_trial_previous
+        .lock()
+        .map_err(|_| "Model trial lock is poisoned".to_string())?;
+    *previous = None;
+    Ok(())
+}
+
+#[tauri::command]
+async fn cancel_model_trial(
+    app: tauri::AppHandle,
+    data: State<'_, AppData>,
+) -> Result<Option<ImportModelResult>, String> {
+    let previous = data
+        .model_trial_previous
+        .lock()
+        .map_err(|_| "Model trial lock is poisoned".to_string())?
+        .take();
+    match previous {
+        Some(model) if !model.id.is_empty() => activate_installed_model(&app, &data, &model.id)
+            .await
+            .map(Some),
+        Some(model) => {
+            let asset_dir = PathBuf::from(&model.asset_dir);
+            if !model.asset_dir.is_empty() || !model.skel.is_empty() {
+                validate_spine_asset_dir(&asset_dir, &model.skel)?;
+            }
+            write_local_model_config(&data.local_config_path, &asset_dir, &model.skel)?;
+            if let Ok(mut public) = data.public_config.lock() {
+                merge_json(
+                    &mut public,
+                    serde_json::json!({"spine": {"assetDir": model.asset_dir.clone(), "assetDirConfigured": !model.asset_dir.is_empty(), "skel": model.skel.clone()}}),
+                );
+            }
+            {
+                let mut asset_root = data.asset_root.write().await;
+                *asset_root = if asset_dir.as_os_str().is_empty() {
+                    None
+                } else {
+                    Some(asset_dir.canonicalize().unwrap_or(asset_dir))
+                };
+            }
+            let _ = app.emit("companion:config-changed", public_config_with_ui(&data));
+            Ok(None)
+        }
+        None => Ok(None),
+    }
 }
 
 #[tauri::command]
@@ -1984,6 +2167,201 @@ fn list_avatar_packs(
 }
 
 #[tauri::command]
+fn load_avatar_manifest(
+    window: WebviewWindow,
+    input: avatar::AvatarPackInput,
+) -> Result<avatar::AvatarPackManifest, String> {
+    require_manager_window(&window)?;
+    avatar::load_manifest(&avatar::path_from_input(input))
+}
+
+#[tauri::command]
+fn save_avatar_manifest(
+    window: WebviewWindow,
+    input: avatar::AvatarPackInput,
+    manifest: avatar::AvatarPackManifest,
+) -> Result<avatar::AvatarValidation, String> {
+    require_manager_window(&window)?;
+    avatar::save_manifest(&avatar::path_from_input(input), manifest)
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AvatarAssetBytes {
+    bytes: Vec<u8>,
+    mime: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AvatarLayerImportInput {
+    pack_path: String,
+    files: Vec<String>,
+}
+
+#[tauri::command]
+fn import_avatar_layers(
+    window: WebviewWindow,
+    input: AvatarLayerImportInput,
+) -> Result<Vec<String>, String> {
+    require_manager_window(&window)?;
+    let root = PathBuf::from(&input.pack_path)
+        .canonicalize()
+        .map_err(|error| format!("Cannot open avatar pack: {error}"))?;
+    let layers = root.join("layers");
+    std::fs::create_dir_all(&layers).map_err(|error| error.to_string())?;
+    let mut imported = Vec::new();
+    for source in input.files {
+        let source = PathBuf::from(source)
+            .canonicalize()
+            .map_err(|error| format!("Cannot read layer: {error}"))?;
+        if !source.is_file() {
+            return Err("Avatar layer must be an image file.".to_string());
+        }
+        let ext = source
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if !matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp") {
+            return Err("Avatar layers support PNG, JPEG, or WebP files.".to_string());
+        }
+        let base = source
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("layer")
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+                    ch
+                } else {
+                    '_'
+                }
+            })
+            .collect::<String>();
+        let mut name = format!("{base}.{ext}");
+        let mut index = 2;
+        while layers.join(&name).exists() {
+            name = format!("{base}_{index}.{ext}");
+            index += 1;
+        }
+        std::fs::copy(&source, layers.join(&name)).map_err(|error| error.to_string())?;
+        imported.push(format!("layers/{name}"));
+    }
+    Ok(imported)
+}
+
+#[tauri::command]
+fn read_avatar_asset(
+    window: WebviewWindow,
+    input: avatar::AvatarPackInput,
+    relative_path: String,
+) -> Result<AvatarAssetBytes, String> {
+    require_manager_window(&window)?;
+    let root = avatar::path_from_input(input)
+        .canonicalize()
+        .map_err(|error| format!("Cannot open avatar pack: {error}"))?;
+    let relative = avatar::spine_assets::safe_relative_path(&relative_path)?;
+    let path = root
+        .join(relative)
+        .canonicalize()
+        .map_err(|error| format!("Cannot read avatar asset: {error}"))?;
+    if !path.starts_with(&root) || !path.is_file() {
+        return Err("Avatar asset must stay inside the pack directory.".to_string());
+    }
+    let mime = match path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        _ => return Err("Avatar preview only supports PNG, JPEG, or WebP layers.".to_string()),
+    };
+    Ok(AvatarAssetBytes {
+        bytes: std::fs::read(path).map_err(|error| error.to_string())?,
+        mime: mime.to_string(),
+    })
+}
+
+#[tauri::command]
+fn create_avatar_pack(
+    window: WebviewWindow,
+    input: avatar::AvatarPackCreateInput,
+) -> Result<avatar::AvatarPackLifecycleResult, String> {
+    require_manager_window(&window)?;
+    avatar::create_standard_pack(input)
+}
+
+#[tauri::command]
+fn duplicate_avatar_pack(
+    window: WebviewWindow,
+    input: avatar::AvatarPackDuplicateInput,
+) -> Result<avatar::AvatarPackLifecycleResult, String> {
+    require_manager_window(&window)?;
+    avatar::duplicate_pack(input)
+}
+
+#[tauri::command]
+fn delete_avatar_pack(
+    window: WebviewWindow,
+    input: avatar::AvatarPackInput,
+) -> Result<avatar::AvatarPackLifecycleResult, String> {
+    require_manager_window(&window)?;
+    avatar::delete_pack(&avatar::path_from_input(input))
+}
+
+#[tauri::command]
+fn repack_avatar_pack(
+    window: WebviewWindow,
+    input: avatar::AvatarPackInput,
+) -> Result<avatar::AvatarPackLifecycleResult, String> {
+    require_manager_window(&window)?;
+    avatar::repack_pack(&avatar::path_from_input(input))
+}
+
+#[tauri::command]
+async fn refresh_model_catalogs(
+    window: WebviewWindow,
+    data: State<'_, AppData>,
+    sources: Vec<catalog::CatalogSource>,
+) -> Result<catalog::CatalogRefreshResult, String> {
+    require_manager_window(&window)?;
+    let cache_path = data.config_dir.join("catalog-cache.json");
+    let mut cache = std::fs::read_to_string(&cache_path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<catalog::CatalogCache>(&text).ok())
+        .unwrap_or_default();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|error| error.to_string())?;
+    let result = catalog::refresh_catalogs(&client, &sources, &mut cache).await;
+    if let Some(parent) = cache_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    std::fs::write(
+        &cache_path,
+        serde_json::to_vec_pretty(&cache).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(result)
+}
+
+#[tauri::command]
+fn search_model_catalog(
+    window: WebviewWindow,
+    models: Vec<catalog::CatalogModelEntry>,
+    request: catalog::CatalogSearchRequest,
+) -> Result<catalog::CatalogSearchResult, String> {
+    require_manager_window(&window)?;
+    Ok(catalog::search_catalog(&models, &request))
+}
+
+#[tauri::command]
 fn validate_avatar_pack(
     input: avatar::AvatarPackInput,
 ) -> Result<avatar::AvatarValidation, String> {
@@ -1992,7 +2370,6 @@ fn validate_avatar_pack(
 
 #[tauri::command]
 async fn import_avatar_pack(
-    app: tauri::AppHandle,
     data: State<'_, AppData>,
     input: avatar::AvatarPackInput,
 ) -> Result<serde_json::Value, String> {
@@ -2015,15 +2392,15 @@ async fn import_avatar_pack(
         }));
     }
     let installed = avatar::install_runtime_pack(&path, &data.config_dir)?;
-    let activated = activate_installed_model(&app, &data, &installed.validation.id).await?;
+    let model_id = installed.validation.id.clone();
     Ok(serde_json::json!({
         "imported": true,
         "installed": installed.installed,
-        "activated": true,
+        "activated": false,
         "validation": installed.validation,
         "registryPath": installed.registry_path,
         "runtimePath": installed.runtime_path,
-        "model": activated
+        "modelId": model_id
     }))
 }
 
@@ -3299,6 +3676,7 @@ pub fn run() {
             panel_interaction_locked: Arc::new(AtomicBool::new(false)),
             renderer_health: Arc::new(Mutex::new(RendererHealth::default())),
             ai_integration_lock: Arc::new(Mutex::new(())),
+            model_trial_previous: Arc::new(Mutex::new(None)),
         })
         .setup(move |app| {
             start_pointer_passthrough_monitor(app.handle().clone());
@@ -3508,6 +3886,7 @@ pub fn run() {
             set_ui_settings,
             emit_scale_event,
             import_model,
+            import_catalog_model,
             save_settings,
             get_diagnostics,
             export_logs,
@@ -3516,6 +3895,9 @@ pub fn run() {
             get_history,
             get_current_model,
             set_active_model,
+            begin_model_trial,
+            confirm_model_trial,
+            cancel_model_trial,
             check_updates,
             open_url,
             set_auto_launch,
@@ -3531,6 +3913,16 @@ pub fn run() {
             restore_ai_integration_backup,
             avatar_requirements,
             list_avatar_packs,
+            load_avatar_manifest,
+            save_avatar_manifest,
+            read_avatar_asset,
+            import_avatar_layers,
+            create_avatar_pack,
+            duplicate_avatar_pack,
+            delete_avatar_pack,
+            repack_avatar_pack,
+            refresh_model_catalogs,
+            search_model_catalog,
             validate_avatar_pack,
             import_avatar_pack,
             test_ai_integration,

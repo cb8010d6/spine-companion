@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Spine Companion remote model catalog",
+  "type": "object",
+  "required": ["schemaVersion", "source", "models"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "source": { "$ref": "#/$defs/source" },
+    "models": { "type": "array", "items": { "$ref": "#/$defs/model" } },
+    "skippedModels": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["directory", "reason"],
+        "properties": {
+          "directory": { "type": "string", "minLength": 1 },
+          "reason": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "spine": {
+      "type": "object",
+      "required": ["min", "max"],
+      "properties": {
+        "min": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" },
+        "max": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" }
+      }
+    },
+    "source": {
+      "type": "object",
+      "required": ["id", "name", "author", "license", "licenseWarning", "licenseNote", "repository", "spine"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+        "name": { "type": "string", "minLength": 1 },
+        "author": { "type": "string", "minLength": 1 },
+        "license": { "type": "string", "minLength": 1 },
+        "licenseWarning": { "type": "string", "minLength": 1 },
+        "licenseNote": { "type": "string", "minLength": 1 },
+        "repository": {
+          "type": "object",
+          "required": ["owner", "name", "configuredRef", "resolvedRevision", "url"],
+          "properties": {
+            "owner": { "type": "string", "minLength": 1 },
+            "name": { "type": "string", "minLength": 1 },
+            "configuredRef": { "type": "string", "minLength": 1 },
+            "resolvedRevision": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+            "url": { "type": "string", "format": "uri" }
+          }
+        },
+        "spine": { "$ref": "#/$defs/spine" }
+      }
+    },
+    "file": {
+      "type": "object",
+      "required": ["name", "url", "sha256", "sizeBytes", "githubBlobSha", "fallbackUrls"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "url": { "type": "string", "format": "uri" },
+        "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "sizeBytes": { "type": "integer", "minimum": 0 },
+        "githubBlobSha": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "fallbackUrls": { "type": "array", "items": { "type": "string", "format": "uri" } }
+      }
+    },
+    "model": {
+      "type": "object",
+      "required": ["id", "name", "source", "author", "license", "licenseWarning", "licenseNote", "repositoryUrl", "skel", "files", "spine"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+        "name": { "type": "string", "minLength": 1 },
+        "source": { "type": "string", "minLength": 1 },
+        "author": { "type": "string", "minLength": 1 },
+        "license": { "type": "string", "minLength": 1 },
+        "licenseWarning": { "type": "string", "minLength": 1 },
+        "licenseNote": { "type": "string", "minLength": 1 },
+        "repositoryUrl": { "type": "string", "format": "uri" },
+        "skel": { "type": "string", "pattern": "\\.skel$" },
+        "files": { "type": "array", "minItems": 3, "items": { "$ref": "#/$defs/file" } },
+        "spine": { "$ref": "#/$defs/spine" },
+        "description": { "type": "string" },
+        "tags": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}
