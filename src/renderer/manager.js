@@ -4,6 +4,8 @@ import {
   Bot,
   Box,
   Download,
+  ExternalLink,
+  Eye,
   House,
   Library,
   Languages,
@@ -32,7 +34,7 @@ import { renderSpinePreview } from "./spine-preview.js";
 import { installManagerPreviewBridge } from "./manager-preview.js";
 import { applyThemePreference } from "./theme.js";
 import { integrationBrand } from "./integration-icons.js";
-import { catalogDownloadRequest, mergeInstalledModelMetadata, normalizeCatalogEntries } from "./catalog-model.js";
+import { catalogDisplayName, catalogDownloadRequest, mergeInstalledModelMetadata, normalizeCatalogEntries } from "./catalog-model.js";
 import { createAvatarEditor } from "./avatar-editor-view.js";
 import {
   createCoalescedRefresh,
@@ -199,7 +201,7 @@ function previewNode(model, onPreviewReady = null) {
     }
     if (previewButton) {
       previewButton.disabled = false;
-      previewButton.textContent = t("manager.model.previewRetry");
+      previewButton.replaceChildren(...iconLabel(Eye, t("manager.model.previewRetry")));
     }
     return false;
   };
@@ -212,7 +214,7 @@ function previewNode(model, onPreviewReady = null) {
         event.stopPropagation();
         renderAndCache();
       }
-    }, t("manager.model.preview"));
+    }, ...iconLabel(Eye, t("manager.model.preview")));
     children.push(previewButton);
   }
   const node = h("div", { class: `model-preview ${preview.imageUrl ? "has-image" : ""}`, style: preview.style, "aria-label": `Preview for ${preview.label}` },
@@ -229,6 +231,13 @@ function previewNode(model, onPreviewReady = null) {
 
 function badge(label, tone = "") {
   return h("span", { class: `badge ${tone}`.trim() }, label);
+}
+
+function iconLabel(Icon, label) {
+  const icon = createElement(Icon);
+  icon.classList.add("btn-icon");
+  icon.setAttribute("aria-hidden", "true");
+  return [icon, h("span", {}, label)];
 }
 
 function localizedDiagnosticMessage(message) {
@@ -497,12 +506,14 @@ async function libraryView() {
       }
       previewCurrentPageButton.disabled = true;
       previewCurrentPageButton.textContent = t("manager.library.previewingPage", { count: tasks.length });
+      let completed = 0;
       for (let index = 0; index < tasks.length; index += 3) {
-        await Promise.all(tasks.slice(index, index + 3).map((task) => task()));
+        const results = await Promise.allSettled(tasks.slice(index, index + 3).map((task) => task()));
+        completed += results.filter((result) => result.status === "fulfilled" && result.value === true).length;
       }
       previewCurrentPageButton.disabled = false;
       previewCurrentPageButton.textContent = t("manager.library.previewCurrentPage");
-      showToast(t("manager.library.previewPageDone"));
+      showToast(t("manager.library.previewPageResult", { completed, total: tasks.length }));
     }
   }, t("manager.library.previewCurrentPage"));
   const sourceLabelInput = h("input", { class: "input", placeholder: t("manager.library.sourceName") });
@@ -526,7 +537,7 @@ async function libraryView() {
   function renderCards(query = "", selectedFilter = "all") {
     const normalized = query.trim().toLowerCase();
     const filtered = catalog
-      .filter((model) => !normalized || `${model.name} ${model.id} ${model.source}`.toLowerCase().includes(normalized))
+      .filter((model) => !normalized || `${catalogDisplayName(model)} ${model.id} ${model.source}`.toLowerCase().includes(normalized))
       .filter((model) => sourceValue === "all" || model.sourceId === sourceValue || !model.sourceId)
       .filter((model) => selectedFilter === "all" || (selectedFilter === "installed" ? installedIds.has(model.id) : !installedIds.has(model.id)));
     const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
@@ -538,24 +549,29 @@ async function libraryView() {
         const download = downloads[model.id];
         const installed = isInstalled(model.id);
         const active = activeInstalledId() === model.id;
+        const actionLabel = installed
+          ? (active ? t("manager.status.active") : t("manager.actions.setActive"))
+          : (download?.status === "downloading" ? t("manager.status.downloading") : t("manager.actions.download"));
         const button = installed
           ? h("button", {
-              class: "btn",
+              class: "btn model-action",
               type: "button",
               disabled: active,
               onClick: () => activateModel(model.id)
-            }, active ? t("manager.status.active") : t("manager.actions.setActive"))
+            }, ...iconLabel(PackageCheck, actionLabel))
           : h("button", {
-              class: "btn btn-primary",
+              class: "btn btn-primary model-action",
               type: "button",
               disabled: download?.status === "downloading",
               onClick: () => confirmDownload(model)
-            }, download?.status === "downloading" ? t("manager.status.downloading") : t("manager.actions.download"));
+            }, ...iconLabel(Download, actionLabel));
         const sourceUrl = model.repositoryUrl || model.sourceUrl || "";
+        const displayName = catalogDisplayName(model);
         return h("article", { class: "model-card fade-in" },
           previewNode(model, (task) => currentPagePreviewTasks.push(task)),
           h("div", { class: "model-info" },
-            h("div", { class: "model-title", title: model.name || model.id }, model.name || model.id),
+            h("div", { class: "model-title", title: displayName }, displayName),
+            h("div", { class: "model-id", title: model.id }, model.id),
             h("div", { class: "model-meta" }, t("manager.model.source", { source: model.source || t("manager.model.unknownSource") })),
             model.author ? h("div", { class: "model-meta" }, t("manager.library.author", { author: model.author })) : null,
             h("div", { class: "model-badges" },
@@ -567,7 +583,7 @@ async function libraryView() {
               installed ? badge(t("manager.status.installed"), "badge-success") : null,
               active ? badge(t("manager.status.active"), "badge-warning") : null,
               h("div", { style: { flex: "1" } }),
-              sourceUrl ? h("button", { class: "btn", type: "button", onClick: () => window.companion?.openExternal?.(sourceUrl) }, t("manager.actions.openSource")) : null,
+              sourceUrl ? h("button", { class: "btn model-action", type: "button", onClick: () => window.companion?.openExternal?.(sourceUrl) }, ...iconLabel(ExternalLink, t("manager.actions.openSource"))) : null,
               button
             )
           )

@@ -823,7 +823,7 @@ function applyMainLocale(config = {}) {
 }
 
 async function boot() {
-  // Initialize Tauri bridge if running under Tauri (no-op under Electron)
+  // Install the desktop bridge when running inside Tauri.
   if (isTauri()) await initTauriBridge();
   const config = await loadRuntimeConfig();
   applyMainLocale(config);

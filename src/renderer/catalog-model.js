@@ -33,6 +33,20 @@ export function normalizeCatalogEntries(entries = []) {
   });
 }
 
+export function catalogDisplayName(model = {}) {
+  const explicit = String(model.name || "").trim();
+  if (explicit) return explicit;
+  const id = String(model.id || "").trim();
+  if (!id) return "Spine model";
+  return id
+    .replace(/^ark-models-/, "")
+    .replace(/^\d+-/, "")
+    .split("-")
+    .filter(Boolean)
+    .map((part) => /^\d+$/.test(part) ? `#${part}` : `${part[0]?.toUpperCase() || ""}${part.slice(1)}`)
+    .join(" ");
+}
+
 export function catalogDownloadRequest(model) {
   return {
     id: model?.id || "",

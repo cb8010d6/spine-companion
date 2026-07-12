@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { catalogDownloadRequest, catalogInstallState, filterCatalog, mergeCatalogSources, mergeInstalledModelMetadata, normalizeCatalogEntries } from "../src/renderer/catalog-model.js";
+import { catalogDisplayName, catalogDownloadRequest, catalogInstallState, filterCatalog, mergeCatalogSources, mergeInstalledModelMetadata, normalizeCatalogEntries } from "../src/renderer/catalog-model.js";
 
 describe("catalog model", () => {
   it("keeps healthy sources usable when another source fails", () => {
@@ -58,5 +58,10 @@ describe("catalog model", () => {
       source: "Ark-Models",
       skel: "amiya.skel"
     });
+  });
+
+  it("always provides a readable catalog display name", () => {
+    expect(catalogDisplayName({ id: "ark-models-002-amiya", name: "Amiya" })).toBe("Amiya");
+    expect(catalogDisplayName({ id: "ark-models-1001-amiya2-sale-16" })).toBe("Amiya2 Sale #16");
   });
 });

@@ -2,9 +2,8 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-Open-source desktop companion MVP for Spine 3.8 models. The current runtime focus
-is Tauri, with the legacy Electron path still present for compatibility. The
-renderer uses `pixi.js@6.5.10` and `pixi-spine@3.1.2` to render
+Open-source desktop companion for Spine 3.8 models. The desktop runtime is Tauri.
+The renderer uses `pixi.js@6.5.10` and `pixi-spine@3.1.2` to render
 `.skel/.atlas/.png` directly with transparent background, always-on-top window
 behavior, dragging, scaling, click interaction, state transitions, a local status
 API, MCP bridge, progress bubble, tray controls, simple reminders, and a
@@ -22,7 +21,9 @@ Local asset config is written to `companion.local.json`, which is ignored by git
 
 ### Use A Release Build
 
-1. Download the latest Windows installer or portable build from GitHub Release.
+1. Download the package for your platform from GitHub Releases. Windows is the
+   primary supported platform; the unsigned macOS and Linux packages are
+   experimental previews in rc.5.
 2. Prefer putting `companion.local.json` in the per-user config folder:
 
 ```text
@@ -51,11 +52,7 @@ bun run setup:assets -- "C:\path\to\amiya_spine"
 bun run dev
 ```
 
-Run the Tauri candidate build from source:
-
-```bash
-bun run tauri:dev
-```
+`bun run dev` and `bun run tauri:dev` both start the Tauri application.
 
 For detailed deployment, startup, MCP, and troubleshooting steps, see
 [docs/deployment.md](docs/deployment.md). For a UI-focused walkthrough, see
@@ -69,7 +66,7 @@ The renderer preview is available at:
 http://127.0.0.1:17389?api=http://127.0.0.1:17388
 ```
 
-For API-only browser preview without launching Electron:
+For an API-only browser preview without launching the desktop application:
 
 ```bash
 bun run dev:renderer
@@ -163,7 +160,7 @@ at startup and uses one stable display frame, so `Sit`, `Sleep`, `Move`, and
 
 The renderer supports these state sources:
 
-- Electron IPC, used by the desktop app.
+- Tauri's `window.companion` bridge, used by the desktop app.
 - Local HTTP polling, used by browser preview and simple integrations.
 - JSON polling, useful for scripts that write a status file.
 - WebSocket, useful for push-style bridge services.
@@ -196,8 +193,8 @@ The MCP bridge only works while the companion app or local API is running. Run
 `bun run mcp:install:codex`, restart Codex, and check Manager > Diagnostics.
 
 **Which runtime should I use?**
-Use the Tauri release build for current testing. The Electron path remains in
-the repository for compatibility, but new user-facing features target Tauri.
+Use the Tauri release build. Electron was retired in v0.2.6-rc.5 and is no
+longer shipped, tested, or retained as a second desktop backend.
 
 ## Open-Source Notes
 
@@ -206,12 +203,25 @@ the repository for compatibility, but new user-facing features target Tauri.
 - Use `companion.config.example.json` as the public template.
 - Placeholder directories under `assets/` exist only to document placement.
 
+## Platform Support
+
+| Platform | rc.5 status | Package |
+| --- | --- | --- |
+| Windows 10/11 x64 | Primary support | NSIS `.exe` |
+| macOS Apple Silicon | Experimental, unsigned | `.dmg` |
+| macOS Intel | Experimental, unsigned | `.dmg` |
+| Linux x64 | Experimental | `.AppImage`, `.deb` |
+
+The macOS and Linux builds use the same Tauri application and renderer, but
+transparent windows, tray behavior, click-through input, Wayland/X11, and GPU
+drivers differ by desktop environment. Report platform-specific problems with
+the diagnostics export attached.
+
 ## macOS Release Signing
 
 GitHub Actions can build unsigned macOS artifacts, but Apple Silicon users may
 see Gatekeeper errors such as "damaged" or "cannot be opened". For public macOS
-downloads, configure these repository secrets so electron-builder can sign and
-notarize DMG/ZIP assets:
+downloads, configure Apple signing and notarization secrets for the Tauri build:
 
 - `MACOS_CERTIFICATE`
 - `MACOS_CERTIFICATE_PASSWORD`

@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const { mergeDeep, localConfigCandidates, userConfigDir, readJsonIfExists } = require("../src/main/config.cjs");
+const { mergeDeep, localConfigCandidates, userConfigDir, readJsonIfExists } = require("../src/backend/config.cjs");
 
 describe("config helpers", () => {
   it("deep merges nested objects without replacing sibling keys", () => {

@@ -1,7 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { createCompanionServer } from "../src/main/state-server.cjs";
-import { getPublicConfig, loadConfig } from "../src/main/config.cjs";
+import { createCompanionServer } from "../src/backend/state-server.cjs";
+import { getPublicConfig, loadConfig } from "../src/backend/config.cjs";
 
 const config = loadConfig();
 config.server.port = 0;

@@ -1,6 +1,6 @@
 /**
- * Shared state store — extracted from state-server.cjs so it can be tested
- * independently and reused across Electron / Tauri / standalone server.
+ * Shared state store extracted from the local API server so it can be tested
+ * independently and reused by standalone tooling.
  */
 const EventEmitter = require("node:events");
 const fs = require("node:fs");
