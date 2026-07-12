@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { catalogInstallState, filterCatalog, mergeCatalogSources } from "../src/renderer/catalog-model.js";
+import { catalogDownloadRequest, catalogInstallState, filterCatalog, mergeCatalogSources, normalizeCatalogEntries } from "../src/renderer/catalog-model.js";
 
 describe("catalog model", () => {
   it("keeps healthy sources usable when another source fails", () => {
@@ -22,5 +22,29 @@ describe("catalog model", () => {
 
   it("detects installed updates", () => {
     expect(catalogInstallState({ id: "a", version: "2" }, new Map([["a", { version: "1" }]]))).toBe("update");
+  });
+
+  it("normalizes flattened Tauri catalog entries without losing model metadata", () => {
+    const [model] = normalizeCatalogEntries([{
+      catalogSourceId: "ark-models",
+      id: "ark-models-002-amiya",
+      name: "Amiya",
+      source: "Ark-Models",
+      spine: { min: "3.8.99", max: "3.8.99" },
+      files: [{ name: "amiya.skel" }]
+    }]);
+
+    expect(model).toMatchObject({
+      id: "ark-models-002-amiya",
+      name: "Amiya",
+      source: "Ark-Models",
+      sourceId: "ark-models",
+      spineVersion: "3.8.99"
+    });
+    expect(model._catalogEntry.catalogSourceId).toBe("ark-models");
+    expect(catalogDownloadRequest(model)).toEqual({
+      id: "ark-models-002-amiya",
+      catalogEntry: model._catalogEntry
+    });
   });
 });

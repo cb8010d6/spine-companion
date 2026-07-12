@@ -31,6 +31,7 @@ import { renderSpinePreview } from "./spine-preview.js";
 import { installManagerPreviewBridge } from "./manager-preview.js";
 import { applyThemePreference } from "./theme.js";
 import { integrationBrand } from "./integration-icons.js";
+import { catalogDownloadRequest, normalizeCatalogEntries } from "./catalog-model.js";
 import { createAvatarEditor } from "./avatar-editor-view.js";
 import {
   createCoalescedRefresh,
@@ -370,8 +371,16 @@ async function startDownload(id, catalogEntry = null) {
     await refreshConfig();
     setStatus(t("manager.status.loadedModel", { name: result.name || id }));
   } catch (error) {
-    downloads[id] = { ...(downloads[id] || {}), status: "failed", error: error.message || t("manager.error.downloadFailed"), current: 0, total: downloads[id]?.total || 1 };
+    const message = error.message || t("manager.error.downloadFailed");
+    downloads[id] = { ...(downloads[id] || {}), status: "failed", error: message, current: 0, total: downloads[id]?.total || 1 };
     setStatus(t("manager.status.downloadFailed", { id }));
+    showModal(t("manager.error.downloadFailed"), message, [
+      h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.close")),
+      h("button", { class: "btn btn-primary", type: "button", onClick: () => {
+        closeModal();
+        startDownload(id, catalogEntry);
+      } }, t("manager.actions.retry"))
+    ]);
   }
   if (activeView === "library" || activeView === "downloads" || activeView === "installed") renderView(activeView);
 }
@@ -389,15 +398,13 @@ async function libraryView() {
     remoteCatalog = { models: [], sources: [{ sourceId: "remote", state: "failed", error: error?.message || String(error) }] };
   });
   const staticCatalog = (config.models?.catalog || []).map((model) => ({ ...model, _catalogEntry: null }));
-  const remoteModels = (remoteCatalog.models || []).map((entry) => ({
-    ...entry.model,
-    spineVersion: entry.model?.spine?.min || "3.8",
-    _catalogEntry: entry
-  }));
+  const remoteModels = normalizeCatalogEntries(remoteCatalog.models);
   const catalog = [...remoteModels, ...staticCatalog.filter((item) => !remoteModels.some((remote) => remote.id === item.id))];
   const installedIds = new Set(installedModels.map((model) => model.id));
   const activeId = activeInstalledId();
   let filterValue = "all";
+  const enabledSources = (config.models?.sources || []).filter((source) => source.enabled !== false);
+  let sourceValue = enabledSources.length === 1 ? enabledSources[0].id : "all";
   let catalogPage = 1;
   const pageSize = 24;
   const search = h("input", {
@@ -419,6 +426,18 @@ async function libraryView() {
     h("option", { value: "all" }, t("manager.library.filter.all")),
     h("option", { value: "installed" }, t("manager.library.filter.installed")),
     h("option", { value: "available" }, t("manager.library.filter.available"))
+  );
+  const sourceFilter = h("select", {
+    class: "select library-filter",
+    "aria-label": t("manager.library.sourceFilterLabel"),
+    onChange: (event) => {
+      sourceValue = event.target.value;
+      catalogPage = 1;
+      renderCards(search.value, filterValue);
+    }
+  },
+    enabledSources.length > 1 ? h("option", { value: "all" }, t("manager.library.allSources")) : null,
+    ...enabledSources.map((source) => h("option", { value: source.id }, source.label))
   );
   const grid = h("div", { class: "grid-2 library-grid" });
   const pager = h("div", { class: "library-pager" });
@@ -444,6 +463,7 @@ async function libraryView() {
     const normalized = query.trim().toLowerCase();
     const filtered = catalog
       .filter((model) => !normalized || `${model.name} ${model.id} ${model.source}`.toLowerCase().includes(normalized))
+      .filter((model) => sourceValue === "all" || model.sourceId === sourceValue || !model.sourceId)
       .filter((model) => selectedFilter === "all" || (selectedFilter === "installed" ? installedIds.has(model.id) : !installedIds.has(model.id)));
     const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
     catalogPage = Math.min(catalogPage, pageCount);
@@ -513,7 +533,7 @@ async function libraryView() {
       h("div", {}, h("strong", {}, String(installedModels.length)), h("span", {}, t("manager.library.installedCount"))),
       h("div", {}, h("strong", {}, activeId ? "1" : "0"), h("span", {}, t("manager.library.activeCount")))
     ),
-    h("div", { class: "library-toolbar" }, search, filter),
+    h("div", { class: "library-toolbar" }, sourceFilter, search, filter),
     h("div", { class: "catalog-source-strip" }, ...(remoteCatalog.sources || []).map((source) => h("span", { class: `badge ${source.state === "failed" ? "badge-warning" : ""}`, title: source.error || "" }, `${source.sourceId}: ${source.state}`))),
     h("details", { class: "catalog-source-editor" }, h("summary", {}, t("manager.library.sources")),
       h("div", { class: "catalog-source-list" }, ...(config.models?.sources || []).map((source) => h("div", { class: "catalog-source-row" },
@@ -535,13 +555,14 @@ async function libraryView() {
 }
 
 function confirmDownload(model) {
+  const request = catalogDownloadRequest(model);
   const proceed = h("button", { class: "btn btn-primary", type: "button", onClick: () => {
     closeModal();
-    startDownload(model.id, model._catalogEntry);
+    startDownload(request.id, request.catalogEntry);
   } }, t("manager.actions.acceptDownload"));
   const cancel = h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.cancel"));
   if (model.licenseNote) showModal(t("manager.modal.licenseTitle"), t("manager.modal.licensePrompt", { note: model.licenseNote }), [cancel, proceed]);
-  else startDownload(model.id);
+  else startDownload(request.id, request.catalogEntry);
 }
 
 async function activateModel(id) {

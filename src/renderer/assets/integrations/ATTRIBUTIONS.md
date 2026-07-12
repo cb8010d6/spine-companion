@@ -9,17 +9,15 @@ images.
 | Asset | Upstream source | License / terms |
 | --- | --- | --- |
 | `cursor.svg` | https://www.cursor.com/marketing-static/favicon.svg | Cursor-hosted brand asset. No open-source license was published with the asset; use remains subject to Cursor's terms. |
-| `opencode.svg` | https://github.com/anomalyco/opencode/blob/dev/packages/web/src/assets/logo-dark.svg | MIT, https://github.com/anomalyco/opencode/blob/dev/LICENSE |
+| `opencode.png` | OpenCode desktop executable icon installed on the test system; upstream project: https://github.com/anomalyco/opencode | MIT codebase, https://github.com/anomalyco/opencode/blob/dev/LICENSE; product marks remain subject to their owner. |
 | `roo-code.svg` | https://github.com/RooVetGit/Roo-Code/blob/main/src/assets/icons/icon.svg | Apache-2.0, https://github.com/RooVetGit/Roo-Code/blob/main/LICENSE |
 | `cline.svg` | https://github.com/cline/cline/blob/main/apps/vscode/assets/icons/icon.svg | Apache-2.0, https://github.com/cline/cline/blob/main/LICENSE |
-| `openai.svg` | https://github.com/openai/codex/blob/main/codex-rs/skills/src/assets/samples/openai-docs/assets/openai-small.svg | Apache-2.0, https://github.com/openai/codex/blob/main/LICENSE |
-| `vscode.svg` | https://github.com/microsoft/vscode/blob/main/src/vs/workbench/browser/media/code-icon.svg | MIT, https://github.com/microsoft/vscode/blob/main/LICENSE.txt |
+| `openai.png` | ChatGPT desktop package icon installed on the test system; upstream product: https://openai.com/chatgpt/desktop/ | OpenAI product mark; use remains subject to OpenAI brand terms. |
+| `vscode.png` | Visual Studio Code executable icon installed on the test system; upstream project: https://github.com/microsoft/vscode | MIT codebase, https://github.com/microsoft/vscode/blob/main/LICENSE.txt; product marks remain subject to Microsoft. |
 | `gemini.png` | https://github.com/google-gemini/gemini-cli/blob/main/packages/vscode-ide-companion/assets/icon.png | Apache-2.0, https://github.com/google-gemini/gemini-cli/blob/main/LICENSE |
+| `antigravity.png` | Antigravity executable icon installed on the test system; product site: https://antigravity.google/ | Google product mark; use remains subject to Google's brand terms. |
 | `anthropic.svg` | https://github.com/simple-icons/simple-icons/blob/develop/icons/anthropic.svg | Simple Icons CC0-1.0 data; Anthropic trademarks remain subject to their owner. |
 | `mimocode.svg` | https://github.com/simple-icons/simple-icons/blob/develop/icons/xiaomi.svg | Simple Icons CC0-1.0 data; Xiaomi trademarks remain subject to their owner. |
 
-The OpenAI/Codex, VS Code, and Gemini assets come from their public upstream
-repositories. Anthropic and Xiaomi/MiMoCode use the community-maintained Simple
-Icons vectors because their checked public repositories did not expose a
-redistributable product icon. Product names and logos remain trademarks of
-their respective owners and do not imply endorsement.
+These marks identify integrations only. Product names and logos remain
+trademarks of their respective owners and do not imply endorsement.

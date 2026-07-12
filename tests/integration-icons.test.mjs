@@ -9,6 +9,7 @@ describe("integration brand icons", () => {
     expect(integrationBrand("cursor")?.key).toBe("cursor");
     expect(integrationBrand("vs-code")?.key).toBe("vscode");
     expect(integrationBrand("gemini-cli")?.key).toBe("gemini");
+    expect(integrationBrand("gemini-antigravity")?.key).toBe("antigravity");
     expect(integrationBrand("opencode")?.key).toBe("opencode");
     expect(integrationBrand("roo-code")?.key).toBe("roo");
     expect(integrationBrand("cline")?.key).toBe("cline");
@@ -17,14 +18,16 @@ describe("integration brand icons", () => {
   });
 
   it("exposes locally bundled image metadata for supported upstream assets", () => {
-    for (const id of ["codex", "claude-desktop", "cursor", "vs-code", "opencode", "roo-code", "cline", "mimo-code"]) {
+    for (const id of ["claude-desktop", "cursor", "roo-code", "cline", "mimo-code"]) {
       const brand = integrationBrand(id);
       expect(brand?.image).toMatch(/assets\/integrations\/.+\.svg$/);
       expect(brand?.localImage).toBe(brand?.image);
       expect(brand?.path).toBeTruthy();
     }
 
-    expect(integrationBrand("gemini")?.image).toMatch(/assets\/integrations\/gemini\.png$/);
+    for (const id of ["codex", "vs-code", "gemini", "gemini-antigravity", "opencode"]) {
+      expect(integrationBrand(id)?.image).toMatch(/assets\/integrations\/.+\.png$/);
+    }
   });
 
   it("accepts custom colors and local image metadata without allowing remote images", () => {
