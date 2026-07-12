@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { catalogDownloadRequest, catalogInstallState, filterCatalog, mergeCatalogSources, normalizeCatalogEntries } from "../src/renderer/catalog-model.js";
+import { catalogDownloadRequest, catalogInstallState, filterCatalog, mergeCatalogSources, mergeInstalledModelMetadata, normalizeCatalogEntries } from "../src/renderer/catalog-model.js";
 
 describe("catalog model", () => {
   it("keeps healthy sources usable when another source fails", () => {
@@ -45,6 +45,18 @@ describe("catalog model", () => {
     expect(catalogDownloadRequest(model)).toEqual({
       id: "ark-models-002-amiya",
       catalogEntry: model._catalogEntry
+    });
+  });
+
+  it("keeps catalog names for legacy installs that only report their directory id", () => {
+    expect(mergeInstalledModelMetadata(
+      { id: "amiya", name: "Amiya Guard Skin #16", source: "Ark-Models", skel: "amiya.skel" },
+      { id: "amiya", name: "amiya", source: "Local", dir: "C:/models/amiya" }
+    )).toMatchObject({
+      id: "amiya",
+      name: "Amiya Guard Skin #16",
+      source: "Ark-Models",
+      skel: "amiya.skel"
     });
   });
 });

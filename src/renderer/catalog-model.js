@@ -40,6 +40,17 @@ export function catalogDownloadRequest(model) {
   };
 }
 
+export function mergeInstalledModelMetadata(catalogModel = {}, installedModel = {}) {
+  const installedName = String(installedModel.name || "").trim();
+  const installedUsesIdAsName = !installedName || installedName === installedModel.id;
+  return {
+    ...catalogModel,
+    ...installedModel,
+    name: installedUsesIdAsName ? (catalogModel.name || installedName || installedModel.id) : installedName,
+    source: installedModel.source === "Local" && catalogModel.source ? catalogModel.source : (installedModel.source || catalogModel.source || "Local")
+  };
+}
+
 export function filterCatalog(models, { query = "", source = "all", installed = new Map(), compatibility = "compatible" } = {}) {
   const needle = query.trim().toLowerCase();
   return (models || []).filter((model) => {

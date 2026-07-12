@@ -27,11 +27,12 @@ import {
   selectFilteredIntegration
 } from "./integration-ui.js";
 import { modelPreview } from "./model-preview.js";
+import { readCachedModelPreview, writeCachedModelPreview } from "./model-preview-cache.js";
 import { renderSpinePreview } from "./spine-preview.js";
 import { installManagerPreviewBridge } from "./manager-preview.js";
 import { applyThemePreference } from "./theme.js";
 import { integrationBrand } from "./integration-icons.js";
-import { catalogDownloadRequest, normalizeCatalogEntries } from "./catalog-model.js";
+import { catalogDownloadRequest, mergeInstalledModelMetadata, normalizeCatalogEntries } from "./catalog-model.js";
 import { createAvatarEditor } from "./avatar-editor-view.js";
 import {
   createCoalescedRefresh,
@@ -154,11 +155,12 @@ function catalogModel(id) {
 }
 
 function mergedModel(model) {
-  return { ...catalogModel(model.id), ...model };
+  return mergeInstalledModelMetadata(catalogModel(model.id), model);
 }
 
-function previewNode(model) {
-  const preview = modelPreview(model, config);
+function previewNode(model, onPreviewReady = null) {
+  const cachedPreviewUrl = readCachedModelPreview(model);
+  const preview = modelPreview(cachedPreviewUrl ? { ...model, thumbnailUrl: cachedPreviewUrl } : model, config);
   const fallback = h("span", {}, preview.initials);
   const children = [fallback];
   if (preview.imageUrl) {
@@ -172,12 +174,54 @@ function previewNode(model) {
       }
     }));
   }
+  let previewButton = null;
+  const renderAndCache = async () => {
+    if (previewButton) {
+      previewButton.disabled = true;
+      previewButton.textContent = t("manager.model.previewLoading");
+    }
+    let dataUrl = "";
+    try {
+      if (!preview.spinePreviewUrl && preview.canPrepareRemotePreview) {
+        if (!window.companion?.prepareModelPreview) throw new Error(t("manager.model.previewUnavailable"));
+        const entry = model._catalogEntry || { ...model, catalogSourceId: model.catalogSourceId || model.sourceId || "catalog" };
+        const prepared = await window.companion.prepareModelPreview(entry);
+        preview.spinePreviewUrl = prepared?.assetUrl || "";
+      }
+      dataUrl = await renderSpinePreview(node, preview);
+    } catch (error) {
+      node.title = error?.message || String(error);
+    }
+    if (dataUrl) {
+      writeCachedModelPreview(model, dataUrl);
+      previewButton?.remove();
+      return true;
+    }
+    if (previewButton) {
+      previewButton.disabled = false;
+      previewButton.textContent = t("manager.model.previewRetry");
+    }
+    return false;
+  };
+  if (!preview.imageUrl && !preview.autoRenderSpinePreview && (preview.canRenderSpinePreview || preview.canPrepareRemotePreview)) {
+    previewButton = h("button", {
+      class: "model-preview-button",
+      type: "button",
+      title: t("manager.model.previewOnDemandHint"),
+      onClick: (event) => {
+        event.stopPropagation();
+        renderAndCache();
+      }
+    }, t("manager.model.preview"));
+    children.push(previewButton);
+  }
   const node = h("div", { class: `model-preview ${preview.imageUrl ? "has-image" : ""}`, style: preview.style, "aria-label": `Preview for ${preview.label}` },
     children
   );
-  if (!preview.imageUrl && preview.canRenderSpinePreview) {
+  if (previewButton && typeof onPreviewReady === "function") onPreviewReady(renderAndCache);
+  if (!preview.imageUrl && preview.autoRenderSpinePreview) {
     window.requestAnimationFrame(() => {
-      if (node.isConnected) renderSpinePreview(node, preview);
+      if (node.isConnected) renderAndCache();
     });
   }
   return node;
@@ -441,6 +485,26 @@ async function libraryView() {
   );
   const grid = h("div", { class: "grid-2 library-grid" });
   const pager = h("div", { class: "library-pager" });
+  let currentPagePreviewTasks = [];
+  const previewCurrentPageButton = h("button", {
+    class: "btn",
+    type: "button",
+    onClick: async () => {
+      const tasks = [...currentPagePreviewTasks];
+      if (!tasks.length) {
+        showToast(t("manager.library.previewPageEmpty"));
+        return;
+      }
+      previewCurrentPageButton.disabled = true;
+      previewCurrentPageButton.textContent = t("manager.library.previewingPage", { count: tasks.length });
+      for (let index = 0; index < tasks.length; index += 3) {
+        await Promise.all(tasks.slice(index, index + 3).map((task) => task()));
+      }
+      previewCurrentPageButton.disabled = false;
+      previewCurrentPageButton.textContent = t("manager.library.previewCurrentPage");
+      showToast(t("manager.library.previewPageDone"));
+    }
+  }, t("manager.library.previewCurrentPage"));
   const sourceLabelInput = h("input", { class: "input", placeholder: t("manager.library.sourceName") });
   const sourceUrlInput = h("input", { class: "input", placeholder: "https://raw.githubusercontent.com/.../catalog.json" });
   const addSource = async () => {
@@ -467,6 +531,7 @@ async function libraryView() {
       .filter((model) => selectedFilter === "all" || (selectedFilter === "installed" ? installedIds.has(model.id) : !installedIds.has(model.id)));
     const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
     catalogPage = Math.min(catalogPage, pageCount);
+    currentPagePreviewTasks = [];
     const cards = filtered
       .slice((catalogPage - 1) * pageSize, catalogPage * pageSize)
       .map((model) => {
@@ -488,7 +553,7 @@ async function libraryView() {
             }, download?.status === "downloading" ? t("manager.status.downloading") : t("manager.actions.download"));
         const sourceUrl = model.repositoryUrl || model.sourceUrl || "";
         return h("article", { class: "model-card fade-in" },
-          previewNode(model),
+          previewNode(model, (task) => currentPagePreviewTasks.push(task)),
           h("div", { class: "model-info" },
             h("div", { class: "model-title", title: model.name || model.id }, model.name || model.id),
             h("div", { class: "model-meta" }, t("manager.model.source", { source: model.source || t("manager.model.unknownSource") })),
@@ -533,7 +598,7 @@ async function libraryView() {
       h("div", {}, h("strong", {}, String(installedModels.length)), h("span", {}, t("manager.library.installedCount"))),
       h("div", {}, h("strong", {}, activeId ? "1" : "0"), h("span", {}, t("manager.library.activeCount")))
     ),
-    h("div", { class: "library-toolbar" }, sourceFilter, search, filter),
+    h("div", { class: "library-toolbar" }, sourceFilter, search, filter, previewCurrentPageButton),
     h("div", { class: "catalog-source-strip" }, ...(remoteCatalog.sources || []).map((source) => h("span", { class: `badge ${source.state === "failed" ? "badge-warning" : ""}`, title: source.error || "" }, `${source.sourceId}: ${source.state}`))),
     h("details", { class: "catalog-source-editor" }, h("summary", {}, t("manager.library.sources")),
       h("div", { class: "catalog-source-list" }, ...(config.models?.sources || []).map((source) => h("div", { class: "catalog-source-row" },
@@ -621,10 +686,12 @@ async function copyText(text) {
 function installedView() {
   const active = activeInstalledId();
   const content = installedModels.length
-    ? installedModels.map((model) => h("article", { class: "model-card fade-in" },
-        previewNode(mergedModel(model)),
+    ? installedModels.map((model) => {
+      const displayModel = mergedModel(model);
+      return h("article", { class: "model-card fade-in" },
+        previewNode(displayModel),
         h("div", { class: "model-info" },
-          h("div", { class: "model-title", title: model.id }, model.id),
+          h("div", { class: "model-title", title: displayModel.name || model.id }, displayModel.name || model.id),
           h("div", { class: "model-meta", title: model.dir }, model.dir),
           h("div", { class: "model-actions" },
             model.id === active ? badge(t("manager.status.active"), "badge-warning") : null,
@@ -634,7 +701,8 @@ function installedView() {
             h("button", { class: "btn btn-danger", type: "button", disabled: model.id === active, onClick: () => confirmRemove(model.id) }, t("manager.actions.remove"))
           )
         )
-      ))
+      );
+    })
     : [h("p", { class: "empty-text" }, t("manager.empty.noModels"))];
   return h("section", {},
     h("h2", { class: "view-title" }, t("manager.installed.title")),

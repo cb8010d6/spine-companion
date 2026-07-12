@@ -45,6 +45,7 @@ export function installManagerPreviewBridge() {
     repackAvatarPack: async (path) => ({ path, repacked: true }),
     refreshModelCatalogs: async () => ({ models: [{ catalogSourceId: "ark-models", id: "ark-models-002-amiya", name: "Amiya", source: "Ark-Models", author: "isHarryh/Ark-Models contributors", license: "NOASSERTION", licenseNote: "Third-party source; review before download.", repositoryUrl: "https://github.com/isHarryh/Ark-Models/tree/main/models/002_amiya", skel: "build_char_002_amiya.skel", files: [], spine: { min: "3.8.99", max: "3.8.99" } }], sources: [{ sourceId: "ark-models", state: "stale", modelCount: 1, error: "Preview mode" }] }),
     importCatalogModel: async (entry) => ({ id: entry.id || entry.model?.id, name: entry.name || entry.model?.name }),
+    prepareModelPreview: async (entry) => ({ id: entry.id, skel: entry.skel, assetUrl: "", cached: false }),
     getCurrentModel: async () => ({ id: "sample-local-avatar", name: "Sample Local Avatar" }),
     setActiveModel: async (id) => ({ id }),
     beginModelTrial: async (id) => ({ id }),

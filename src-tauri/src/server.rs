@@ -34,6 +34,7 @@ pub struct AppState {
     pub reminders: ReminderStore,
     pub reminder_tx: ReminderBroadcast,
     pub asset_root: AssetRootStore,
+    pub preview_root: PathBuf,
     pub public_config: PublicConfigStore,
     pub history: HistoryStore,
 }
@@ -266,12 +267,55 @@ async fn get_spine_asset(
     }
 }
 
+async fn get_preview_asset(
+    AxumState(app): AxumState<AppState>,
+    Path((model_id, relative)): Path<(String, String)>,
+) -> Response {
+    if model_id.is_empty() || model_id == "." || model_id == ".." || model_id.contains(['/', '\\'])
+    {
+        return (StatusCode::FORBIDDEN, "Forbidden").into_response();
+    }
+    let root = app.preview_root.join(model_id);
+    let Ok(root) = root.canonicalize() else {
+        return (StatusCode::NOT_FOUND, "Preview not found").into_response();
+    };
+    let relative = relative.trim_start_matches(['/', '\\']);
+    let Ok(file) = root.join(relative).canonicalize() else {
+        return (StatusCode::NOT_FOUND, "Preview asset not found").into_response();
+    };
+    if !is_inside(&root, &file) || !file.is_file() {
+        return (StatusCode::FORBIDDEN, "Forbidden").into_response();
+    }
+    match tokio::fs::read(&file).await {
+        Ok(bytes) => {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                header::CONTENT_TYPE,
+                header::HeaderValue::from_static(file_content_type(&file)),
+            );
+            if file
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| ext.eq_ignore_ascii_case("atlas"))
+                .unwrap_or(false)
+            {
+                let text = String::from_utf8_lossy(&bytes);
+                return (StatusCode::OK, headers, rewrite_atlas_texture_urls(&text))
+                    .into_response();
+            }
+            (StatusCode::OK, headers, bytes).into_response()
+        }
+        Err(_) => (StatusCode::NOT_FOUND, "Preview asset not found").into_response(),
+    }
+}
+
 pub async fn start_api_server(
     store: StateStore,
     tx: StateBroadcast,
     reminders: ReminderStore,
     reminder_tx: ReminderBroadcast,
     asset_root: AssetRootStore,
+    preview_root: PathBuf,
     public_config: PublicConfigStore,
     history: HistoryStore,
     host: &str,
@@ -283,6 +327,7 @@ pub async fn start_api_server(
         reminders,
         reminder_tx,
         asset_root,
+        preview_root,
         public_config,
         history,
     };
@@ -297,6 +342,7 @@ pub async fn start_api_server(
         .route("/reminders/{id}", delete(delete_reminder_route))
         .route("/events", get(events))
         .route("/assets/spine/*path", get(get_spine_asset))
+        .route("/assets/previews/{model_id}/*path", get(get_preview_asset))
         .layer(localhost_cors())
         .with_state(app_state);
 
