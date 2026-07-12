@@ -7,8 +7,14 @@ const amiyaModel = {
   skel: "build_char_1001_amiya2_sale#16.skel",
   files: [
     {
+      name: "build_char_1001_amiya2_sale#16.skel",
+      url: "https://raw.githubusercontent.com/isHarryh/Ark-Models/main/models/1001_amiya2_sale%2316/build_char_1001_amiya2_sale%2316.skel",
+      sha256: "skel-digest"
+    },
+    {
       name: "build_char_1001_amiya2_sale#16.png",
-      url: "https://raw.githubusercontent.com/isHarryh/Ark-Models/main/models/1001_amiya2_sale%2316/build_char_1001_amiya2_sale%2316.png"
+      url: "https://raw.githubusercontent.com/isHarryh/Ark-Models/main/models/1001_amiya2_sale%2316/build_char_1001_amiya2_sale%2316.png",
+      sha256: "texture-digest"
     }
   ]
 };
@@ -28,7 +34,7 @@ describe("modelPreview", () => {
     expect(preview.spinePreviewUrl).toBe("http://127.0.0.1:17388/assets/spine/build_char_1001_amiya2_sale%2316.skel");
   });
 
-  it("does not use catalog atlas textures as inactive model previews", () => {
+  it("marks remote assets as available for an on-demand cached preview", () => {
     const preview = modelPreview(amiyaModel, {
       server: { origin: "http://127.0.0.1:17388" },
       spine: { skel: "other.skel", assetDir: "" }
@@ -36,6 +42,9 @@ describe("modelPreview", () => {
 
     expect(preview.imageUrl).toBe("");
     expect(preview.canRenderSpinePreview).toBe(false);
+    expect(preview.autoRenderSpinePreview).toBe(false);
+    expect(preview.canPrepareRemotePreview).toBe(true);
+    expect(preview.spinePreviewUrl).toBe("");
     expect(preview.initials).toBe("AG");
   });
 

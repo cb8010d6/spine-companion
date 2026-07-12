@@ -1208,6 +1208,103 @@ async fn import_catalog_model(
     Ok(result)
 }
 
+#[tauri::command]
+async fn prepare_model_preview(
+    window: WebviewWindow,
+    data: State<'_, AppData>,
+    entry: catalog::CatalogModelEntry,
+) -> Result<serde_json::Value, String> {
+    require_manager_window(&window)?;
+    entry.model.validate()?;
+    let id = entry.model.id.clone();
+    let skel = entry.model.skel.clone();
+    let preview_root = data.config_dir.join("preview-assets");
+    let preview_dir = preview_root.join(&id);
+    let temp_dir = preview_root.join(format!("{}.preview-download", &id));
+    let signature = format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&entry.model).map_err(|error| error.to_string())?)
+    );
+    let signature_path = preview_dir.join(".catalog-signature");
+    let cache_valid = std::fs::read_to_string(&signature_path)
+        .map(|value| value == signature)
+        .unwrap_or(false)
+        && validate_spine_asset_dir(&preview_dir, &skel).is_ok();
+
+    if !cache_valid {
+        tokio::fs::create_dir_all(&preview_root)
+            .await
+            .map_err(|error| error.to_string())?;
+        remove_dir_if_exists(&temp_dir).await?;
+        tokio::fs::create_dir_all(&temp_dir)
+            .await
+            .map_err(|error| error.to_string())?;
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .map_err(|error| error.to_string())?;
+        let value = serde_json::to_value(&entry.model).map_err(|error| error.to_string())?;
+        let files = value
+            .get("files")
+            .and_then(|files| files.as_array())
+            .ok_or_else(|| "Model preview entry is missing files".to_string())?;
+        for file in files {
+            let file_name = file
+                .get("name")
+                .and_then(|name| name.as_str())
+                .ok_or_else(|| "Model preview file is missing name".to_string())?;
+            let bytes = download_model_file(&client, file_name, &download_url_candidates(file)?)
+                .await
+                .map_err(|error| {
+                    let _ = remove_dir_if_exists_blocking(&temp_dir);
+                    format!("Failed to prepare preview: {error}")
+                })?;
+            let expected = file
+                .get("sha256")
+                .and_then(|hash| hash.as_str())
+                .ok_or_else(|| format!("Preview file {file_name} is missing SHA-256"))?;
+            let actual = format!("{:x}", Sha256::digest(&bytes));
+            if !actual.eq_ignore_ascii_case(expected) {
+                let _ = remove_dir_if_exists_blocking(&temp_dir);
+                return Err(format!("Preview integrity check failed for {file_name}"));
+            }
+            tokio::fs::write(temp_dir.join(file_name), bytes)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        validate_spine_asset_dir(&temp_dir, &skel).map_err(|error| {
+            let _ = remove_dir_if_exists_blocking(&temp_dir);
+            error
+        })?;
+        tokio::fs::write(temp_dir.join(".catalog-signature"), &signature)
+            .await
+            .map_err(|error| error.to_string())?;
+        replace_model_dir(&temp_dir, &preview_dir).await?;
+    }
+    tokio::fs::write(&signature_path, &signature)
+        .await
+        .map_err(|error| error.to_string())?;
+    prune_preview_asset_cache(&preview_root, &id, 48);
+
+    let origin = public_config_with_ui(&data)
+        .get("server")
+        .and_then(|server| server.get("origin"))
+        .and_then(|origin| origin.as_str())
+        .unwrap_or("http://127.0.0.1:17388")
+        .to_string();
+    Ok(serde_json::json!({
+        "id": id,
+        "skel": skel,
+        "assetUrl": format!(
+            "{}/assets/previews/{}/{}",
+            origin,
+            url_encode_path_segment(&entry.model.id),
+            url_encode_path_segment(&entry.model.skel)
+        ),
+        "cached": cache_valid
+    }))
+}
+
 fn github_raw_to_jsdelivr_url(url: &str) -> Option<String> {
     let rest = url.strip_prefix("https://raw.githubusercontent.com/")?;
     let mut parts = rest.splitn(4, '/');
@@ -1289,6 +1386,41 @@ fn remove_dir_if_exists_blocking(path: &Path) -> Result<(), String> {
         Ok(_) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error.to_string()),
+    }
+}
+
+fn prune_preview_asset_cache(root: &Path, keep_id: &str, max_entries: usize) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    let mut cached = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let file_type = entry.file_type().ok()?;
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !file_type.is_dir() || name.ends_with(".preview-download") {
+                return None;
+            }
+            let modified = entry
+                .path()
+                .join(".catalog-signature")
+                .metadata()
+                .and_then(|metadata| metadata.modified())
+                .unwrap_or(UNIX_EPOCH);
+            Some((name, entry.path(), modified))
+        })
+        .collect::<Vec<_>>();
+    cached.sort_by(|left, right| right.2.cmp(&left.2));
+    let mut retained_others = 0usize;
+    for (name, path, _) in cached {
+        if name == keep_id {
+            continue;
+        }
+        if retained_others < max_entries.saturating_sub(1) {
+            retained_others += 1;
+            continue;
+        }
+        let _ = std::fs::remove_dir_all(path);
     }
 }
 
@@ -3644,6 +3776,7 @@ pub fn run() {
             .and_then(|path| path.canonicalize().ok()),
     ));
     let asset_root_for_server = asset_root_store.clone();
+    let preview_root_for_server = runtime_config.config_dir.join("preview-assets");
     let history_store: Arc<Mutex<Vec<CompanionState>>> =
         Arc::new(Mutex::new(vec![store.blocking_read().clone()]));
     let public_config_store = Arc::new(Mutex::new(runtime_config.public.clone()));
@@ -3711,6 +3844,7 @@ pub fn run() {
                 reminders_for_server,
                 reminder_tx_for_server,
                 asset_root_for_server,
+                preview_root_for_server,
                 public_config_for_server,
                 history_for_server,
                 &host_for_server,
@@ -3887,6 +4021,7 @@ pub fn run() {
             emit_scale_event,
             import_model,
             import_catalog_model,
+            prepare_model_preview,
             save_settings,
             get_diagnostics,
             export_logs,
@@ -4042,6 +4177,33 @@ mod tests {
                 .and_then(|value| value.as_str()),
             Some(expected_asset_dir.as_str())
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn preview_cache_pruning_keeps_current_model_and_limits_completed_entries() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis())
+            .unwrap_or(0);
+        let root = std::env::temp_dir().join(format!("spine-companion-preview-test-{}", suffix));
+        for name in ["current", "older-a", "older-b", "pending.preview-download"] {
+            std::fs::create_dir_all(root.join(name)).unwrap();
+        }
+        prune_preview_asset_cache(&root, "current", 2);
+        let completed = std::fs::read_dir(&root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                !entry
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".preview-download")
+            })
+            .count();
+        assert_eq!(completed, 2);
+        assert!(root.join("current").exists());
+        assert!(root.join("pending.preview-download").exists());
         let _ = std::fs::remove_dir_all(root);
     }
 

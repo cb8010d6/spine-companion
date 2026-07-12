@@ -2,12 +2,13 @@ const GENERIC_INTEGRATION_PATH = "M9.4 3 8.7 5.6c-.5.2-1 .5-1.4.8L4.7 5.7 2.4 9.
 
 // Keep these as local URLs so Electron builds do not depend on vendor CDNs.
 const LOCAL_IMAGES = Object.freeze({
-  openai: new URL("./assets/integrations/openai.svg", import.meta.url).href,
+  openai: new URL("./assets/integrations/openai.png", import.meta.url).href,
   anthropic: new URL("./assets/integrations/anthropic.svg", import.meta.url).href,
   cursor: new URL("./assets/integrations/cursor.svg", import.meta.url).href,
-  vscode: new URL("./assets/integrations/vscode.svg", import.meta.url).href,
+  vscode: new URL("./assets/integrations/vscode.png", import.meta.url).href,
   gemini: new URL("./assets/integrations/gemini.png", import.meta.url).href,
-  opencode: new URL("./assets/integrations/opencode.svg", import.meta.url).href,
+  antigravity: new URL("./assets/integrations/antigravity.png", import.meta.url).href,
+  opencode: new URL("./assets/integrations/opencode.png", import.meta.url).href,
   roo: new URL("./assets/integrations/roo-code.svg", import.meta.url).href,
   cline: new URL("./assets/integrations/cline.svg", import.meta.url).href,
   mimocode: new URL("./assets/integrations/mimocode.svg", import.meta.url).href
@@ -39,6 +40,11 @@ const ICONS = Object.freeze({
     image: LOCAL_IMAGES.gemini,
     path: GENERIC_INTEGRATION_PATH
   },
+  antigravity: {
+    color: "#4285f4",
+    image: LOCAL_IMAGES.antigravity,
+    path: GENERIC_INTEGRATION_PATH
+  },
   opencode: {
     color: "#b7b1b1",
     image: LOCAL_IMAGES.opencode,
@@ -68,6 +74,7 @@ const ICONS = Object.freeze({
 
 const TOOL_ICONS = Object.freeze({
   codex: "openai",
+  chatgpt: "openai",
   openai: "openai",
   "openai-codex": "openai",
   anthropic: "anthropic",
@@ -79,7 +86,8 @@ const TOOL_ICONS = Object.freeze({
   "vs-code": "vscode",
   "visual-studio-code": "vscode",
   gemini: "gemini",
-  "gemini-antigravity": "gemini",
+  antigravity: "antigravity",
+  "gemini-antigravity": "antigravity",
   "gemini-cli": "gemini",
   opencode: "opencode",
   roo: "roo",

@@ -35,7 +35,7 @@ function fitSpineToStage(spine, width, height) {
 }
 
 export async function renderSpinePreview(container, preview, options = {}) {
-  if (!container || !preview?.spinePreviewUrl) return;
+  if (!container || !preview?.spinePreviewUrl) return "";
   const width = Number(options.width || container.clientWidth || 100);
   const height = Number(options.height || container.clientHeight || 100);
   const app = new PIXI.Application({
@@ -66,13 +66,16 @@ export async function renderSpinePreview(container, preview, options = {}) {
     const image = document.createElement("img");
     image.alt = "";
     image.loading = "lazy";
-    image.src = app.view.toDataURL("image/png");
+    const dataUrl = app.view.toDataURL("image/png");
+    image.src = dataUrl;
     container.classList.add("has-image", "has-spine-preview");
     container.prepend(image);
+    return dataUrl;
   } catch (error) {
     const message = error?.message || String(error || "Unable to render Spine preview.");
     container.title = `Preview unavailable: ${message}`;
     container.setAttribute("aria-label", `${container.getAttribute("aria-label") || "Preview"} (${message})`);
+    return "";
   } finally {
     app.destroy(true, { children: true, texture: false, baseTexture: false });
   }

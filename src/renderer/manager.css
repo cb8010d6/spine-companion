@@ -466,6 +466,29 @@ button:disabled {
   display: none;
 }
 
+.model-preview-button {
+  position: absolute;
+  inset: auto 8px 8px;
+  min-height: 24px;
+  padding: 3px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 5px;
+  background: rgba(12, 15, 20, 0.76);
+  color: #fff;
+  font-size: 10px;
+  line-height: 1.2;
+  backdrop-filter: blur(6px);
+}
+
+.model-preview-button:hover:not(:disabled) {
+  background: rgba(12, 15, 20, 0.92);
+  border-color: rgba(255, 255, 255, 0.48);
+}
+
+.model-preview.has-image .model-preview-button {
+  display: none;
+}
+
 .model-info {
   flex: 1;
   padding: 12px;

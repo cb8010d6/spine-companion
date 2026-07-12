@@ -20,9 +20,9 @@ export function modelPreview(model = {}, config = {}) {
       skel: previewSkel
     }
   };
-  const spinePreviewUrl = isActiveModel && previewSkel
-    ? spineAssetUrl(spineConfig)
-    : "";
+  const remoteSkel = (model.files || []).find((file) => file.name === previewSkel || /\.skel$/i.test(file.name || ""));
+  const localSpinePreviewUrl = isActiveModel && previewSkel ? spineAssetUrl(spineConfig) : "";
+  const spinePreviewUrl = localSpinePreviewUrl || model.preparedPreviewUrl || "";
   const imageUrl = model.previewUrl || model.thumbnailUrl || "";
   const initials = label
     .split(/[\s_-]+/)
@@ -37,6 +37,8 @@ export function modelPreview(model = {}, config = {}) {
     imageUrl,
     spinePreviewUrl,
     canRenderSpinePreview: Boolean(spinePreviewUrl),
+    autoRenderSpinePreview: Boolean(localSpinePreviewUrl),
+    canPrepareRemotePreview: Boolean(!spinePreviewUrl && remoteSkel?.url),
     style: {
       background: `linear-gradient(135deg, hsl(${hue} 56% 24%), hsl(${(hue + 42) % 360} 52% 36%))`
     }
