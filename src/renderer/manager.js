@@ -6,6 +6,7 @@ import {
   Download,
   House,
   Library,
+  Languages,
   PackageCheck,
   Settings,
   Sparkles,
@@ -45,6 +46,9 @@ const topbarTitle = document.getElementById("topbar-title");
 const modalContainer = document.getElementById("modal-container");
 const runtimeLabel = document.getElementById("runtime-label");
 const topbarRuntimeLabel = document.getElementById("topbar-runtime-label");
+const topbarLocaleSelect = document.getElementById("topbar-locale-select");
+const topbarLocaleLabel = document.getElementById("topbar-locale-label");
+const topbarLocaleIcon = document.getElementById("topbar-locale-icon");
 
 const NAV_ICONS = {
   dashboard: House,
@@ -64,6 +68,7 @@ let diagnostics = null;
 let history = [];
 let reminders = [];
 let integrations = [];
+let avatarPacks = [];
 let updateStatus = null;
 let liveState = null;
 const downloads = {};
@@ -205,6 +210,17 @@ function applyUiLocale() {
   const runtime = runtimeName();
   if (runtimeLabel) runtimeLabel.textContent = runtime;
   if (topbarRuntimeLabel) topbarRuntimeLabel.textContent = runtime;
+  if (topbarLocaleSelect) {
+    topbarLocaleSelect.value = config.ui?.locale || "auto";
+    topbarLocaleSelect.setAttribute("aria-label", t("manager.field.locale"));
+    topbarLocaleSelect.title = t("manager.field.locale");
+  }
+  if (topbarLocaleLabel) topbarLocaleLabel.textContent = t("manager.field.locale");
+  if (topbarLocaleIcon) {
+    const icon = createElement(Languages);
+    icon.setAttribute("aria-hidden", "true");
+    topbarLocaleIcon.replaceChildren(icon);
+  }
   for (const button of navButtons) {
     const label = t(`manager.nav.${button.dataset.view}`);
     const Icon = NAV_ICONS[button.dataset.view] || Box;
@@ -352,19 +368,35 @@ async function startDownload(id) {
 
 function libraryView() {
   const catalog = config.models?.catalog || [];
+  const installedIds = new Set(installedModels.map((model) => model.id));
+  const activeId = activeInstalledId();
+  let filterValue = "all";
   const search = h("input", {
     class: "input",
     type: "search",
     placeholder: t("manager.search.placeholder"),
     "aria-label": t("manager.search.placeholder"),
-    onInput: () => renderCards(search.value)
+    onInput: () => renderCards(search.value, filterValue)
   });
-  const grid = h("div", { class: "grid-2" });
+  const filter = h("select", {
+    class: "select library-filter",
+    "aria-label": t("manager.library.filterLabel"),
+    onChange: (event) => {
+      filterValue = event.target.value;
+      renderCards(search.value, filterValue);
+    }
+  },
+    h("option", { value: "all" }, t("manager.library.filter.all")),
+    h("option", { value: "installed" }, t("manager.library.filter.installed")),
+    h("option", { value: "available" }, t("manager.library.filter.available"))
+  );
+  const grid = h("div", { class: "grid-2 library-grid" });
 
-  function renderCards(query = "") {
+  function renderCards(query = "", selectedFilter = "all") {
     const normalized = query.trim().toLowerCase();
     const cards = catalog
       .filter((model) => !normalized || `${model.name} ${model.id} ${model.source}`.toLowerCase().includes(normalized))
+      .filter((model) => selectedFilter === "all" || (selectedFilter === "installed" ? installedIds.has(model.id) : !installedIds.has(model.id)))
       .map((model) => {
         const download = downloads[model.id];
         const installed = isInstalled(model.id);
@@ -382,29 +414,47 @@ function libraryView() {
               disabled: download?.status === "downloading",
               onClick: () => confirmDownload(model)
             }, download?.status === "downloading" ? t("manager.status.downloading") : t("manager.actions.download"));
+        const sourceUrl = model.repositoryUrl || model.sourceUrl || "";
         return h("article", { class: "model-card fade-in" },
           previewNode(model),
           h("div", { class: "model-info" },
             h("div", { class: "model-title", title: model.name || model.id }, model.name || model.id),
             h("div", { class: "model-meta" }, t("manager.model.source", { source: model.source || t("manager.model.unknownSource") })),
+            h("div", { class: "model-badges" },
+              badge(model.spineVersion || "Spine 3.8"),
+              model.licenseNote ? badge(t("manager.library.licenseNotice"), "badge-warning") : null
+            ),
             h("div", { class: "model-actions" },
               installed ? badge(t("manager.status.installed"), "badge-success") : null,
               active ? badge(t("manager.status.active"), "badge-warning") : null,
               h("div", { style: { flex: "1" } }),
+              sourceUrl ? h("button", { class: "btn", type: "button", onClick: () => window.companion?.openExternal?.(sourceUrl) }, t("manager.actions.openSource")) : null,
               button
             )
           )
         );
       });
-    grid.replaceChildren(...cards);
+    grid.replaceChildren(...(cards.length ? cards : [h("div", { class: "library-empty" },
+      h("strong", {}, t("manager.library.emptyTitle")),
+      h("p", { class: "empty-text" }, t("manager.library.emptyBody"))
+    )]));
   }
 
   renderCards();
   return h("section", {},
     h("div", { class: "view-header" },
-      h("h2", { class: "view-title" }, t("manager.library.title")),
-      search
+      h("div", {},
+        h("h2", { class: "view-title" }, t("manager.library.title")),
+        h("p", { class: "empty-text" }, t("manager.library.subtitle"))
+      ),
+      h("button", { class: "btn", type: "button", onClick: () => navTo("installed") }, t("manager.library.manageInstalled"))
     ),
+    h("div", { class: "library-summary" },
+      h("div", {}, h("strong", {}, String(catalog.length)), h("span", {}, t("manager.library.catalogCount"))),
+      h("div", {}, h("strong", {}, String(installedModels.length)), h("span", {}, t("manager.library.installedCount"))),
+      h("div", {}, h("strong", {}, activeId ? "1" : "0"), h("span", {}, t("manager.library.activeCount")))
+    ),
+    h("div", { class: "library-toolbar" }, search, filter),
     grid
   );
 }
@@ -1156,11 +1206,23 @@ async function diagnosticsView() {
   );
 }
 
-function avatarStudioView() {
-  const pathInput = h("input", { class: "input", type: "text", placeholder: "C:/path/to/avatar-pack", "aria-label": t("manager.avatar.packPath") });
+async function refreshAvatarPacks() {
+  avatarPacks = await window.companion?.listAvatarPacks?.() || [];
+  return avatarPacks;
+}
+
+async function avatarStudioView() {
+  const requirementsPromise = typeof window.companion?.avatarRequirements === "function"
+    ? window.companion.avatarRequirements().catch(() => null)
+    : Promise.resolve(null);
+  const [requirements] = await Promise.all([
+    requirementsPromise,
+    refreshAvatarPacks().catch(() => [])
+  ]);
+  const pathInput = h("input", { class: "input", type: "text", placeholder: t("manager.avatar.pathPlaceholder"), "aria-label": t("manager.avatar.packPath") });
   const resultRoot = h("div", { class: "avatar-validation" });
   let latestValidation = null;
-  const importButton = h("button", { class: "btn btn-primary", type: "button" }, t("manager.avatar.saveDraft"));
+  const importButton = h("button", { class: "btn btn-primary", type: "button", disabled: true }, t("manager.avatar.saveDraft"));
   const renderValidation = (result) => {
     latestValidation = result || null;
     const ok = result?.ok === true;
@@ -1169,16 +1231,37 @@ function avatarStudioView() {
     resultRoot.replaceChildren(
       h("p", { class: ok ? "status-value status-ok" : "status-value status-err" }, t(avatarStatusKey(result))),
       result?.id || result?.name ? h("p", { class: "model-meta" }, `${result.name || result.id} (${result.id || ""})`) : null,
+      h("div", { class: "avatar-readiness" },
+        badge(result?.hasPreview ? t("manager.avatar.previewReady") : t("manager.avatar.previewMissing"), result?.hasPreview ? "badge-success" : "badge-warning"),
+        badge(result?.hasLayersDir ? t("manager.avatar.layersReady") : t("manager.avatar.layersMissing"), result?.hasLayersDir ? "badge-success" : "badge-warning"),
+        badge(result?.runtimeReady ? t("manager.avatar.runtimeReady") : t("manager.avatar.runtimeMissing"), result?.runtimeReady ? "badge-success" : "badge-warning")
+      ),
       ...(result?.errors || []).map((item) => h("p", { class: "error-text" }, item)),
       ...(result?.warnings || []).map((item) => h("p", { class: "model-meta" }, item))
     );
   };
   const validate = async () => {
-    const result = await window.companion?.validateAvatarPack?.(pathInput.value.trim());
-    renderValidation(result);
-    return result;
+    const path = pathInput.value.trim();
+    if (!path) {
+      resultRoot.replaceChildren(h("p", { class: "error-text" }, t("manager.avatar.selectFirst")));
+      return null;
+    }
+    try {
+      const result = await window.companion?.validateAvatarPack?.(path);
+      renderValidation(result);
+      return result;
+    } catch (error) {
+      resultRoot.replaceChildren(h("p", { class: "error-text" }, error?.message || String(error)));
+      return null;
+    }
   };
-  importButton.disabled = true;
+  const chooseFolder = async () => {
+    const selected = await window.companion?.pickAvatarPackFolder?.();
+    if (typeof selected !== "string" || !selected) return;
+    pathInput.value = selected;
+    pathInput.dispatchEvent(new Event("input"));
+    await validate();
+  };
   pathInput.addEventListener("input", () => {
     latestValidation = null;
     importButton.disabled = true;
@@ -1190,9 +1273,11 @@ function avatarStudioView() {
       const validation = latestValidation || await validate();
       if (!validation?.ok) return;
       const result = await window.companion?.importAvatarPack?.(pathInput.value.trim());
-      renderValidation(result?.validation);
       const name = result?.validation?.name || result?.validation?.id || "avatar pack";
       showToast(t(avatarResultToastKey(result), { name }));
+      await refreshAvatarPacks();
+      installedModels = await window.companion?.getInstalledModels?.() || installedModels;
+      await renderView("avatar");
     } catch (error) {
       resultRoot.replaceChildren(h("p", { class: "error-text" }, error?.message || String(error)));
       showToast(t("manager.avatar.importFailed"));
@@ -1205,30 +1290,55 @@ function avatarStudioView() {
         h("p", { class: "empty-text" }, t("manager.avatar.subtitle"))
       )
     ),
-    h("div", { class: "grid-2" },
-      h("article", { class: "card" },
-        h("h3", {}, t("manager.avatar.inputsTitle")),
-        h("p", { class: "model-meta" }, t("manager.avatar.inputsBody"))
-      ),
-      h("article", { class: "card" },
-        h("h3", {}, t("manager.avatar.packTitle")),
-        h("p", { class: "model-meta" }, "avatar-pack.json, preview.png, layers/, rig/, exports/"),
+    h("div", { class: "avatar-studio-layout" },
+      h("article", { class: "card avatar-workflow" },
+        h("div", { class: "avatar-workflow-heading" },
+          h("div", {}, h("span", { class: "step-number" }, "1"), h("strong", {}, t("manager.avatar.stepSelect"))),
+          h("div", {}, h("span", { class: "step-number" }, "2"), h("strong", {}, t("manager.avatar.stepValidate"))),
+          h("div", {}, h("span", { class: "step-number" }, "3"), h("strong", {}, t("manager.avatar.stepImport")))
+        ),
+        h("h3", {}, t("manager.avatar.workflowTitle")),
+        h("p", { class: "model-meta" }, t("manager.avatar.workflowBody")),
         h("div", { class: "avatar-pack-form" },
           pathInput,
-          h("button", { class: "btn", type: "button", onClick: validate }, t("manager.avatar.validate")),
-          importButton
+          h("div", { class: "avatar-pack-actions" },
+            h("button", { class: "btn", type: "button", onClick: chooseFolder }, t("manager.avatar.selectFolder")),
+            h("button", { class: "btn", type: "button", onClick: validate }, t("manager.avatar.validate")),
+            importButton
+          )
         ),
         resultRoot
       ),
-      h("article", { class: "card" },
-        h("h3", {}, t("manager.avatar.limitsTitle")),
-        h("p", { class: "model-meta" }, t("manager.avatar.limitsBody"))
-      ),
-      h("article", { class: "card" },
-        h("h3", {}, t("manager.avatar.docsTitle")),
-        h("div", { class: "model-actions" },
-          h("button", { class: "btn", type: "button", onClick: () => window.companion?.openExternal?.("https://github.com/cb8010d6/spine-companion/blob/main/docs/avatar-studio.md") }, "English"),
-          h("button", { class: "btn", type: "button", onClick: () => window.companion?.openExternal?.("https://github.com/cb8010d6/spine-companion/blob/main/docs/avatar-studio.zh-CN.md") }, "中文")
+      h("div", { class: "grid-2 avatar-secondary-grid" },
+        h("article", { class: "card" },
+          h("h3", {}, t("manager.avatar.inputsTitle")),
+          h("p", { class: "model-meta" }, t("manager.avatar.inputsBody")),
+          h("p", { class: "model-meta" }, (requirements?.layout || ["avatar-pack.json", "preview.png", "layers/", "exports/"]).join(" · "))
+        ),
+        h("article", { class: "card" },
+          h("h3", {}, t("manager.avatar.limitsTitle")),
+          h("p", { class: "model-meta" }, t("manager.avatar.limitsBody"))
+        ),
+        h("article", { class: "card avatar-registered-card" },
+          h("h3", {}, t("manager.avatar.registeredTitle")),
+          avatarPacks.length ? h("div", { class: "avatar-pack-list" }, avatarPacks.map((pack) => h("div", { class: "avatar-pack-row" },
+            h("div", { class: "avatar-pack-row-copy" }, h("strong", {}, pack.name || pack.id), h("small", { title: pack.path || "" }, pack.path || "")),
+            badge(pack.runtimeReady ? t("manager.avatar.runtimeReady") : t("manager.avatar.savedDraftStatus"), pack.runtimeReady ? "badge-success" : "badge-warning"),
+            h("div", { class: "avatar-pack-row-actions" },
+              h("button", { class: "btn", type: "button", onClick: () => window.companion?.openFolder?.(pack.path) }, t("manager.actions.openFolder")),
+              h("button", { class: "btn", type: "button", onClick: async () => {
+                pathInput.value = pack.path || "";
+                await validate();
+              } }, t("manager.avatar.revalidate"))
+            )
+          ))) : h("p", { class: "empty-text" }, t("manager.avatar.noRegistered"))
+        ),
+        h("article", { class: "card" },
+          h("h3", {}, t("manager.avatar.docsTitle")),
+          h("div", { class: "model-actions" },
+            h("button", { class: "btn", type: "button", onClick: () => window.companion?.openExternal?.("https://github.com/cb8010d6/spine-companion/blob/main/docs/avatar-studio.md") }, "English"),
+            h("button", { class: "btn", type: "button", onClick: () => window.companion?.openExternal?.("https://github.com/cb8010d6/spine-companion/blob/main/docs/avatar-studio.zh-CN.md") }, "中文")
+          )
         )
       )
     )
@@ -1251,7 +1361,7 @@ async function renderView(viewName) {
     render(settingsView(), viewContainer);
   }
   else if (viewName === "integrations") render(await integrationsView(), viewContainer);
-  else if (viewName === "avatar") render(avatarStudioView(), viewContainer);
+  else if (viewName === "avatar") render(await avatarStudioView(), viewContainer);
   else if (viewName === "diagnostics") render(await diagnosticsView(), viewContainer);
 }
 
@@ -1266,6 +1376,14 @@ async function boot() {
     if (activeView === "diagnostics") renderView("diagnostics");
   });
   for (const button of navButtons) button.addEventListener("click", () => navTo(button.dataset.view));
+  topbarLocaleSelect?.addEventListener("change", async (event) => {
+    const locale = event.target.value;
+    await window.companion?.saveSettings?.({ ui: { locale } });
+    config.ui = { ...(config.ui || {}), locale };
+    applyUiLocale();
+    await renderView(activeView);
+    showToast(t("manager.status.settingsSaved"));
+  });
   modalContainer.addEventListener("click", (event) => {
     if (event.target === modalContainer) closeModal();
   });

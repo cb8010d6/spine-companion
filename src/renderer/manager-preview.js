@@ -15,7 +15,10 @@ export function installManagerPreviewBridge() {
       locale: params.get("locale") || "zh-CN",
       theme: params.get("theme") || "system"
     },
-    models: { catalog: [] },
+    models: { catalog: [
+      { id: "ark-1001-amiya2-sale-16", name: "Amiya Guard Skin #16", source: "Ark-Models", spineVersion: "Spine 3.8", licenseNote: "Third-party source; review before download.", repositoryUrl: "https://github.com/isHarryh/Ark-Models" },
+      { id: "sample-local-avatar", name: "Sample Local Avatar", source: "Local preview", spineVersion: "Spine 3.8" }
+    ] },
     spine: {}
   };
   window.companion = {
@@ -25,10 +28,14 @@ export function installManagerPreviewBridge() {
       previewConfig.spine = { ...previewConfig.spine, ...(patch.spine || {}) };
       return previewConfig;
     },
-    getInstalledModels: async () => [],
+    getInstalledModels: async () => [{ id: "sample-local-avatar", name: "Sample Local Avatar", source: "Local preview", skel: "sample.skel" }],
     listReminders: async () => [],
     checkUpdates: async () => ({ currentVersion: "preview", updateAvailable: false, channel: previewConfig.ui?.updateChannel === "stable" ? "stable" : "prerelease" }),
     listAiIntegrations: async () => previewIntegrations,
+    avatarRequirements: async () => ({ layout: ["avatar-pack.json", "preview.png", "layers/", "exports/"] }),
+    listAvatarPacks: async () => [{ id: "sample-avatar", name: "Sample Avatar Draft", path: "C:/Avatars/sample-avatar", runtimeReady: false }],
+    pickAvatarPackFolder: async () => null,
+    validateAvatarPack: async () => ({ ok: true, id: "sample-avatar", name: "Sample Avatar Draft", draft: true, runtimeReady: false, hasPreview: true, hasLayersDir: true, warnings: [], errors: [] }),
     acknowledgeAiIntegrationRestart: async (id) => {
       const item = previewIntegrations.find((integration) => integration.id === id);
       if (item) item.needsRestart = false;
