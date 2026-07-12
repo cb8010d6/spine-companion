@@ -4,11 +4,13 @@ import { modelPreview } from "./model-preview.js";
 import { renderSpinePreview } from "./spine-preview.js";
 import { createI18n, t } from "../shared/i18n.js";
 import { defaultMessageForState, sourceDisplayName } from "../shared/notification-policy.js";
+import { applyThemePreference } from "./theme.js";
 
 let config = null;
 let panelPinned = false;
 let currentDiagnostics = null;
 let unsubscribeReminders = null;
+let interactionUnlockTimer = 0;
 const quickStates = ["idle", "working", "running", "reviewing", "success", "failed"];
 
 function stateLabel(id) {
@@ -93,8 +95,25 @@ async function closePanel(force = false) {
   window.close();
 }
 
+function setNativeInteractionLock(locked) {
+  window.clearTimeout(interactionUnlockTimer);
+  if (!isTauri()) return;
+  if (locked) {
+    window.companion?.setPanelInteractionLock?.(true);
+    return;
+  }
+  interactionUnlockTimer = window.setTimeout(() => {
+    window.companion?.setPanelInteractionLock?.(false);
+  }, 220);
+}
+
 function renderReminderList(reminders = []) {
   const list = document.getElementById("reminder-list");
+  const badge = document.getElementById("reminder-badge");
+  if (badge) {
+    badge.textContent = `⏱ ${reminders.length}`;
+    badge.title = t("panel.section.reminders");
+  }
   if (!reminders.length) {
     list.textContent = t("panel.reminders.none");
     return;
@@ -140,6 +159,7 @@ async function updateState() {
 
   const spine = config.spine || {};
   const ui = config.ui || {};
+  applyThemePreference(ui.theme || "system");
 
   document.getElementById("scale-slider").value = spine.scale || 1;
   document.getElementById("scale-val").textContent = parseFloat(spine.scale || 1).toFixed(2) + "x";
@@ -188,6 +208,12 @@ async function updateState() {
 
   if (window.companion?.checkUpdates) {
     const update = await window.companion.checkUpdates().catch((error) => ({ error: error.message }));
+    const updateBadge = document.getElementById("update-badge");
+    if (updateBadge) {
+      updateBadge.textContent = update.updateAvailable ? `↑ ${update.latestVersion || ""}` : "✓";
+      updateBadge.title = update.error || t("panel.section.updates");
+      updateBadge.dataset.status = update.error ? "warn" : update.updateAvailable ? "update" : "ok";
+    }
     document.getElementById("update-status").textContent = update.error
       ? update.error
       : t("panel.update.currentLatest", {
@@ -273,6 +299,12 @@ async function boot() {
 
   document.getElementById("bubble-theme").addEventListener("change", (e) => {
     window.companion?.saveSettings?.({ ui: { bubbleBackground: e.target.value } });
+    setNativeInteractionLock(false);
+  });
+  document.querySelectorAll("select").forEach((select) => {
+    select.addEventListener("pointerdown", () => setNativeInteractionLock(true));
+    select.addEventListener("focus", () => setNativeInteractionLock(true));
+    select.addEventListener("focusout", () => setNativeInteractionLock(false));
   });
 
   // Actions
@@ -292,8 +324,8 @@ async function boot() {
     refreshReminders().catch(console.warn);
   });
 
-  // Electron owns blur-to-close in the main process. Tauri keeps the panel open
-  // here because native select menus can briefly blur the WebView.
+  // Tauri owns blur-to-close in Rust so it still works when the WebView itself
+  // is not receiving events. Native selects temporarily hold an interaction lock.
   window.addEventListener("blur", () => {
     if (!isTauri() && !panelPinned) {
       closePanel();

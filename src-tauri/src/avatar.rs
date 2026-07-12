@@ -743,7 +743,10 @@ mod tests {
         fs::write(target.join("previous.txt"), "previous").unwrap();
         let missing_staging = root.join("missing-staging");
         assert!(replace_directory_atomically(&missing_staging, &target).is_err());
-        assert_eq!(fs::read_to_string(target.join("previous.txt")).unwrap(), "previous");
+        assert_eq!(
+            fs::read_to_string(target.join("previous.txt")).unwrap(),
+            "previous"
+        );
         let _ = fs::remove_dir_all(root);
     }
 

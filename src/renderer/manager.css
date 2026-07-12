@@ -917,6 +917,31 @@ input[type="range"] {
   font-weight: 700;
 }
 
+.integration-monogram svg {
+  width: 18px;
+  height: 18px;
+  fill: var(--integration-brand, currentColor);
+}
+
+.integration-brand-detail {
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
+  border-radius: 10px;
+}
+
+.integration-brand-detail svg {
+  width: 24px;
+  height: 24px;
+}
+
+.integration-title-lockup {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
 .integration-monogram.state-ready {
   color: var(--accent);
   border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
@@ -1110,6 +1135,18 @@ input[type="range"] {
   #sidebar {
     width: 176px;
     flex-basis: 176px;
+  }
+
+  .sidebar-header {
+    padding-inline: 14px;
+  }
+
+  .sidebar-brand-copy strong {
+    overflow: visible;
+    font-size: 12px;
+    line-height: 1.15;
+    text-overflow: clip;
+    white-space: normal;
   }
 
   .dashboard-grid {

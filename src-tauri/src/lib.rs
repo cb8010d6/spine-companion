@@ -13,10 +13,10 @@ use state::{
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc, Mutex,
 };
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -38,7 +38,10 @@ struct AppData {
     asset_root: server::AssetRootStore,
     history: Arc<Mutex<Vec<CompanionState>>>,
     drag_state: Arc<Mutex<Option<DragState>>>,
-    passthrough_generation: Arc<AtomicU64>,
+    passthrough_enabled: Arc<AtomicBool>,
+    pointer_bounds: Arc<Mutex<Option<PointerBounds>>>,
+    panel_pinned: Arc<AtomicBool>,
+    panel_interaction_locked: Arc<AtomicBool>,
     renderer_health: Arc<Mutex<RendererHealth>>,
     ai_integration_lock: Arc<Mutex<()>>,
 }
@@ -87,6 +90,7 @@ struct UiSettings {
     shortcut_enabled: bool,
     shortcut_accelerator: String,
     update_auto_check: bool,
+    update_channel: String,
     max_device_pixel_ratio: f64,
     hitbox_padding: f64,
     gpu_mode: String,
@@ -107,6 +111,7 @@ struct UiSettingsPatch {
     shortcut_enabled: Option<bool>,
     shortcut_accelerator: Option<String>,
     update_auto_check: Option<bool>,
+    update_channel: Option<String>,
     max_device_pixel_ratio: Option<f64>,
     hitbox_padding: Option<f64>,
     gpu_mode: Option<String>,
@@ -129,7 +134,7 @@ struct DragPoint {
     total_y: Option<f64>,
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PointerBounds {
     left: f64,
@@ -150,7 +155,11 @@ fn cursor_position_physical() -> Option<(f64, f64)> {
 }
 
 #[cfg(target_os = "windows")]
-fn cursor_inside_pointer_bounds(window: &tauri::Window, bounds: &PointerBounds) -> bool {
+fn cursor_inside_pointer_bounds(
+    window: &WebviewWindow,
+    bounds: &PointerBounds,
+    logical_padding: f64,
+) -> bool {
     let Some((cursor_x, cursor_y)) = cursor_position_physical() else {
         return false;
     };
@@ -158,12 +167,51 @@ fn cursor_inside_pointer_bounds(window: &tauri::Window, bounds: &PointerBounds) 
         return false;
     };
     let scale_factor = window.scale_factor().unwrap_or(1.0).clamp(0.5, 4.0);
-    let left = position.x as f64 + bounds.left * scale_factor;
-    let right = position.x as f64 + bounds.right * scale_factor;
-    let top = position.y as f64 + bounds.top * scale_factor;
-    let bottom = position.y as f64 + bounds.bottom * scale_factor;
+    let padding = logical_padding * scale_factor;
+    let left = position.x as f64 + bounds.left * scale_factor - padding;
+    let right = position.x as f64 + bounds.right * scale_factor + padding;
+    let top = position.y as f64 + bounds.top * scale_factor - padding;
+    let bottom = position.y as f64 + bounds.bottom * scale_factor + padding;
     cursor_x >= left && cursor_x <= right && cursor_y >= top && cursor_y <= bottom
 }
+
+#[cfg(target_os = "windows")]
+fn start_pointer_passthrough_monitor(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let mut outside_since: Option<Instant> = None;
+        let mut last_ignore_state: Option<bool> = None;
+        loop {
+            tokio::time::sleep(Duration::from_millis(16)).await;
+            let data = app.state::<AppData>();
+            let enabled = data.passthrough_enabled.load(Ordering::Relaxed);
+            let bounds = data.pointer_bounds.lock().ok().and_then(|value| *value);
+            let Some(window) = app.get_webview_window("main") else {
+                continue;
+            };
+
+            let cursor_inside = enabled
+                && bounds
+                    .as_ref()
+                    .map(|bounds| cursor_inside_pointer_bounds(&window, bounds, 18.0))
+                    .unwrap_or(false);
+            let ignore = if !enabled || cursor_inside {
+                outside_since = None;
+                false
+            } else {
+                let started = outside_since.get_or_insert_with(Instant::now);
+                last_ignore_state.unwrap_or(false) || started.elapsed() >= Duration::from_millis(80)
+            };
+
+            if last_ignore_state != Some(ignore) {
+                let _ = window.set_ignore_cursor_events(ignore);
+                last_ignore_state = Some(ignore);
+            }
+        }
+    });
+}
+
+#[cfg(not(target_os = "windows"))]
+fn start_pointer_passthrough_monitor(_app: AppHandle) {}
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -207,6 +255,7 @@ fn fallback_config() -> serde_json::Value {
             "fitStates": ["idle", "working", "running", "waiting", "reviewing", "success", "reminder"]
         },
         "ui": {
+            "theme": "system",
             "hudVisible": false,
             "bubbleVisible": true,
             "bubbleShadow": true,
@@ -218,6 +267,7 @@ fn fallback_config() -> serde_json::Value {
             "shortcutEnabled": true,
             "shortcutAccelerator": "CommandOrControl+Shift+S",
             "updateAutoCheck": true,
+            "updateChannel": "auto",
             "maxDevicePixelRatio": 2,
             "hitboxPadding": 8,
             "gpuMode": "hardware",
@@ -419,6 +469,9 @@ fn ui_settings_from_config(config: &serde_json::Value) -> UiSettings {
             shortcut.trim().to_string()
         },
         update_auto_check: bool_at(config, &["ui", "updateAutoCheck"], true),
+        update_channel: normalize_update_channel(
+            string_at(config, &["ui", "updateChannel"]).unwrap_or("auto"),
+        ),
         max_device_pixel_ratio: f64_at(config, &["ui", "maxDevicePixelRatio"], 2.0).clamp(1.0, 3.0),
         hitbox_padding: f64_at(config, &["ui", "hitboxPadding"], 8.0).clamp(0.0, 48.0),
         gpu_mode: normalize_gpu_mode(&gpu_mode),
@@ -446,6 +499,22 @@ fn normalize_gpu_mode(value: &str) -> String {
         "software".to_string()
     } else {
         "hardware".to_string()
+    }
+}
+
+fn normalize_update_channel(value: &str) -> String {
+    match value {
+        "stable" | "prerelease" => value.to_string(),
+        _ => "auto".to_string(),
+    }
+}
+
+fn resolved_update_channel(configured: &str, current_version: &str) -> &'static str {
+    match configured {
+        "stable" => "stable",
+        "prerelease" => "prerelease",
+        _ if is_prerelease_version(current_version) => "prerelease",
+        _ => "stable",
     }
 }
 
@@ -507,6 +576,9 @@ fn apply_ui_patch(settings: &mut UiSettings, patch: UiSettingsPatch) {
     if let Some(value) = patch.update_auto_check {
         settings.update_auto_check = value;
     }
+    if let Some(value) = patch.update_channel {
+        settings.update_channel = normalize_update_channel(&value);
+    }
     if let Some(value) = patch.max_device_pixel_ratio {
         settings.max_device_pixel_ratio = value.clamp(1.0, 3.0);
     }
@@ -550,7 +622,10 @@ fn public_config_with_ui(data: &AppData) -> serde_json::Value {
         .map(|config| config.clone())
         .unwrap_or_else(|_| fallback_config());
     if let Ok(value) = serde_json::to_value(current_ui_settings(data)) {
-        public["ui"] = value;
+        if !public.get("ui").is_some_and(serde_json::Value::is_object) {
+            public["ui"] = serde_json::json!({});
+        }
+        merge_json(&mut public["ui"], value);
     }
     refresh_public_asset_fields(&mut public);
     public
@@ -1243,6 +1318,7 @@ async fn save_settings(
         }
     }
     let _ = app.emit("companion:config-changed", public_config_with_ui(&data));
+    refresh_tray_menu(&app);
     Ok(())
 }
 
@@ -1575,10 +1651,12 @@ async fn set_active_model(
 }
 
 #[tauri::command]
-async fn check_updates() -> Result<serde_json::Value, String> {
+async fn check_updates(data: State<'_, AppData>) -> Result<serde_json::Value, String> {
     let client = reqwest::Client::new();
     let current_version = env!("CARGO_PKG_VERSION");
-    let endpoint = if is_prerelease_version(current_version) {
+    let configured_channel = current_ui_settings(&data).update_channel;
+    let channel = resolved_update_channel(&configured_channel, current_version);
+    let endpoint = if channel == "prerelease" {
         "releases?per_page=20"
     } else {
         "releases/latest"
@@ -1599,7 +1677,7 @@ async fn check_updates() -> Result<serde_json::Value, String> {
         .map_err(|error| error.to_string())?;
     let payload: serde_json::Value =
         serde_json::from_str(&text).map_err(|error| error.to_string())?;
-    let response = latest_release_from_payload(&payload)
+    let response = latest_release_from_payload(&payload, channel == "prerelease")
         .ok_or_else(|| "GitHub release check failed: no releases found.".to_string())?;
     let assets = response
         .get("assets")
@@ -1638,7 +1716,8 @@ async fn check_updates() -> Result<serde_json::Value, String> {
         "assets": assets,
         "recommendedAsset": recommended_asset,
         "downloadUrl": download_url,
-        "channel": if is_prerelease_version(current_version) { "prerelease" } else { "stable" },
+        "channel": channel,
+        "configuredChannel": configured_channel,
         "source": format!("https://api.github.com/repos/cb8010d6/spine-companion/{}", endpoint)
     }))
 }
@@ -2231,58 +2310,50 @@ fn get_window_position(window: tauri::Window) -> Result<WindowPosition, String> 
 
 #[tauri::command]
 async fn set_mouse_passthrough(
-    window: tauri::Window,
+    window: WebviewWindow,
     data: State<'_, AppData>,
     enabled: bool,
     bounds: Option<PointerBounds>,
 ) -> Result<(), String> {
-    let generation = data.passthrough_generation.fetch_add(1, Ordering::SeqCst) + 1;
+    data.passthrough_enabled.store(enabled, Ordering::Relaxed);
+    if let Ok(mut current) = data.pointer_bounds.lock() {
+        *current = bounds;
+    }
+    #[cfg(not(target_os = "windows"))]
     window
         .set_ignore_cursor_events(enabled)
-        .map_err(|e| e.to_string())?;
-    if enabled {
-        #[cfg(target_os = "windows")]
-        {
-            if let Some(bounds) = bounds {
-                let recover_window = window.clone();
-                let generation_ref = data.passthrough_generation.clone();
-                tauri::async_runtime::spawn(async move {
-                    for _ in 0..2400 {
-                        tokio::time::sleep(Duration::from_millis(16)).await;
-                        if generation_ref.load(Ordering::SeqCst) != generation {
-                            break;
-                        }
-                        if cursor_inside_pointer_bounds(&recover_window, &bounds) {
-                            if generation_ref.load(Ordering::SeqCst) == generation {
-                                let _ = recover_window.set_ignore_cursor_events(false);
-                            }
-                            break;
-                        }
-                    }
-                });
-            } else {
-                let recover_window = window.clone();
-                let generation_ref = data.passthrough_generation.clone();
-                tauri::async_runtime::spawn(async move {
-                    tokio::time::sleep(Duration::from_millis(160)).await;
-                    if generation_ref.load(Ordering::SeqCst) == generation {
-                        let _ = recover_window.set_ignore_cursor_events(false);
-                    }
-                });
-            }
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let recover_window = window.clone();
-            let generation_ref = data.passthrough_generation.clone();
-            tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(Duration::from_millis(160)).await;
-                if generation_ref.load(Ordering::SeqCst) == generation {
-                    let _ = recover_window.set_ignore_cursor_events(false);
-                }
-            });
-        }
+        .map_err(|error| error.to_string())?;
+    if !enabled {
+        window
+            .set_ignore_cursor_events(false)
+            .map_err(|error| error.to_string())?;
     }
+    Ok(())
+}
+
+#[tauri::command]
+fn update_pointer_bounds(
+    data: State<'_, AppData>,
+    bounds: Option<PointerBounds>,
+) -> Result<(), String> {
+    let mut current = data
+        .pointer_bounds
+        .lock()
+        .map_err(|_| "Pointer bounds lock is poisoned".to_string())?;
+    *current = bounds;
+    Ok(())
+}
+
+#[tauri::command]
+fn set_panel_pinned(data: State<'_, AppData>, pinned: bool) -> Result<bool, String> {
+    data.panel_pinned.store(pinned, Ordering::Relaxed);
+    Ok(pinned)
+}
+
+#[tauri::command]
+fn set_panel_interaction_lock(data: State<'_, AppData>, locked: bool) -> Result<(), String> {
+    data.panel_interaction_locked
+        .store(locked, Ordering::Relaxed);
     Ok(())
 }
 
@@ -2597,6 +2668,232 @@ fn set_tray_state(app: &AppHandle, state: &str, direction: Option<&str>) {
     });
 }
 
+fn toggle_panel_near_tray(app: &AppHandle, rect: tauri::Rect) {
+    let Some(panel) = app.get_webview_window("panel") else {
+        return;
+    };
+    if panel.is_visible().unwrap_or(false) {
+        let _ = panel.hide();
+        return;
+    }
+    let panel_size = panel
+        .outer_size()
+        .unwrap_or(tauri::PhysicalSize::new(320, 480));
+    let (rect_x, rect_y) = match rect.position {
+        tauri::Position::Physical(position) => (position.x, position.y),
+        tauri::Position::Logical(position) => (position.x as i32, position.y as i32),
+    };
+    let rect_height = match rect.size {
+        tauri::Size::Physical(size) => size.height as i32,
+        tauri::Size::Logical(size) => size.height as i32,
+    };
+    let x = rect_x - (panel_size.width as i32) / 2;
+    let mut y = rect_y - (panel_size.height as i32) - 10;
+    if y < 0 {
+        y = rect_y + rect_height + 10;
+    }
+    let _ = panel.set_position(tauri::PhysicalPosition::new(x, y));
+    let _ = panel.unminimize();
+    let _ = panel.show();
+    let _ = panel.set_focus();
+}
+
+fn tray_uses_chinese(app: &AppHandle) -> bool {
+    let configured = app
+        .state::<AppData>()
+        .public_config
+        .lock()
+        .ok()
+        .and_then(|config| {
+            config
+                .get("ui")
+                .and_then(|ui| ui.get("locale"))
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| "auto".to_string());
+    if configured.starts_with("zh") {
+        return true;
+    }
+    if configured != "auto" {
+        return false;
+    }
+    sys_locale::get_locale()
+        .map(|locale| locale.to_ascii_lowercase().starts_with("zh"))
+        .unwrap_or(false)
+}
+
+fn tray_label(app: &AppHandle, key: &str) -> &'static str {
+    let zh = tray_uses_chinese(app);
+    match (zh, key) {
+        (true, "show") => "显示桌宠",
+        (true, "hide") => "隐藏桌宠",
+        (true, "panel") => "打开快捷面板",
+        (true, "manager") => "打开管理器",
+        (true, "bubble") => "切换任务气泡",
+        (true, "notifications") => "暂停/恢复通知",
+        (true, "advanced") => "高级与调试",
+        (true, "diagnostics") => "诊断",
+        (true, "restart") => "重启渲染器",
+        (true, "gpu") => "清理 GPU 缓存",
+        (true, "config") => "打开配置目录",
+        (true, "api") => "打开本地 API",
+        (true, "state") => "调试状态",
+        (true, "quit") => "退出",
+        (false, "show") => "Show Companion",
+        (false, "hide") => "Hide Companion",
+        (false, "panel") => "Open Quick Panel",
+        (false, "manager") => "Open Manager",
+        (false, "bubble") => "Toggle Progress Bubble",
+        (false, "notifications") => "Pause / Resume Notifications",
+        (false, "advanced") => "Advanced / Debug",
+        (false, "diagnostics") => "Diagnostics",
+        (false, "restart") => "Restart Renderer",
+        (false, "gpu") => "Clear GPU Cache",
+        (false, "config") => "Open Config Folder",
+        (false, "api") => "Open Local API",
+        (false, "state") => "Debug State",
+        (false, "quit") => "Quit",
+        _ => "Spine Companion",
+    }
+}
+
+fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let show = MenuItem::with_id(
+        app,
+        "show_companion",
+        tray_label(app, "show"),
+        true,
+        None::<&str>,
+    )?;
+    let hide = MenuItem::with_id(
+        app,
+        "hide_companion",
+        tray_label(app, "hide"),
+        true,
+        None::<&str>,
+    )?;
+    let panel = MenuItem::with_id(
+        app,
+        "open_panel",
+        tray_label(app, "panel"),
+        true,
+        None::<&str>,
+    )?;
+    let manager = MenuItem::with_id(
+        app,
+        "open_manager",
+        tray_label(app, "manager"),
+        true,
+        None::<&str>,
+    )?;
+    let bubble = MenuItem::with_id(
+        app,
+        "toggle_bubble",
+        tray_label(app, "bubble"),
+        true,
+        None::<&str>,
+    )?;
+    let notifications = MenuItem::with_id(
+        app,
+        "toggle_notifications",
+        tray_label(app, "notifications"),
+        true,
+        None::<&str>,
+    )?;
+    let diagnostics = MenuItem::with_id(
+        app,
+        "diagnostics",
+        tray_label(app, "diagnostics"),
+        true,
+        None::<&str>,
+    )?;
+    let restart = MenuItem::with_id(
+        app,
+        "restart_renderer",
+        tray_label(app, "restart"),
+        true,
+        None::<&str>,
+    )?;
+    let gpu = MenuItem::with_id(
+        app,
+        "clear_gpu_cache",
+        tray_label(app, "gpu"),
+        true,
+        None::<&str>,
+    )?;
+    let config = MenuItem::with_id(
+        app,
+        "open_config_dir",
+        tray_label(app, "config"),
+        true,
+        None::<&str>,
+    )?;
+    let api = MenuItem::with_id(
+        app,
+        "open_local_api",
+        tray_label(app, "api"),
+        true,
+        None::<&str>,
+    )?;
+    let state_idle = MenuItem::with_id(app, "state_idle", "Idle", true, None::<&str>)?;
+    let state_working = MenuItem::with_id(app, "state_working", "Working", true, None::<&str>)?;
+    let state_reviewing =
+        MenuItem::with_id(app, "state_reviewing", "Reviewing", true, None::<&str>)?;
+    let state_success = MenuItem::with_id(app, "state_success", "Success", true, None::<&str>)?;
+    let state_failed = MenuItem::with_id(app, "state_failed", "Failed", true, None::<&str>)?;
+    let state_menu = Submenu::with_items(
+        app,
+        tray_label(app, "state"),
+        true,
+        &[
+            &state_idle,
+            &state_working,
+            &state_reviewing,
+            &state_success,
+            &state_failed,
+        ],
+    )?;
+    let advanced = Submenu::with_items(
+        app,
+        tray_label(app, "advanced"),
+        true,
+        &[&diagnostics, &restart, &gpu, &config, &api, &state_menu],
+    )?;
+    let quit = MenuItem::with_id(app, "quit", tray_label(app, "quit"), true, None::<&str>)?;
+    let sep1 = PredefinedMenuItem::separator(app)?;
+    let sep2 = PredefinedMenuItem::separator(app)?;
+    let sep3 = PredefinedMenuItem::separator(app)?;
+    Menu::with_items(
+        app,
+        &[
+            &show,
+            &hide,
+            &panel,
+            &manager,
+            &sep1,
+            &bubble,
+            &notifications,
+            &sep2,
+            &advanced,
+            &sep3,
+            &quit,
+        ],
+    )
+}
+
+fn refresh_tray_menu(app: &AppHandle) {
+    let Some(tray) = app.tray_by_id("main-tray") else {
+        return;
+    };
+    match build_tray_menu(app) {
+        Ok(menu) => {
+            let _ = tray.set_menu(Some(menu));
+        }
+        Err(error) => eprintln!("Failed to rebuild tray menu: {}", error),
+    }
+}
+
 fn open_local_api(app: &AppHandle) {
     let data = app.state::<AppData>();
     let public = public_config_with_ui(&data);
@@ -2724,15 +3021,28 @@ fn compare_versions(a: &str, b: &str) -> i8 {
     0
 }
 
-fn latest_release_from_payload(payload: &serde_json::Value) -> Option<serde_json::Value> {
+fn latest_release_from_payload(
+    payload: &serde_json::Value,
+    include_prereleases: bool,
+) -> Option<serde_json::Value> {
     if let Some(releases) = payload.as_array() {
         return releases
             .iter()
             .filter(|release| {
-                !release
+                let is_draft = release
                     .get("draft")
                     .and_then(|value| value.as_bool())
-                    .unwrap_or(false)
+                    .unwrap_or(false);
+                let is_prerelease = release
+                    .get("prerelease")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or_else(|| {
+                        release
+                            .get("tag_name")
+                            .and_then(|value| value.as_str())
+                            .is_some_and(is_prerelease_version)
+                    });
+                !is_draft && (include_prereleases || !is_prerelease)
             })
             .max_by(|a, b| {
                 let left = a
@@ -2950,6 +3260,9 @@ pub fn run() {
     let asset_root_for_server = asset_root_store.clone();
     let history_store: Arc<Mutex<Vec<CompanionState>>> =
         Arc::new(Mutex::new(vec![store.blocking_read().clone()]));
+    let public_config_store = Arc::new(Mutex::new(runtime_config.public.clone()));
+    let public_config_for_server = public_config_store.clone();
+    let history_for_server = history_store.clone();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
@@ -2963,18 +3276,43 @@ pub fn run() {
             tx: tx.clone(),
             reminders: reminders.clone(),
             reminder_tx: reminder_tx.clone(),
-            public_config: Arc::new(Mutex::new(runtime_config.public.clone())),
+            public_config: public_config_store.clone(),
             ui_settings: Arc::new(Mutex::new(runtime_config.ui_settings.clone())),
             config_dir: runtime_config.config_dir.clone(),
             local_config_path: runtime_config.local_config_path.clone(),
             asset_root: asset_root_store.clone(),
             history: history_store.clone(),
             drag_state: Arc::new(Mutex::new(None)),
-            passthrough_generation: Arc::new(AtomicU64::new(0)),
+            passthrough_enabled: Arc::new(AtomicBool::new(false)),
+            pointer_bounds: Arc::new(Mutex::new(None)),
+            panel_pinned: Arc::new(AtomicBool::new(false)),
+            panel_interaction_locked: Arc::new(AtomicBool::new(false)),
             renderer_health: Arc::new(Mutex::new(RendererHealth::default())),
             ai_integration_lock: Arc::new(Mutex::new(())),
         })
         .setup(move |app| {
+            start_pointer_passthrough_monitor(app.handle().clone());
+            if let Some(panel) = app.get_webview_window("panel") {
+                let panel_for_event = panel.clone();
+                panel.on_window_event(move |event| {
+                    if !matches!(event, tauri::WindowEvent::Focused(false)) {
+                        return;
+                    }
+                    let panel = panel_for_event.clone();
+                    let app = panel.app_handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        tokio::time::sleep(Duration::from_millis(160)).await;
+                        let data = app.state::<AppData>();
+                        if data.panel_pinned.load(Ordering::Relaxed)
+                            || data.panel_interaction_locked.load(Ordering::Relaxed)
+                            || panel.is_focused().unwrap_or(false)
+                        {
+                            return;
+                        }
+                        let _ = panel.hide();
+                    });
+                });
+            }
             // Bind the local API server before the hidden window is revealed.
             // The renderer loads Spine assets from this server on startup, so
             // racing the first PIXI load against server startup can leave the
@@ -2985,6 +3323,8 @@ pub fn run() {
                 reminders_for_server,
                 reminder_tx_for_server,
                 asset_root_for_server,
+                public_config_for_server,
+                history_for_server,
                 &host_for_server,
                 port_for_server,
             )) {
@@ -3024,125 +3364,9 @@ pub fn run() {
                 let _ = show_manager_window(app.handle());
             }
 
-            // Build minimal tray menu
-            let show_item =
-                MenuItem::with_id(app, "show_companion", "Show Companion", true, None::<&str>)?;
-            let hide_item =
-                MenuItem::with_id(app, "hide_companion", "Hide Companion", true, None::<&str>)?;
-            let panel_item =
-                MenuItem::with_id(app, "open_panel", "Open Quick Panel", true, None::<&str>)?;
-            let manager_item =
-                MenuItem::with_id(app, "open_manager", "Open Manager", true, None::<&str>)?;
-            let bubble_item = MenuItem::with_id(
-                app,
-                "toggle_bubble",
-                "Toggle Progress Bubble",
-                true,
-                None::<&str>,
-            )?;
-            let hud_item =
-                MenuItem::with_id(app, "toggle_hud", "Toggle Debug HUD", true, None::<&str>)?;
-            let diagnostics_item =
-                MenuItem::with_id(app, "diagnostics", "Diagnostics", true, None::<&str>)?;
-            let restart_renderer_item = MenuItem::with_id(
-                app,
-                "restart_renderer",
-                "Restart Renderer",
-                true,
-                None::<&str>,
-            )?;
-            let clear_gpu_cache_item = MenuItem::with_id(
-                app,
-                "clear_gpu_cache",
-                "Clear GPU Cache",
-                true,
-                None::<&str>,
-            )?;
-            let config_item = MenuItem::with_id(
-                app,
-                "open_config_dir",
-                "Open Config Folder",
-                true,
-                None::<&str>,
-            )?;
-            let api_item =
-                MenuItem::with_id(app, "open_local_api", "Open Local API", true, None::<&str>)?;
-            let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let state_idle = MenuItem::with_id(app, "state_idle", "Idle", true, None::<&str>)?;
-            let state_working =
-                MenuItem::with_id(app, "state_working", "Working", true, None::<&str>)?;
-            let state_reviewing =
-                MenuItem::with_id(app, "state_reviewing", "Reviewing", true, None::<&str>)?;
-            let state_running_left = MenuItem::with_id(
-                app,
-                "state_running_left",
-                "Running Left",
-                true,
-                None::<&str>,
-            )?;
-            let state_running_right = MenuItem::with_id(
-                app,
-                "state_running_right",
-                "Running Right",
-                true,
-                None::<&str>,
-            )?;
-            let state_success =
-                MenuItem::with_id(app, "state_success", "Success", true, None::<&str>)?;
-            let state_failed =
-                MenuItem::with_id(app, "state_failed", "Failed", true, None::<&str>)?;
-            let state_waiting =
-                MenuItem::with_id(app, "state_waiting", "Waiting", true, None::<&str>)?;
-            let state_sleeping =
-                MenuItem::with_id(app, "state_sleeping", "Sleeping", true, None::<&str>)?;
-            let state_reminder =
-                MenuItem::with_id(app, "state_reminder", "Reminder", true, None::<&str>)?;
-            let state_menu = Submenu::with_items(
-                app,
-                "Set State",
-                true,
-                &[
-                    &state_idle,
-                    &state_working,
-                    &state_reviewing,
-                    &state_running_left,
-                    &state_running_right,
-                    &state_success,
-                    &state_failed,
-                    &state_waiting,
-                    &state_sleeping,
-                    &state_reminder,
-                ],
-            )?;
-            let sep1 = PredefinedMenuItem::separator(app)?;
-            let sep2 = PredefinedMenuItem::separator(app)?;
-            let sep3 = PredefinedMenuItem::separator(app)?;
-            let sep4 = PredefinedMenuItem::separator(app)?;
+            let menu = build_tray_menu(app.handle())?;
 
-            let menu = Menu::with_items(
-                app,
-                &[
-                    &show_item,
-                    &hide_item,
-                    &panel_item,
-                    &manager_item,
-                    &sep1,
-                    &bubble_item,
-                    &hud_item,
-                    &sep2,
-                    &state_menu,
-                    &sep3,
-                    &diagnostics_item,
-                    &restart_renderer_item,
-                    &clear_gpu_cache_item,
-                    &config_item,
-                    &api_item,
-                    &sep4,
-                    &quit_item,
-                ],
-            )?;
-
-            let mut tray_builder = TrayIconBuilder::new();
+            let mut tray_builder = TrayIconBuilder::with_id("main-tray");
             if let Some(icon) = app.default_window_icon().cloned() {
                 tray_builder = tray_builder.icon(icon).icon_as_template(true);
             }
@@ -3165,6 +3389,17 @@ pub fn run() {
                             app,
                             UiSettingsPatch {
                                 bubble_visible: Some(!visible),
+                                ..Default::default()
+                            },
+                        );
+                    }
+                    "toggle_notifications" => {
+                        let data = app.state::<AppData>();
+                        let enabled = current_ui_settings(&data).system_notifications;
+                        let _ = update_ui_settings(
+                            app,
+                            UiSettingsPatch {
+                                system_notifications: Some(!enabled),
                                 ..Default::default()
                             },
                         );
@@ -3206,52 +3441,46 @@ pub fn run() {
                     "quit" => app.exit(0),
                     _ => {}
                 })
-                .on_tray_icon_event(|tray, event| {
-                    let app = tray.app_handle();
-                    match event {
-                        TrayIconEvent::Click {
-                            button: MouseButton::Left,
-                            button_state: MouseButtonState::Up,
-                            rect,
-                            ..
-                        } => {
-                            if let Some(panel) = app.get_webview_window("panel") {
-                                if panel.is_visible().unwrap_or(false) {
-                                    let _ = panel.hide();
-                                    return;
-                                }
-                                let panel_size = panel
-                                    .outer_size()
-                                    .unwrap_or(tauri::PhysicalSize::new(320, 480));
-
-                                // Try to calculate position slightly offset from the tray icon.
-                                let (rect_x, rect_y) = match rect.position {
-                                    tauri::Position::Physical(p) => (p.x, p.y),
-                                    tauri::Position::Logical(p) => (p.x as i32, p.y as i32),
-                                };
-                                let (_rect_w, rect_h) = match rect.size {
-                                    tauri::Size::Physical(s) => (s.width as i32, s.height as i32),
-                                    tauri::Size::Logical(s) => (s.width as i32, s.height as i32),
-                                };
-
-                                let x = rect_x - (panel_size.width as i32) / 2;
-                                let mut y = rect_y - (panel_size.height as i32) - 10;
-                                if y < 0 {
-                                    y = rect_y + rect_h + 10;
-                                }
-
-                                let _ = panel.set_position(tauri::PhysicalPosition::new(x, y));
-                                let _ = panel.unminimize();
-                                let _ = panel.show();
-                                let _ = panel.set_focus();
+                .on_tray_icon_event({
+                    let click_generation = Arc::new(AtomicU64::new(0));
+                    move |tray, event| {
+                        let app = tray.app_handle();
+                        match event {
+                            TrayIconEvent::Click {
+                                button: MouseButton::Left,
+                                button_state: MouseButtonState::Up,
+                                rect,
+                                ..
+                            } => {
+                                let generation =
+                                    click_generation.fetch_add(1, Ordering::SeqCst) + 1;
+                                let generation_ref = click_generation.clone();
+                                let app = app.clone();
+                                tauri::async_runtime::spawn(async move {
+                                    tokio::time::sleep(Duration::from_millis(220)).await;
+                                    if generation_ref.load(Ordering::SeqCst) == generation {
+                                        toggle_panel_near_tray(&app, rect);
+                                    }
+                                });
                             }
+                            TrayIconEvent::DoubleClick {
+                                button: MouseButton::Left,
+                                ..
+                            } => {
+                                click_generation.fetch_add(1, Ordering::SeqCst);
+                                hide_panel_window_inner(app);
+                                open_manager_from_tray(app);
+                            }
+                            TrayIconEvent::Click {
+                                button: MouseButton::Right,
+                                button_state: MouseButtonState::Down,
+                                ..
+                            } => {
+                                click_generation.fetch_add(1, Ordering::SeqCst);
+                                hide_panel_window_inner(app);
+                            }
+                            _ => {}
                         }
-                        TrayIconEvent::Click {
-                            button: MouseButton::Right,
-                            button_state: MouseButtonState::Down,
-                            ..
-                        } => hide_panel_window_inner(app),
-                        _ => {}
                     }
                 })
                 .build(app)?;
@@ -3300,6 +3529,9 @@ pub fn run() {
             end_drag,
             get_window_position,
             set_mouse_passthrough,
+            update_pointer_bounds,
+            set_panel_pinned,
+            set_panel_interaction_lock,
             reveal_window,
             recover_gpu_window,
             restart_renderer,
@@ -3495,10 +3727,30 @@ mod tests {
             { "tag_name": "v0.2.3-alpha.2", "draft": false },
             { "tag_name": "v0.2.3-alpha.1", "draft": false }
         ]);
-        let latest = latest_release_from_payload(&payload).unwrap();
+        let latest = latest_release_from_payload(&payload, true).unwrap();
         assert_eq!(
             latest.get("tag_name").and_then(|value| value.as_str()),
             Some("v0.2.3-alpha.2")
         );
+    }
+
+    #[test]
+    fn stable_update_channel_ignores_prereleases() {
+        let payload = serde_json::json!([
+            { "tag_name": "v0.2.5", "draft": false, "prerelease": false },
+            { "tag_name": "v0.2.6-rc.1", "draft": false, "prerelease": true }
+        ]);
+        let latest = latest_release_from_payload(&payload, false).unwrap();
+        assert_eq!(
+            latest.get("tag_name").and_then(|value| value.as_str()),
+            Some("v0.2.5")
+        );
+    }
+
+    #[test]
+    fn automatic_update_channel_matches_the_installed_version() {
+        assert_eq!(resolved_update_channel("auto", "0.2.6-rc.1"), "prerelease");
+        assert_eq!(resolved_update_channel("auto", "0.2.6"), "stable");
+        assert_eq!(resolved_update_channel("stable", "0.2.6-rc.1"), "stable");
     }
 }

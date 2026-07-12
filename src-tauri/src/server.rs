@@ -20,10 +20,12 @@ use crate::state::{
     create_reminder, delete_reminder, list_reminders, set_state, CreateReminderInput,
     ReminderBroadcast, ReminderStore, SetStateInput, StateBroadcast, StateStore,
 };
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::sync::RwLock;
 
 pub type AssetRootStore = Arc<RwLock<Option<PathBuf>>>;
+pub type PublicConfigStore = Arc<Mutex<serde_json::Value>>;
+pub type HistoryStore = Arc<Mutex<Vec<crate::state::CompanionState>>>;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -32,6 +34,8 @@ pub struct AppState {
     pub reminders: ReminderStore,
     pub reminder_tx: ReminderBroadcast,
     pub asset_root: AssetRootStore,
+    pub public_config: PublicConfigStore,
+    pub history: HistoryStore,
 }
 
 fn localhost_cors() -> CorsLayer {
@@ -60,6 +64,24 @@ async fn health(AxumState(app): AxumState<AppState>) -> impl IntoResponse {
 async fn get_state(AxumState(app): AxumState<AppState>) -> impl IntoResponse {
     let state = app.store.read().await.clone();
     Json(state)
+}
+
+async fn get_config(AxumState(app): AxumState<AppState>) -> impl IntoResponse {
+    let config = app
+        .public_config
+        .lock()
+        .map(|value| value.clone())
+        .unwrap_or_else(|_| json!({}));
+    Json(config)
+}
+
+async fn get_history(AxumState(app): AxumState<AppState>) -> impl IntoResponse {
+    let history = app
+        .history
+        .lock()
+        .map(|value| value.clone())
+        .unwrap_or_default();
+    Json(json!({ "history": history }))
 }
 
 async fn post_state(
@@ -250,6 +272,8 @@ pub async fn start_api_server(
     reminders: ReminderStore,
     reminder_tx: ReminderBroadcast,
     asset_root: AssetRootStore,
+    public_config: PublicConfigStore,
+    history: HistoryStore,
     host: &str,
     port: u16,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -259,11 +283,15 @@ pub async fn start_api_server(
         reminders,
         reminder_tx,
         asset_root,
+        public_config,
+        history,
     };
 
     let app = Router::new()
         .route("/health", get(health))
         .route("/state", get(get_state).post(post_state))
+        .route("/config", get(get_config))
+        .route("/history", get(get_history))
         .route("/state/{id}", post(post_state_by_id))
         .route("/reminders", get(get_reminders).post(post_reminder))
         .route("/reminders/{id}", delete(delete_reminder_route))

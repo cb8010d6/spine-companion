@@ -35,6 +35,13 @@ body {
   box-shadow: 0 8px 24px rgba(0,0,0,0.5);
 }
 
+.reminder-section,
+.update-section,
+.ai-bridge-section,
+.panel-secondary-action {
+  display: none;
+}
+
 .panel-header {
   display: flex;
   justify-content: space-between;
@@ -79,7 +86,7 @@ body {
 
 .model-section {
   display: flex;
-  padding: 16px;
+  padding: 12px 16px;
   gap: 12px;
   align-items: center;
 }
@@ -200,7 +207,7 @@ body {
 }
 
 .controls-section {
-  padding: 12px 16px;
+  padding: 10px 16px;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -362,9 +369,42 @@ input:focus-visible + .switch-slider { outline: 2px solid var(--accent); outline
 .actions-section {
   margin-top: auto;
   display: flex;
-  flex-direction: column;
-  padding: 12px 16px;
+  flex-direction: row;
+  align-items: center;
+  padding: 10px 16px 12px;
   gap: 8px;
+}
+
+.panel-badges {
+  display: flex;
+  gap: 6px;
+  margin-right: auto;
+}
+
+.panel-badge {
+  min-width: 22px;
+  min-height: 22px;
+  padding: 0 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: var(--bg-panel);
+  font-size: 10px;
+}
+
+.panel-badge[data-status="ok"] { color: var(--success); }
+.panel-badge[data-status="warn"] { color: var(--sc-warning); }
+.panel-badge[data-status="update"] { color: var(--accent); }
+
+#btn-manager {
+  width: auto;
+  min-height: 32px;
+  padding-inline: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
 }
 
 button {

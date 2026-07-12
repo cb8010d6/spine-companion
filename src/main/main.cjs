@@ -44,6 +44,7 @@ let uiSettings = {
   shortcutEnabled: true,
   shortcutAccelerator: "CommandOrControl+Shift+S",
   updateAutoCheck: true,
+  updateChannel: "auto",
   maxDevicePixelRatio: 2,
   hitboxPadding: 8
 };
@@ -279,7 +280,10 @@ function updateUiSettingsPatch(patch) {
   ) {
     registerStateShortcut();
   }
-  if (Object.prototype.hasOwnProperty.call(patch, "updateAutoCheck")) {
+  if (
+    Object.prototype.hasOwnProperty.call(patch, "updateAutoCheck")
+    || Object.prototype.hasOwnProperty.call(patch, "updateChannel")
+  ) {
     scheduleBackgroundUpdateCheck();
   }
   updateTrayMenu();
@@ -438,7 +442,7 @@ function exportLogs() {
 
 async function getUpdateStatus({ background = false } = {}) {
   try {
-    const status = await checkGitHubRelease({ currentVersion: pkg.version });
+    const status = await checkGitHubRelease({ currentVersion: pkg.version, channel: uiSettings.updateChannel });
     updateStatusCache = { ...status, checkedAt: new Date().toISOString() };
     logger?.info("updates.checked", {
       background,
@@ -464,7 +468,9 @@ async function getUpdateStatus({ background = false } = {}) {
       updateAvailable: false,
       error: error.message || String(error),
       checkedAt: new Date().toISOString(),
-      channel: pkg.version.includes("-") ? "prerelease" : "stable"
+      channel: uiSettings.updateChannel === "stable" || uiSettings.updateChannel === "prerelease"
+        ? uiSettings.updateChannel
+        : pkg.version.includes("-") ? "prerelease" : "stable"
     };
     logger?.warn("updates.failed", { background, error: updateStatusCache.error });
     if (!background) throw error;

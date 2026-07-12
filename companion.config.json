@@ -37,6 +37,7 @@
     "bubbleShadow": true,
     "bubbleBackground": "solid",
     "bubbleHoldMs": 8000,
+    "updateChannel": "auto",
     "dragMode": "compatible"
   },
   "specialSegments": {

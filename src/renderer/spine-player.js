@@ -2,6 +2,7 @@ import * as PIXI from "pixi.js";
 import { Spine } from "pixi-spine";
 import { animationForState, stateMachine } from "./state.js";
 import { spineAssetUrl } from "../shared/asset-url.js";
+import { calculateInteractiveBounds, expandBounds } from "./hitbox.js";
 
 export class SpinePlayer {
   constructor(stage, config) {
@@ -36,6 +37,9 @@ export class SpinePlayer {
     this.handleContextLost = null;
     this.handleContextRestored = null;
     this.lastFrameAt = 0;
+    this.lastBoundsEmitAt = 0;
+    this.lastEmittedBounds = null;
+    this.onInteractiveBoundsChange = null;
     this.frameTicker = null;
     this.hitboxPadding = Number.isFinite(Number(config.ui?.hitboxPadding))
       ? Math.min(48, Math.max(0, Number(config.ui.hitboxPadding)))
@@ -60,6 +64,17 @@ export class SpinePlayer {
     this.stageElement.appendChild(this.app.view);
     this.frameTicker = () => {
       this.lastFrameAt = Date.now();
+      if (this.lastFrameAt - this.lastBoundsEmitAt >= 80) {
+        this.lastBoundsEmitAt = this.lastFrameAt;
+        const bounds = this.getPointerRecoveryBounds();
+        const previous = this.lastEmittedBounds;
+        const changed = !bounds || !previous
+          || ["left", "right", "top", "bottom"].some((key) => Math.abs(bounds[key] - previous[key]) >= 1);
+        if (changed) {
+          this.lastEmittedBounds = bounds ? { ...bounds } : null;
+          this.onInteractiveBoundsChange?.(this.lastEmittedBounds);
+        }
+      }
     };
     this.app.ticker.add(this.frameTicker);
     this.configureTransparentRenderer();
@@ -471,31 +486,21 @@ export class SpinePlayer {
     if (!sourceBounds) return null;
     const width = Math.max(1, sourceBounds.width * this.screenScale);
     const height = Math.max(1, sourceBounds.height * this.screenScale);
-    const zoomRange = Math.max(0.01, this.maxUserScale - this.minUserScale);
-    const zoomRatio = Math.max(0, Math.min(1, (this.userScale - this.minUserScale) / zoomRange));
-    const hitWidth = Math.min(width * 0.58, Math.max(34, width * (0.24 + zoomRatio * 0.16)));
-    const hitHeight = Math.min(height * 0.58, Math.max(54, height * (0.34 + zoomRatio * 0.16)));
-    const scaledPadding = Math.min(this.hitboxPadding * 0.75, Math.max(2, this.hitboxPadding * this.userScale * 0.65));
-    const bottom = this.model.y - height * 0.045;
-    return {
-      left: this.model.x - hitWidth / 2 - scaledPadding,
-      right: this.model.x + hitWidth / 2 + scaledPadding,
-      top: bottom - hitHeight - scaledPadding,
-      bottom: bottom + scaledPadding
-    };
+    return calculateInteractiveBounds({
+      width,
+      height,
+      modelX: this.model.x,
+      modelY: this.model.y,
+      userScale: this.userScale,
+      hitboxPadding: this.hitboxPadding
+    });
   }
 
   getPointerRecoveryBounds() {
     const bounds = this.getInteractiveBounds();
     if (!bounds) return null;
-    const scaleFactor = Math.max(0.45, Math.min(1, this.userScale));
-    const recoveryPadding = Math.max(6, Math.min(18, (6 + this.hitboxPadding * 0.55) * scaleFactor));
-    return {
-      left: bounds.left - recoveryPadding,
-      right: bounds.right + recoveryPadding,
-      top: bounds.top - recoveryPadding * 0.65,
-      bottom: bounds.bottom + recoveryPadding
-    };
+    const recoveryPadding = Math.max(10, Math.min(24, 12 + this.hitboxPadding * 0.5));
+    return expandBounds(bounds, recoveryPadding);
   }
 
   getRendererHealth() {
