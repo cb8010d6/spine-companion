@@ -95,9 +95,13 @@ async function checkGitHubRelease({
   repo = "spine-companion",
   currentVersion,
   platform = process.platform,
-  arch = process.arch
+  arch = process.arch,
+  channel = "auto"
 }) {
-  const includePrereleases = isPrereleaseVersion(currentVersion);
+  const resolvedChannel = channel === "stable" || channel === "prerelease"
+    ? channel
+    : isPrereleaseVersion(currentVersion) ? "prerelease" : "stable";
+  const includePrereleases = resolvedChannel === "prerelease";
   const endpoint = includePrereleases ? "releases?per_page=20" : "releases/latest";
   const sourceUrl = `https://api.github.com/repos/${owner}/${repo}/${endpoint}`;
   const response = await fetchImpl(sourceUrl, {
@@ -107,7 +111,7 @@ async function checkGitHubRelease({
   const payload = await response.json();
   const release = Array.isArray(payload)
     ? payload
-        .filter((item) => !item.draft)
+        .filter((item) => !item.draft && (includePrereleases || !item.prerelease))
         .sort((a, b) => compareVersions(String(b.tag_name || ""), String(a.tag_name || "")))[0]
     : payload;
   if (!release) throw new Error("GitHub release check failed: no releases found.");
@@ -123,7 +127,8 @@ async function checkGitHubRelease({
     assets,
     recommendedAsset,
     downloadUrl: recommendedAsset?.url || release.html_url,
-    channel: includePrereleases ? "prerelease" : "stable",
+    channel: resolvedChannel,
+    configuredChannel: channel,
     source: sourceUrl
   };
 }

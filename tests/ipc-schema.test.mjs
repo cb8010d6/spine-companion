@@ -22,6 +22,7 @@ describe("IPC schema validation", () => {
         shortcutEnabled: false,
         shortcutAccelerator: "Alt+Shift+S",
         updateAutoCheck: false,
+        updateChannel: "prerelease",
         maxDevicePixelRatio: 3,
         hitboxPadding: 12
       }
@@ -34,6 +35,7 @@ describe("IPC schema validation", () => {
     expect(() => validateSaveSettings({ unexpectedRoot: true })).toThrow(/Invalid settings patch/);
     expect(() => validateSaveSettings({ ui: { maxDevicePixelRatio: 9 } })).toThrow(/Invalid settings patch/);
     expect(() => validateSaveSettings({ ui: { dragMode: "fast" } })).toThrow(/Invalid settings patch/);
+    expect(() => validateSaveSettings({ ui: { updateChannel: "nightly" } })).toThrow(/Invalid settings patch/);
     expect(() => validateOpenFolderPath("")).toThrow(/Invalid folder path/);
   });
 });

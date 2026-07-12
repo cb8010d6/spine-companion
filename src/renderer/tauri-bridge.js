@@ -65,7 +65,8 @@ export async function initTauriBridge() {
     removeModel: (id) => _tauriInvoke("remove_model", { id }),
     openFolder: (p) => _tauriInvoke("open_folder", { p }),
     openManager: () => _tauriInvoke("open_manager_window"),
-    setPanelPinned: () => Promise.resolve(false),
+    setPanelPinned: (pinned) => _tauriInvoke("set_panel_pinned", { pinned: Boolean(pinned) }),
+    setPanelInteractionLock: (locked) => _tauriInvoke("set_panel_interaction_lock", { locked: Boolean(locked) }),
     closePanel: () => _tauriInvoke("hide_panel_window"),
     quitApp: () => _tauriInvoke("quit_app"),
     emitScale: (payload) => _tauriInvoke("emit_scale_event", { input: payload }),
@@ -147,6 +148,7 @@ export async function initTauriBridge() {
     setMousePassthrough: (enabled, bounds) => _tauriInvoke("set_mouse_passthrough", {
       enabled: Boolean(enabled),
       bounds: bounds || null
-    })
+    }),
+    updatePointerBounds: (bounds) => _tauriInvoke("update_pointer_bounds", { bounds: bounds || null })
   };
 }

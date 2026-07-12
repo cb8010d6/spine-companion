@@ -44,11 +44,12 @@ const uiSettingsSchema = z.object({
   shortcutEnabled: z.boolean().optional(),
   shortcutAccelerator: z.string().trim().min(1).max(80).optional(),
   updateAutoCheck: z.boolean().optional(),
+  updateChannel: z.enum(["auto", "stable", "prerelease"]).optional(),
   maxDevicePixelRatio: z.number().min(1).max(3).optional(),
   hitboxPadding: z.number().min(0).max(48).optional(),
   gpuMode: z.enum(["hardware", "software"]).optional(),
   debugHitbox: z.boolean().optional(),
-  theme: z.enum(["dark", "light"]).optional(),
+  theme: z.enum(["system", "dark", "light"]).optional(),
   locale: z.enum(["auto", "en", "zh-CN"]).optional()
 }).passthrough();
 

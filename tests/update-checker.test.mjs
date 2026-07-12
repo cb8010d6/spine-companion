@@ -86,6 +86,29 @@ describe("update-checker", () => {
     expect(result.source).toContain("/releases?per_page=20");
   });
 
+  it("honors a user-selected stable channel on a prerelease build", async () => {
+    let requestedUrl = "";
+    const result = await checkGitHubRelease({
+      currentVersion: "0.2.6-rc.1",
+      channel: "stable",
+      fetchImpl: async (url) => {
+        requestedUrl = url;
+        return {
+          ok: true,
+          json: async () => ({
+            tag_name: "v0.2.5",
+            html_url: "https://example.test/stable",
+            prerelease: false,
+            assets: []
+          })
+        };
+      }
+    });
+    expect(requestedUrl).toContain("/releases/latest");
+    expect(result.channel).toBe("stable");
+    expect(result.configuredChannel).toBe("stable");
+  });
+
   it("selects platform-specific release assets", () => {
     const assets = [
       { name: "Spine.Companion_0.2.1_aarch64.dmg", browser_download_url: "https://example.test/mac-arm.dmg" },

@@ -77,6 +77,7 @@ const fallbackConfig = {
     shortcutEnabled: true,
     shortcutAccelerator: "CommandOrControl+Shift+S",
     updateAutoCheck: true,
+    updateChannel: "auto",
     maxDevicePixelRatio: 2,
     hitboxPadding: 8,
     debugHitbox: false

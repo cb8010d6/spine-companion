@@ -28,6 +28,8 @@ import {
 import { modelPreview } from "./model-preview.js";
 import { renderSpinePreview } from "./spine-preview.js";
 import { installManagerPreviewBridge } from "./manager-preview.js";
+import { applyThemePreference } from "./theme.js";
+import { integrationBrand } from "./integration-icons.js";
 import {
   createCoalescedRefresh,
   integrationLabelForState,
@@ -199,9 +201,7 @@ function runtimeName() {
 function applyUiLocale() {
   createI18n(config);
   document.documentElement.lang = getLocale();
-  const theme = config.ui?.theme || "dark";
-  document.documentElement.dataset.theme = theme;
-  document.body.dataset.theme = theme;
+  applyThemePreference(config.ui?.theme || "system");
   const runtime = runtimeName();
   if (runtimeLabel) runtimeLabel.textContent = runtime;
   if (topbarRuntimeLabel) topbarRuntimeLabel.textContent = runtime;
@@ -579,7 +579,8 @@ function settingsView() {
         field(t("manager.field.bubbleTheme"), h("select", { class: "select", value: ui.bubbleBackground || "solid", onChange: (e) => saveUi({ bubbleBackground: e.target.value }) },
           ["solid", "soft", "clear", "light"].map((value) => h("option", { value, selected: (ui.bubbleBackground || "solid") === value }, t(`manager.option.bubble.${value}`)))
         )),
-        field(t("manager.field.theme"), h("select", { class: "select", value: ui.theme || "dark", onChange: (e) => saveUi({ theme: e.target.value }) },
+        field(t("manager.field.theme"), h("select", { class: "select", value: ui.theme || "system", onChange: (e) => saveUi({ theme: e.target.value }) },
+          h("option", { value: "system" }, t("manager.option.system")),
           h("option", { value: "dark" }, t("manager.option.dark")),
           h("option", { value: "light" }, t("manager.option.light"))
         )),
@@ -595,15 +596,26 @@ function settingsView() {
         check(t("manager.field.showProgressBubble"), ui.bubbleVisible !== false, (checked) => saveUi({ bubbleVisible: checked })),
         check(t("manager.field.autoShowCodex"), ui.autoRevealOnMcp !== false, (checked) => saveUi({ autoRevealOnMcp: checked })),
         check(t("manager.field.systemNotifications"), ui.systemNotifications !== false, (checked) => saveUi({ systemNotifications: checked })),
-        check(t("manager.field.updateAutoCheck"), ui.updateAutoCheck !== false, (checked) => saveUi({ updateAutoCheck: checked }))
+        check(t("manager.field.updateAutoCheck"), ui.updateAutoCheck !== false, (checked) => saveUi({ updateAutoCheck: checked })),
+        field(t("manager.field.updateChannel"), h("select", { class: "select", value: ui.updateChannel || "auto", onChange: async (event) => {
+          await saveUi({ updateChannel: event.target.value });
+          await refreshUpdateStatus();
+          if (activeView === "settings") renderView("settings");
+        } },
+          ["auto", "stable", "prerelease"].map((value) => h("option", { value, selected: (ui.updateChannel || "auto") === value }, t(`manager.option.updateChannel.${value}`)))
+        ))
       ),
       section(t("manager.settings.interaction"), t("manager.settings.interactionHelp"),
-        check(t("manager.field.shortcutEnabled"), ui.shortcutEnabled !== false, (checked) => saveUi({ shortcutEnabled: checked })),
-        field(t("manager.field.shortcutAccelerator"), h("input", {
-          class: "input",
-          value: ui.shortcutAccelerator || "CommandOrControl+Shift+S",
-          onChange: (e) => saveUi({ shortcutAccelerator: e.target.value })
-        })),
+        isTauri()
+          ? h("p", { class: "empty-text" }, t("manager.diagnostics.message.shortcutUnavailable"))
+          : [
+              check(t("manager.field.shortcutEnabled"), ui.shortcutEnabled !== false, (checked) => saveUi({ shortcutEnabled: checked })),
+              field(t("manager.field.shortcutAccelerator"), h("input", {
+                class: "input",
+                value: ui.shortcutAccelerator || "CommandOrControl+Shift+S",
+                onChange: (e) => saveUi({ shortcutAccelerator: e.target.value })
+              }))
+            ],
         rangeNumber(t("manager.field.hitboxPadding"), "set-hitbox-padding", Number(ui.hitboxPadding || 8), 0, 48, 1, () => saveUi({ hitboxPadding: numeric("set-hitbox-padding-number") }))
       ),
       section(t("manager.settings.compatibility"), t("manager.settings.compatibilityHelp"),
@@ -945,6 +957,16 @@ async function integrationsView() {
     h("span", { class: "setup-step-mark", "aria-hidden": "true" }, done ? "✓" : "·"),
     h("div", {}, h("strong", {}, label), detail ? h("small", {}, detail) : null)
   );
+  const brandIcon = (item, size = "row", state = "") => {
+    const brand = integrationBrand(item?.id);
+    const className = `integration-monogram integration-brand-${size}${state ? ` state-${state}` : ""}`;
+    if (!brand) {
+      return h("span", { class: className, "aria-hidden": "true" }, item?.name?.slice(0, 1).toUpperCase() || "AI");
+    }
+    return h("span", { class: className, style: { "--integration-brand": brand.color }, "aria-hidden": "true" },
+      h("svg", { viewBox: "0 0 24 24", focusable: "false" }, h("path", { d: brand.path }))
+    );
+  };
   const primaryAction = () => {
     if (!selected) return null;
     if (action === "configure") return h("button", { class: "btn btn-primary", type: "button", onClick: () => configureIntegration(selected.id) }, t("manager.actions.configure"));
@@ -991,7 +1013,7 @@ async function integrationsView() {
             type: "button",
             onClick: () => { selectedIntegrationId = item.id; renderView("integrations"); }
           },
-            h("span", { class: `integration-monogram state-${itemProgress.state}` }, item.name.slice(0, 1).toUpperCase()),
+            brandIcon(item, "row", itemProgress.state),
             h("span", { class: "integration-row-copy" },
               h("strong", {}, item.name),
               h("small", {}, t(integrationSummaryKey(item, integrationTestResults.get(item.id))))
@@ -1002,10 +1024,13 @@ async function integrationsView() {
       ),
       selected ? h("article", { class: "integration-detail" },
         h("div", { class: "integration-detail-header" },
-          h("div", {},
-            h("p", { class: "integration-kicker" }, selected.sourceLabel || selected.source),
-            h("h3", {}, selected.name),
-            h("p", { class: "model-meta" }, t(integrationSummaryKey(selected, testResult)))
+          h("div", { class: "integration-title-lockup" },
+            brandIcon(selected, "detail"),
+            h("div", {},
+              h("p", { class: "integration-kicker" }, selected.sourceLabel || selected.source),
+              h("h3", {}, selected.name),
+              h("p", { class: "model-meta" }, t(integrationSummaryKey(selected, testResult)))
+            )
           ),
           h("span", { class: progress?.state === "ready" ? "status-value status-ok" : "status-value" }, t(integrationSummaryKey(selected, testResult)))
         ),

@@ -8,6 +8,7 @@ import { createErrorCard, friendlyError } from "./error-boundary.js";
 import { bindManagerButton } from "./manager-action.js";
 import { defaultMessageForState, isAiSource, notificationForState, shouldNotifyState, sourceDisplayName } from "../shared/notification-policy.js";
 import { createI18n, getLocale, t } from "../shared/i18n.js";
+import { applyThemePreference } from "./theme.js";
 
 const stage = document.getElementById("stage");
 const shell = document.getElementById("stage-shell");
@@ -90,6 +91,7 @@ function applyUiSettings(settings = {}) {
   document.body.classList.toggle("bubble-no-shadow", currentUiSettings.bubbleShadow === false);
   document.body.classList.toggle("dragging-compatible", currentUiSettings.dragMode !== "smooth");
   document.body.dataset.bubbleBackground = currentUiSettings.bubbleBackground || "solid";
+  applyThemePreference(currentUiSettings.theme || "system");
   player?.setHudVisible(currentUiSettings.hudVisible !== false);
   player?.setDragMode(currentUiSettings.dragMode || "compatible");
   player?.setHitboxPadding(currentUiSettings.hitboxPadding);
@@ -636,11 +638,16 @@ async function loadPlayer(config) {
     applyBubbleAnchor(anchor);
     updateBubble(currentState);
   };
+  player.onInteractiveBoundsChange = (bounds) => {
+    window.companion?.updatePointerBounds?.(bounds).catch?.(() => {});
+    updateHitboxDebug();
+  };
   player.setHudVisible(currentUiSettings.hudVisible !== false);
   player.setDragMode(currentUiSettings.dragMode || "compatible");
   player.setHitboxPadding(currentUiSettings.hitboxPadding);
   applyBubbleAnchor(player.getAnchor());
   player.applyState(currentState, true);
+  window.companion?.updatePointerBounds?.(player.getPointerRecoveryBounds?.()).catch?.(() => {});
   updateHitboxDebug();
   emptyState.hidden = true;
   onboardingDismissedForSession = true;

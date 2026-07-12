@@ -10,13 +10,17 @@ const DEFAULT_UI_SETTINGS = Object.freeze({
   shortcutEnabled: true,
   shortcutAccelerator: "CommandOrControl+Shift+S",
   updateAutoCheck: true,
+  updateChannel: "auto",
   maxDevicePixelRatio: 2,
   hitboxPadding: 8,
-  debugHitbox: false
+  debugHitbox: false,
+  theme: "system"
 });
 
 const BUBBLE_BACKGROUNDS = new Set(["solid", "soft", "clear", "light"]);
 const DRAG_MODES = new Set(["compatible", "smooth"]);
+const THEMES = new Set(["system", "light", "dark"]);
+const UPDATE_CHANNELS = new Set(["auto", "stable", "prerelease"]);
 
 function normalizeUiSettings(input = {}, defaults = DEFAULT_UI_SETTINGS) {
   const source = input && typeof input === "object" ? input : {};
@@ -38,13 +42,15 @@ function normalizeUiSettings(input = {}, defaults = DEFAULT_UI_SETTINGS) {
       ? source.shortcutAccelerator.trim()
       : defaults.shortcutAccelerator,
     updateAutoCheck: typeof source.updateAutoCheck === "boolean" ? source.updateAutoCheck : defaults.updateAutoCheck,
+    updateChannel: UPDATE_CHANNELS.has(source.updateChannel) ? source.updateChannel : defaults.updateChannel,
     maxDevicePixelRatio: Number.isFinite(Number(source.maxDevicePixelRatio))
       ? Math.min(3, Math.max(1, Number(source.maxDevicePixelRatio)))
       : defaults.maxDevicePixelRatio,
     hitboxPadding: Number.isFinite(Number(source.hitboxPadding))
       ? Math.min(48, Math.max(0, Number(source.hitboxPadding)))
       : defaults.hitboxPadding,
-    debugHitbox: typeof source.debugHitbox === "boolean" ? source.debugHitbox : defaults.debugHitbox
+    debugHitbox: typeof source.debugHitbox === "boolean" ? source.debugHitbox : defaults.debugHitbox,
+    theme: THEMES.has(source.theme) ? source.theme : defaults.theme
   };
 }
 
@@ -65,6 +71,7 @@ function applyUiSettingsPatch(current = DEFAULT_UI_SETTINGS, patch = {}) {
     next.shortcutAccelerator = patch.shortcutAccelerator.trim();
   }
   if (typeof patch.updateAutoCheck === "boolean") next.updateAutoCheck = patch.updateAutoCheck;
+  if (UPDATE_CHANNELS.has(patch.updateChannel)) next.updateChannel = patch.updateChannel;
   if (Number.isFinite(Number(patch.maxDevicePixelRatio))) {
     next.maxDevicePixelRatio = Math.min(3, Math.max(1, Number(patch.maxDevicePixelRatio)));
   }
@@ -72,6 +79,7 @@ function applyUiSettingsPatch(current = DEFAULT_UI_SETTINGS, patch = {}) {
     next.hitboxPadding = Math.min(48, Math.max(0, Number(patch.hitboxPadding)));
   }
   if (typeof patch.debugHitbox === "boolean") next.debugHitbox = patch.debugHitbox;
+  if (THEMES.has(patch.theme)) next.theme = patch.theme;
   return normalizeUiSettings(next, current);
 }
 
@@ -79,6 +87,8 @@ module.exports = {
   DEFAULT_UI_SETTINGS,
   BUBBLE_BACKGROUNDS,
   DRAG_MODES,
+  THEMES,
+  UPDATE_CHANNELS,
   normalizeUiSettings,
   applyUiSettingsPatch
 };

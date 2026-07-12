@@ -13,7 +13,7 @@ export function installManagerPreviewBridge() {
     version: "preview",
     ui: {
       locale: params.get("locale") || "zh-CN",
-      theme: params.get("theme") || "dark"
+      theme: params.get("theme") || "system"
     },
     models: { catalog: [] },
     spine: {}
@@ -27,7 +27,7 @@ export function installManagerPreviewBridge() {
     },
     getInstalledModels: async () => [],
     listReminders: async () => [],
-    checkUpdates: async () => ({ currentVersion: "preview", updateAvailable: false, channel: "prerelease" }),
+    checkUpdates: async () => ({ currentVersion: "preview", updateAvailable: false, channel: previewConfig.ui?.updateChannel === "stable" ? "stable" : "prerelease" }),
     listAiIntegrations: async () => previewIntegrations,
     acknowledgeAiIntegrationRestart: async (id) => {
       const item = previewIntegrations.find((integration) => integration.id === id);

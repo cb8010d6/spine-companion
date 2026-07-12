@@ -49,7 +49,8 @@ describe("ui-settings", () => {
       hitboxPadding: 12,
       maxDevicePixelRatio: 2.5,
       shortcutEnabled: false,
-      updateAutoCheck: false
+      updateAutoCheck: false,
+      updateChannel: "stable"
     });
     const next = applyUiSettingsPatch(current, { bubbleVisible: false });
     expect(next).toMatchObject({
@@ -61,6 +62,7 @@ describe("ui-settings", () => {
       maxDevicePixelRatio: 2.5,
       shortcutEnabled: false,
       updateAutoCheck: false,
+      updateChannel: "stable",
       autoRevealOnMcp: true,
       systemNotifications: true
     });
@@ -87,10 +89,17 @@ describe("ui-settings", () => {
     const next = applyUiSettingsPatch(DEFAULT_UI_SETTINGS, {
       shortcutEnabled: false,
       shortcutAccelerator: "Alt+Shift+S",
-      updateAutoCheck: false
+      updateAutoCheck: false,
+      updateChannel: "prerelease"
     });
     expect(next.shortcutEnabled).toBe(false);
     expect(next.shortcutAccelerator).toBe("Alt+Shift+S");
     expect(next.updateAutoCheck).toBe(false);
+    expect(next.updateChannel).toBe("prerelease");
+  });
+
+  it("normalizes the update channel", () => {
+    expect(normalizeUiSettings({ updateChannel: "stable" }).updateChannel).toBe("stable");
+    expect(normalizeUiSettings({ updateChannel: "nightly" }).updateChannel).toBe("auto");
   });
 });

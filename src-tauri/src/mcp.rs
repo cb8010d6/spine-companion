@@ -233,7 +233,10 @@ fn phase_payload(arguments: &Value, source: &SourceInfo) -> Value {
         "source": payload_source(arguments, source),
         "message": arguments.get("message").and_then(|value| value.as_str()).unwrap_or(phase)
     });
-    if let Some(value) = arguments.get("autoReturnMs").and_then(|value| value.as_u64()) {
+    if let Some(value) = arguments
+        .get("autoReturnMs")
+        .and_then(|value| value.as_u64())
+    {
         payload["autoReturnMs"] = json!(value);
     }
     if let Some(value) = arguments.get("returnTo").and_then(|value| value.as_str()) {
@@ -275,27 +278,42 @@ async fn call_tool(name: &str, arguments: Value, source: &SourceInfo) -> Result<
                 .and_then(|value| value.as_str())
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or("avatar-job");
-            Ok(text_result(json!({
-                "jobId": job_id,
-                "created": true,
-                "requirements": avatar::requirements(),
-                "message": "Avatar job created. Produce a local avatar pack and validate it before import."
-            }), source))
+            Ok(text_result(
+                json!({
+                    "jobId": job_id,
+                    "created": true,
+                    "requirements": avatar::requirements(),
+                    "message": "Avatar job created. Produce a local avatar pack and validate it before import."
+                }),
+                source,
+            ))
         }
-        "companion_update_avatar_job" => Ok(text_result(json!({
-            "jobId": arguments.get("jobId").and_then(|value| value.as_str()).unwrap_or("avatar-job"),
-            "phase": arguments.get("phase").and_then(|value| value.as_str()).unwrap_or("working"),
-            "message": arguments.get("message").and_then(|value| value.as_str()).unwrap_or("Avatar job updated."),
-            "packPath": arguments.get("packPath").and_then(|value| value.as_str()).unwrap_or(""),
-            "note": "Progress recorded for the AI tool. Validate/import the avatar pack when files exist."
-        }), source)),
+        "companion_update_avatar_job" => Ok(text_result(
+            json!({
+                "jobId": arguments.get("jobId").and_then(|value| value.as_str()).unwrap_or("avatar-job"),
+                "phase": arguments.get("phase").and_then(|value| value.as_str()).unwrap_or("working"),
+                "message": arguments.get("message").and_then(|value| value.as_str()).unwrap_or("Avatar job updated."),
+                "packPath": arguments.get("packPath").and_then(|value| value.as_str()).unwrap_or(""),
+                "note": "Progress recorded for the AI tool. Validate/import the avatar pack when files exist."
+            }),
+            source,
+        )),
         "companion_validate_avatar_pack" => {
-            let path = arguments.get("path").and_then(|value| value.as_str()).unwrap_or("");
+            let path = arguments
+                .get("path")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
             let result = avatar::validate_pack(std::path::Path::new(path));
-            Ok(text_result(serde_json::to_value(result).unwrap_or_else(|_| json!({})), source))
+            Ok(text_result(
+                serde_json::to_value(result).unwrap_or_else(|_| json!({})),
+                source,
+            ))
         }
         "companion_import_avatar_pack" => {
-            let path = arguments.get("path").and_then(|value| value.as_str()).unwrap_or("");
+            let path = arguments
+                .get("path")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
             let path = std::path::Path::new(path);
             let validation = avatar::validate_pack(path);
             let value = if validation.runtime_ready {
