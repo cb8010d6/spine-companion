@@ -1166,6 +1166,58 @@ input[type="range"] {
   grid-column: 1 / -1;
   justify-self: start;
 }
+.modal-form { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; flex: 1 1 100%; }
+
+.integration-monogram img {
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
+}
+
+.integration-brand-detail img {
+  width: 26px;
+  height: 26px;
+}
+
+.avatar-editor-host { scroll-margin-top: 74px; }
+.catalog-source-strip { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 10px; }
+.catalog-source-editor { margin-bottom: 14px; padding: 10px 12px; border: 1px solid var(--border); background: var(--bg-panel); color: var(--text-muted); }
+.catalog-source-editor summary { cursor: pointer; color: var(--text); font-size: 12px; }
+.catalog-source-list { display: grid; gap: 5px; margin: 10px 0; }
+.catalog-source-row { display: grid; grid-template-columns: 130px minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+.catalog-source-row small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.catalog-source-add { display: grid; grid-template-columns: 160px minmax(220px, 1fr) auto; gap: 8px; }
+.avatar-create-grid { display: grid; grid-template-columns: minmax(180px, 1.5fr) minmax(120px, .8fr) minmax(160px, 1fr) auto auto; gap: 8px; align-items: end; }
+.avatar-editor { display: grid; gap: 12px; }
+.avatar-editor-toolbar { display: flex; flex-wrap: wrap; gap: 8px; }
+.avatar-editor-grid { display: grid; grid-template-columns: minmax(150px, .75fr) minmax(260px, 1.5fr) minmax(190px, 1fr); min-height: 430px; border: 1px solid var(--border); background: var(--bg-panel); }
+.avatar-layers, .avatar-properties { min-width: 0; padding: 12px; overflow: auto; }
+.avatar-layers { border-right: 1px solid var(--border); }
+.avatar-properties { border-left: 1px solid var(--border); }
+.avatar-editor h4 { margin: 0 0 10px; color: var(--text); font-size: 12px; }
+.avatar-layer-row { display: grid; grid-template-columns: 20px minmax(0, 1fr) 28px 28px 28px; align-items: center; gap: 4px; padding: 5px; border-radius: 4px; }
+.avatar-layer-row.active { background: var(--bg-hover); box-shadow: inset 2px 0 var(--accent); }
+.avatar-layer-select { min-width: 0; padding: 6px; border: 0; background: transparent; color: var(--text); text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.icon-btn { width: 28px; height: 28px; padding: 0; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text-muted); }
+.icon-btn.danger, .btn.danger { color: var(--danger); }
+.avatar-preview-panel { min-width: 0; padding: 14px; background: repeating-conic-gradient(color-mix(in srgb, var(--border) 35%, transparent) 0 25%, transparent 0 50%) 50% / 18px 18px; }
+.avatar-compose-stage { display: block; width: 100%; height: auto; max-height: 480px; aspect-ratio: 3 / 2; background: color-mix(in srgb, var(--surface) 88%, transparent); cursor: crosshair; }
+.library-pager { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 14px; }
+.avatar-inspector { display: grid; gap: 10px; }
+.avatar-inspector label, .avatar-number-field, .avatar-motion-grid label { display: grid; gap: 4px; color: var(--text-muted); font-size: 10px; }
+.avatar-number-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+.avatar-motion-editor, .avatar-issues { padding: 14px; border: 1px solid var(--border); background: var(--bg-panel); }
+.avatar-motion-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 8px; }
+.avatar-issue { width: 100%; display: grid; grid-template-columns: 120px minmax(0, 1fr) minmax(100px, .6fr); gap: 8px; padding: 9px; border: 0; border-top: 1px solid var(--border); background: transparent; color: var(--text); text-align: left; }
+.avatar-issue small { color: var(--text-muted); overflow-wrap: anywhere; }
+.avatar-issue.error strong { color: var(--danger); }
+.avatar-issue.warning strong { color: var(--warning); }
+
+@media (max-width: 900px) {
+  .avatar-create-grid { grid-template-columns: 1fr 1fr; }
+  .avatar-editor-grid { grid-template-columns: 170px minmax(260px, 1fr); }
+  .avatar-properties { grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--border); }
+}
 
 @media (max-width: 820px) {
   .integration-workspace {

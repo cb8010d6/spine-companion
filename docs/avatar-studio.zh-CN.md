@@ -1,8 +1,8 @@
-# Avatar Studio 计划
+# Avatar Studio
 
 [English](avatar-studio.md) | [简体中文](avatar-studio.zh-CN.md)
 
-Avatar Studio 是计划中的形象制作工作流，用来把用户自己拥有版权或使用权的角色设计转换为
+Avatar Studio 是实验中的形象制作工作流，用来把用户自己拥有版权或使用权的角色设计转换为
 Spine Companion 本地模型。它不是承诺“一张平面图一定能自动变成专业 Spine rig”。
 
 ## 产品形态
@@ -39,6 +39,16 @@ exports/
 
 avatar pack 属于用户本地内容。生成或上传的角色素材不得提交到本仓库。
 
+## 当前编辑器
+
+Manager 现在可以创建标准包，导入 PNG/JPEG/WebP 图层，调整图层顺序和显隐，编辑锚点、
+偏移、缩放和裁切，实时预览组合结果，编辑状态到动作名称的映射，并从校验问题直接定位到
+对应字段。形象包还可以复制、重新打包，或在二次确认后删除。
+
+如果形象包包含有效的 Spine 3.8 runtime 导出，点击“安装并使用”会开始一次由原生后端
+管理的临时试穿。选择“保留形象”确认使用，选择“恢复之前角色”返回原模型；直接关闭确认框
+也会恢复之前角色。
+
 ## 实验性 MCP 接口
 
 以下接口已作为实验性契约提供，可供 Codex 或其他 AI 工具对接：
@@ -55,7 +65,7 @@ Codex 应按阶段汇报进度：角色提示词、拆层、骨骼草稿、动�
 
 ## Spine Editor 依赖
 
-Spine runtime 资产需要 Spine Editor 或其他合法导出路径。未来当用户配置了本地 Spine
+Spine runtime 资产需要 Spine Editor 或其他合法导出路径。后续当用户配置了本地 Spine
 Editor CLI 路径时，工作流可以把 runtime 文件导出到 `exports/`。没有 Spine Editor 时，
 Companion 只能导入已有 runtime 资产，或校验中间 avatar pack。
 

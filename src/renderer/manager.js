@@ -31,6 +31,7 @@ import { renderSpinePreview } from "./spine-preview.js";
 import { installManagerPreviewBridge } from "./manager-preview.js";
 import { applyThemePreference } from "./theme.js";
 import { integrationBrand } from "./integration-icons.js";
+import { createAvatarEditor } from "./avatar-editor-view.js";
 import {
   createCoalescedRefresh,
   integrationLabelForState,
@@ -69,6 +70,7 @@ let history = [];
 let reminders = [];
 let integrations = [];
 let avatarPacks = [];
+let remoteCatalog = { models: [], sources: [] };
 let updateStatus = null;
 let liveState = null;
 const downloads = {};
@@ -77,6 +79,7 @@ let integrationFilter = "all";
 let selectedIntegrationId = "";
 let dashboardRenderRevision = 0;
 let modalReturnFocus = null;
+let modalOnDismiss = null;
 
 function setStatus(text) {
   topbarStatus.textContent = text;
@@ -90,7 +93,10 @@ function showToast(message) {
   window.setTimeout(() => toast.remove(), 3600);
 }
 
-function closeModal() {
+function closeModal({ dismissed = true } = {}) {
+  if (modalContainer.classList.contains("hidden")) return;
+  const onDismiss = modalOnDismiss;
+  modalOnDismiss = null;
   modalContainer.classList.add("hidden");
   document.getElementById("modal-actions").replaceChildren();
   document.removeEventListener("keydown", trapModalKeys);
@@ -99,13 +105,15 @@ function closeModal() {
   window.setTimeout(() => {
     if (returnFocus?.isConnected) returnFocus.focus();
   }, 0);
+  if (dismissed) onDismiss?.();
 }
 
-function showModal(title, bodyText, actions = []) {
+function showModal(title, bodyText, actions = [], { onDismiss = null } = {}) {
   if (modalContainer.classList.contains("hidden")) modalReturnFocus = document.activeElement;
   document.getElementById("modal-title").textContent = title;
   document.getElementById("modal-body").textContent = bodyText;
   document.getElementById("modal-actions").replaceChildren(...actions.filter(Boolean));
+  modalOnDismiss = onDismiss;
   modalContainer.classList.remove("hidden");
   document.addEventListener("keydown", trapModalKeys);
   window.setTimeout(() => modalContainer.querySelector("button")?.focus(), 0);
@@ -351,11 +359,13 @@ const dashboardRefresh = createCoalescedRefresh(() => {
   }
 });
 
-async function startDownload(id) {
+async function startDownload(id, catalogEntry = null) {
   downloads[id] = { status: "pending", current: 0, total: 1, file: t("manager.download.initializing") };
   renderView(activeView);
   try {
-    const result = await window.companion?.importModel?.({ id });
+    const result = catalogEntry
+      ? await window.companion?.importCatalogModel?.(catalogEntry)
+      : await window.companion?.importModel?.({ id });
     downloads[id] = { ...(downloads[id] || {}), status: "succeeded", current: downloads[id]?.total || 1, total: downloads[id]?.total || 1, file: t("manager.download.done") };
     await refreshConfig();
     setStatus(t("manager.status.loadedModel", { name: result.name || id }));
@@ -366,23 +376,43 @@ async function startDownload(id) {
   if (activeView === "library" || activeView === "downloads" || activeView === "installed") renderView(activeView);
 }
 
-function libraryView() {
-  const catalog = config.models?.catalog || [];
+async function refreshRemoteCatalog() {
+  if (!window.companion?.refreshModelCatalogs) return remoteCatalog;
+  const sources = config.models?.sources || [];
+  if (!sources.length) return remoteCatalog;
+  remoteCatalog = await window.companion.refreshModelCatalogs(sources);
+  return remoteCatalog;
+}
+
+async function libraryView() {
+  await refreshRemoteCatalog().catch((error) => {
+    remoteCatalog = { models: [], sources: [{ sourceId: "remote", state: "failed", error: error?.message || String(error) }] };
+  });
+  const staticCatalog = (config.models?.catalog || []).map((model) => ({ ...model, _catalogEntry: null }));
+  const remoteModels = (remoteCatalog.models || []).map((entry) => ({
+    ...entry.model,
+    spineVersion: entry.model?.spine?.min || "3.8",
+    _catalogEntry: entry
+  }));
+  const catalog = [...remoteModels, ...staticCatalog.filter((item) => !remoteModels.some((remote) => remote.id === item.id))];
   const installedIds = new Set(installedModels.map((model) => model.id));
   const activeId = activeInstalledId();
   let filterValue = "all";
+  let catalogPage = 1;
+  const pageSize = 24;
   const search = h("input", {
     class: "input",
     type: "search",
     placeholder: t("manager.search.placeholder"),
     "aria-label": t("manager.search.placeholder"),
-    onInput: () => renderCards(search.value, filterValue)
+    onInput: () => { catalogPage = 1; renderCards(search.value, filterValue); }
   });
   const filter = h("select", {
     class: "select library-filter",
     "aria-label": t("manager.library.filterLabel"),
     onChange: (event) => {
       filterValue = event.target.value;
+      catalogPage = 1;
       renderCards(search.value, filterValue);
     }
   },
@@ -391,12 +421,34 @@ function libraryView() {
     h("option", { value: "available" }, t("manager.library.filter.available"))
   );
   const grid = h("div", { class: "grid-2 library-grid" });
+  const pager = h("div", { class: "library-pager" });
+  const sourceLabelInput = h("input", { class: "input", placeholder: t("manager.library.sourceName") });
+  const sourceUrlInput = h("input", { class: "input", placeholder: "https://raw.githubusercontent.com/.../catalog.json" });
+  const addSource = async () => {
+    const label = sourceLabelInput.value.trim();
+    const catalogUrl = sourceUrlInput.value.trim();
+    if (!label || !catalogUrl) return;
+    let host;
+    try { host = new URL(catalogUrl).hostname.toLowerCase(); }
+    catch { showToast(t("manager.library.invalidSourceUrl")); return; }
+    if (!catalogUrl.startsWith("https://")) { showToast(t("manager.library.invalidSourceUrl")); return; }
+    const kind = host === "raw.githubusercontent.com" ? "customRaw" : "customCdn";
+    const id = label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 80);
+    const sources = [...(config.models?.sources || []).filter((source) => source.id !== id), { id, label, catalogUrl, kind, enabled: true }];
+    await window.companion?.saveSettings?.({ models: { sources } });
+    config.models = { ...(config.models || {}), sources };
+    await renderView("library");
+  };
 
   function renderCards(query = "", selectedFilter = "all") {
     const normalized = query.trim().toLowerCase();
-    const cards = catalog
+    const filtered = catalog
       .filter((model) => !normalized || `${model.name} ${model.id} ${model.source}`.toLowerCase().includes(normalized))
-      .filter((model) => selectedFilter === "all" || (selectedFilter === "installed" ? installedIds.has(model.id) : !installedIds.has(model.id)))
+      .filter((model) => selectedFilter === "all" || (selectedFilter === "installed" ? installedIds.has(model.id) : !installedIds.has(model.id)));
+    const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
+    catalogPage = Math.min(catalogPage, pageCount);
+    const cards = filtered
+      .slice((catalogPage - 1) * pageSize, catalogPage * pageSize)
       .map((model) => {
         const download = downloads[model.id];
         const installed = isInstalled(model.id);
@@ -420,8 +472,10 @@ function libraryView() {
           h("div", { class: "model-info" },
             h("div", { class: "model-title", title: model.name || model.id }, model.name || model.id),
             h("div", { class: "model-meta" }, t("manager.model.source", { source: model.source || t("manager.model.unknownSource") })),
+            model.author ? h("div", { class: "model-meta" }, t("manager.library.author", { author: model.author })) : null,
             h("div", { class: "model-badges" },
               badge(model.spineVersion || "Spine 3.8"),
+              model.license ? badge(model.license, model.license === "NOASSERTION" ? "badge-warning" : "") : null,
               model.licenseNote ? badge(t("manager.library.licenseNotice"), "badge-warning") : null
             ),
             h("div", { class: "model-actions" },
@@ -438,6 +492,11 @@ function libraryView() {
       h("strong", {}, t("manager.library.emptyTitle")),
       h("p", { class: "empty-text" }, t("manager.library.emptyBody"))
     )]));
+    pager.replaceChildren(
+      h("button", { class: "btn", type: "button", disabled: catalogPage <= 1, onClick: () => { catalogPage -= 1; renderCards(query, selectedFilter); } }, t("manager.library.previousPage")),
+      h("span", {}, t("manager.library.page", { page: catalogPage, pages: pageCount, count: filtered.length })),
+      h("button", { class: "btn", type: "button", disabled: catalogPage >= pageCount, onClick: () => { catalogPage += 1; renderCards(query, selectedFilter); } }, t("manager.library.nextPage"))
+    );
   }
 
   renderCards();
@@ -455,14 +514,30 @@ function libraryView() {
       h("div", {}, h("strong", {}, activeId ? "1" : "0"), h("span", {}, t("manager.library.activeCount")))
     ),
     h("div", { class: "library-toolbar" }, search, filter),
-    grid
+    h("div", { class: "catalog-source-strip" }, ...(remoteCatalog.sources || []).map((source) => h("span", { class: `badge ${source.state === "failed" ? "badge-warning" : ""}`, title: source.error || "" }, `${source.sourceId}: ${source.state}`))),
+    h("details", { class: "catalog-source-editor" }, h("summary", {}, t("manager.library.sources")),
+      h("div", { class: "catalog-source-list" }, ...(config.models?.sources || []).map((source) => h("div", { class: "catalog-source-row" },
+        h("span", {}, source.label), h("small", { title: source.catalogUrl }, source.catalogUrl),
+        h("label", { class: "switch-row compact" }, h("input", { type: "checkbox", checked: source.enabled !== false, onChange: async (event) => {
+          const sources = (config.models?.sources || []).map((item) => item.id === source.id ? { ...item, enabled: event.target.checked } : item);
+          await window.companion?.saveSettings?.({ models: { sources } }); config.models.sources = sources; await renderView("library");
+        } }), h("span", {}, t("manager.library.sourceEnabled"))),
+        h("button", { class: "btn danger", type: "button", onClick: async () => {
+          const sources = (config.models?.sources || []).filter((item) => item.id !== source.id);
+          await window.companion?.saveSettings?.({ models: { sources } }); config.models.sources = sources; await renderView("library");
+        } }, t("manager.actions.remove"))
+      ))),
+      h("div", { class: "catalog-source-add" }, sourceLabelInput, sourceUrlInput, h("button", { class: "btn", type: "button", onClick: addSource }, t("manager.library.addSource")))
+    ),
+    grid,
+    pager
   );
 }
 
 function confirmDownload(model) {
   const proceed = h("button", { class: "btn btn-primary", type: "button", onClick: () => {
     closeModal();
-    startDownload(model.id);
+    startDownload(model.id, model._catalogEntry);
   } }, t("manager.actions.acceptDownload"));
   const cancel = h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.cancel"));
   if (model.licenseNote) showModal(t("manager.modal.licenseTitle"), t("manager.modal.licensePrompt", { note: model.licenseNote }), [cancel, proceed]);
@@ -1008,13 +1083,15 @@ async function integrationsView() {
     h("div", {}, h("strong", {}, label), detail ? h("small", {}, detail) : null)
   );
   const brandIcon = (item, size = "row", state = "") => {
-    const brand = integrationBrand(item?.id);
+    const brand = integrationBrand(item?.id, item);
     const className = `integration-monogram integration-brand-${size}${state ? ` state-${state}` : ""}`;
     if (!brand) {
       return h("span", { class: className, "aria-hidden": "true" }, item?.name?.slice(0, 1).toUpperCase() || "AI");
     }
     return h("span", { class: className, style: { "--integration-brand": brand.color }, "aria-hidden": "true" },
-      h("svg", { viewBox: "0 0 24 24", focusable: "false" }, h("path", { d: brand.path }))
+      brand.image
+        ? h("img", { src: brand.image, alt: "" })
+        : h("svg", { viewBox: "0 0 24 24", focusable: "false" }, h("path", { d: brand.path }))
     );
   };
   const primaryAction = () => {
@@ -1221,8 +1298,40 @@ async function avatarStudioView() {
   ]);
   const pathInput = h("input", { class: "input", type: "text", placeholder: t("manager.avatar.pathPlaceholder"), "aria-label": t("manager.avatar.packPath") });
   const resultRoot = h("div", { class: "avatar-validation" });
+  const editorHost = h("div", { class: "avatar-editor-host" });
   let latestValidation = null;
   const importButton = h("button", { class: "btn btn-primary", type: "button", disabled: true }, t("manager.avatar.saveDraft"));
+  const createParent = h("input", { class: "input", placeholder: t("manager.avatar.parentFolder") });
+  const createId = h("input", { class: "input", placeholder: t("manager.avatar.packId") });
+  const createName = h("input", { class: "input", placeholder: t("manager.avatar.packName") });
+  const createPack = async () => {
+    const parent = createParent.value.trim();
+    const id = createId.value.trim();
+    if (!parent || !id || !createName.value.trim()) return showToast(t("manager.avatar.createRequired"));
+    const separator = parent.includes("\\") ? "\\" : "/";
+    const result = await window.companion?.createAvatarPack?.({ path: `${parent.replace(/[\\/]$/, "")}${separator}${id}`, id, name: createName.value.trim(), source: "local", licenseNote: t("manager.avatar.userOwnedLicense") });
+    await refreshAvatarPacks();
+    await openEditor(result.path);
+  };
+  const duplicatePack = (pack) => {
+    const copyId = h("input", { class: "input", value: `${pack.id}-copy`.replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 80), "aria-label": t("manager.avatar.packId") });
+    const copyName = h("input", { class: "input", value: t("manager.avatar.copyName", { name: pack.name || pack.id }), "aria-label": t("manager.avatar.packName") });
+    const form = h("div", { class: "modal-form" }, copyId, copyName);
+    showModal(t("manager.avatar.duplicateTitle"), t("manager.avatar.duplicateBody"), [
+      form,
+      h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.cancel")),
+      h("button", { class: "btn btn-primary", type: "button", onClick: async () => {
+        const id = copyId.value.trim();
+        const name = copyName.value.trim();
+        if (!id || !name) return showToast(t("manager.avatar.duplicateRequired"));
+        const parent = String(pack.path).replace(/[\\/][^\\/]+$/, "");
+        await window.companion?.duplicateAvatarPack?.({ path: pack.path, destinationParent: parent, id, name });
+        closeModal({ dismissed: false });
+        await refreshAvatarPacks();
+        await renderView("avatar");
+      } }, t("manager.avatar.duplicate"))
+    ]);
+  };
   const renderValidation = (result) => {
     latestValidation = result || null;
     const ok = result?.ok === true;
@@ -1261,6 +1370,32 @@ async function avatarStudioView() {
     pathInput.value = selected;
     pathInput.dispatchEvent(new Event("input"));
     await validate();
+    await openEditor(selected);
+  };
+  const openEditor = async (packPath) => {
+    if (!packPath) return;
+    pathInput.value = packPath;
+    editorHost.replaceChildren(h("p", { class: "empty-text" }, t("manager.status.loading")));
+    try {
+      const editor = await createAvatarEditor({
+        path: packPath,
+        bridge: window.companion,
+        labels: {
+          preview: t("manager.avatar.title"), visible: t("manager.avatar.visible"), up: t("manager.avatar.moveUp"), down: t("manager.avatar.moveDown"), remove: t("manager.avatar.delete"),
+          name: t("manager.avatar.packName"), file: t("manager.avatar.layerFile"), noLayer: t("manager.avatar.noIssues"), addLayer: t("manager.avatar.addLayers"),
+          save: t("manager.avatar.saveManifest"), validate: t("manager.avatar.validate"), layers: t("manager.avatar.layers"), properties: t("manager.avatar.properties"),
+          motions: t("manager.avatar.motions"), issues: t("manager.avatar.issues"), noIssues: t("manager.avatar.noIssues"),
+          anchorX: t("manager.avatar.anchorX"), anchorY: t("manager.avatar.anchorY"), offsetX: t("manager.avatar.offsetX"), offsetY: t("manager.avatar.offsetY"),
+          scaleX: t("manager.avatar.scaleX"), scaleY: t("manager.avatar.scaleY"), cropX: t("manager.avatar.cropX"), cropY: t("manager.avatar.cropY"),
+          cropWidth: t("manager.avatar.cropWidth"), cropHeight: t("manager.avatar.cropHeight")
+        },
+        onSaved: (next) => { renderValidation(next); showToast(t("manager.status.settingsSaved")); }
+      });
+      editorHost.replaceChildren(editor);
+      editorHost.scrollIntoView({ behavior: "smooth", block: "start" });
+    } catch (error) {
+      editorHost.replaceChildren(h("p", { class: "error-text" }, error?.message || String(error)));
+    }
   };
   pathInput.addEventListener("input", () => {
     latestValidation = null;
@@ -1277,6 +1412,14 @@ async function avatarStudioView() {
       showToast(t(avatarResultToastKey(result), { name }));
       await refreshAvatarPacks();
       installedModels = await window.companion?.getInstalledModels?.() || installedModels;
+      if (result?.installed && result?.modelId) {
+        await window.companion?.beginModelTrial?.(result.modelId);
+        const restoreTrial = () => window.companion?.cancelModelTrial?.().catch(() => {});
+        showModal(t("manager.avatar.tryOnTitle"), t("manager.avatar.tryOnBody", { name }), [
+          h("button", { class: "btn btn-primary", type: "button", onClick: async () => { await window.companion?.confirmModelTrial?.(); closeModal({ dismissed: false }); } }, t("manager.avatar.keep")),
+          h("button", { class: "btn", type: "button", onClick: async () => { await window.companion?.cancelModelTrial?.(); closeModal({ dismissed: false }); } }, t("manager.avatar.restore"))
+        ], { onDismiss: restoreTrial });
+      }
       await renderView("avatar");
     } catch (error) {
       resultRoot.replaceChildren(h("p", { class: "error-text" }, error?.message || String(error)));
@@ -1309,6 +1452,14 @@ async function avatarStudioView() {
         ),
         resultRoot
       ),
+      h("article", { class: "card avatar-create-pack" },
+        h("h3", {}, t("manager.avatar.createTitle")),
+        h("p", { class: "model-meta" }, t("manager.avatar.createBody")),
+        h("div", { class: "avatar-create-grid" }, createParent, createId, createName,
+          h("button", { class: "btn", type: "button", onClick: async () => { const selected = await window.companion?.pickAvatarPackFolder?.(); if (selected) createParent.value = selected; } }, t("manager.avatar.chooseParent")),
+          h("button", { class: "btn btn-primary", type: "button", onClick: createPack }, t("manager.avatar.createPack"))
+        )
+      ),
       h("div", { class: "grid-2 avatar-secondary-grid" },
         h("article", { class: "card" },
           h("h3", {}, t("manager.avatar.inputsTitle")),
@@ -1329,7 +1480,14 @@ async function avatarStudioView() {
               h("button", { class: "btn", type: "button", onClick: async () => {
                 pathInput.value = pack.path || "";
                 await validate();
-              } }, t("manager.avatar.revalidate"))
+              } }, t("manager.avatar.revalidate")),
+              h("button", { class: "btn btn-primary", type: "button", onClick: () => openEditor(pack.path) }, t("manager.avatar.edit")),
+              h("button", { class: "btn", type: "button", onClick: async () => { await window.companion?.repackAvatarPack?.(pack.path); await openEditor(pack.path); } }, t("manager.avatar.repack")),
+              h("button", { class: "btn", type: "button", onClick: () => duplicatePack(pack) }, t("manager.avatar.duplicate")),
+              h("button", { class: "btn danger", type: "button", onClick: () => showModal(t("manager.avatar.deleteConfirmTitle"), t("manager.avatar.deleteConfirmBody", { name: pack.name || pack.id }), [
+                h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.cancel")),
+                h("button", { class: "btn danger", type: "button", onClick: async () => { closeModal({ dismissed: false }); await window.companion?.deleteAvatarPack?.(pack.path); await refreshAvatarPacks(); await renderView("avatar"); } }, t("manager.avatar.delete"))
+              ]) }, t("manager.avatar.delete"))
             )
           ))) : h("p", { class: "empty-text" }, t("manager.avatar.noRegistered"))
         ),
@@ -1340,7 +1498,8 @@ async function avatarStudioView() {
             h("button", { class: "btn", type: "button", onClick: () => window.companion?.openExternal?.("https://github.com/cb8010d6/spine-companion/blob/main/docs/avatar-studio.zh-CN.md") }, "中文")
           )
         )
-      )
+      ),
+      editorHost
     )
   );
 }
@@ -1353,7 +1512,7 @@ async function renderView(viewName) {
   }
   viewContainer.replaceChildren(h("p", { class: "empty-text" }, t("manager.status.loading")));
   setStatus(t("manager.status.viewing", { view: t(`manager.nav.${viewName}`) }));
-  if (viewName === "library") render(libraryView(), viewContainer);
+  if (viewName === "library") render(await libraryView(), viewContainer);
   else if (viewName === "installed") render(installedView(), viewContainer);
   else if (viewName === "downloads") render(downloadsView(), viewContainer);
   else if (viewName === "settings") {

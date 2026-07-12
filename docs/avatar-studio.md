@@ -1,8 +1,8 @@
-# Avatar Studio Plan
+# Avatar Studio
 
 [English](avatar-studio.md) | [简体中文](avatar-studio.zh-CN.md)
 
-Avatar Studio is the planned workflow for turning a user-owned character design
+Avatar Studio is an experimental workflow for turning a user-owned character design
 into a local Spine Companion model. It is not a promise that one flat image can
 always become a production-quality Spine rig automatically.
 
@@ -41,6 +41,18 @@ exports/
   `failed`, `waiting`, `sleeping`, `reminder`, and `interact`
 - optional `exports` entries for `.skel`, `.atlas`, and texture `.png`
 
+## Current Editor
+
+The Manager can create a standard pack, import PNG/JPEG/WebP layers, reorder or
+hide layers, edit anchor/offset/scale/crop values, preview the composition, map
+states to animation names, and jump from validation issues to their fields.
+Packs can also be duplicated, repacked, or deleted with confirmation.
+
+When a pack contains a valid Spine 3.8 runtime export, **Install and Use** starts
+a temporary native trial. Choose **Keep avatar** to confirm it or **Restore
+previous** to return to the prior installed model. Closing the confirmation also
+restores the previous model.
+
 The pack is local user content. Generated or uploaded character assets must not
 be committed to this repository.
 
@@ -63,7 +75,7 @@ the final `.skel/.atlas/.png` runtime export is complete.
 ## Spine Editor Dependency
 
 Spine runtime assets require Spine Editor or an equivalent legal export path.
-When a local Spine Editor CLI path is configured, the future workflow can export
+When a local Spine Editor CLI path is configured, a future workflow can export
 runtime files into `exports/`. Without it, Companion can only import existing
 runtime assets or validate an intermediate avatar pack.
 
