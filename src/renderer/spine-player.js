@@ -4,6 +4,23 @@ import { animationForState, stateMachine } from "./state.js";
 import { spineAssetUrl } from "../shared/asset-url.js";
 import { calculateInteractiveBounds, expandBounds } from "./hitbox.js";
 
+export function modelCoreFitStates(spineConfig = {}) {
+  const configured = spineConfig.coreFitStates;
+  return Array.isArray(configured) && configured.length
+    ? configured
+    : ["idle", "working", "running", "waiting"];
+}
+
+export function attachTrackCompletion(entry, onComplete, isCurrent = () => true) {
+  if (!entry) return null;
+  entry.listener = {
+    complete: () => {
+      if (isCurrent()) onComplete?.();
+    }
+  };
+  return entry;
+}
+
 export class SpinePlayer {
   constructor(stage, config) {
     this.stageElement = stage;
@@ -37,6 +54,9 @@ export class SpinePlayer {
     this.handleContextLost = null;
     this.handleContextRestored = null;
     this.lastFrameAt = 0;
+    this.lastTrackSampleAt = 0;
+    this.lastTrackTime = -1;
+    this.lastTrackProgressAt = 0;
     this.lastBoundsEmitAt = 0;
     this.lastEmittedBounds = null;
     this.onInteractiveBoundsChange = null;
@@ -64,6 +84,14 @@ export class SpinePlayer {
     this.stageElement.appendChild(this.app.view);
     this.frameTicker = () => {
       this.lastFrameAt = Date.now();
+      if (this.lastFrameAt - this.lastTrackSampleAt >= 500) {
+        this.lastTrackSampleAt = this.lastFrameAt;
+        const trackTime = Number(this.spine?.state?.getCurrent?.(0)?.trackTime ?? -1);
+        if (trackTime < this.lastTrackTime || Math.abs(trackTime - this.lastTrackTime) >= 0.001) {
+          this.lastTrackTime = trackTime;
+          this.lastTrackProgressAt = this.lastFrameAt;
+        }
+      }
       if (this.lastFrameAt - this.lastBoundsEmitAt >= 80) {
         this.lastBoundsEmitAt = this.lastFrameAt;
         const bounds = this.getPointerRecoveryBounds();
@@ -159,7 +187,9 @@ export class SpinePlayer {
     }
 
     this.stableBounds = this.measureStableBounds(stateMachine.states);
-    this.fitBounds = this.measureStableBounds(this.config.spine.fitStates || stateMachine.states);
+    const coreFitStates = modelCoreFitStates(this.config.spine);
+    this.fitBounds = this.measureStableBounds(coreFitStates)
+      || this.measureStableBounds(this.config.spine.fitStates || stateMachine.states);
     this.applyState({ state: "idle", source: "system" }, true);
   }
 
@@ -282,27 +312,21 @@ export class SpinePlayer {
 
     if (tailSegment && !(segment?.loop ?? motion.loop ?? true)) {
       const tailShouldRepeat = tailSegment.loop !== false;
-      const tailRepeatCount = tailShouldRepeat ? Math.max(1, Number(tailSegment.repeatCount || 240)) : 1;
       const tailMixDuration = Number(tailSegment.mixDurationMs || this.config.spine.mixDurationMs || 280) / 1000;
-      for (let index = 0; index < tailRepeatCount; index += 1) {
-        const tailEntry = this.spine.state.addAnimation(0, motion.animation, !tailShouldRepeat && (tailSegment.loop ?? false), 0);
-        tailEntry.mixDuration = tailMixDuration;
-        tailEntry.animationStart = Number(tailSegment.from || 0);
-        tailEntry.animationEnd = Number(tailSegment.to || tailEntry.animation.duration);
-        tailEntry.trackTime = 0;
-      }
+      const tailEntry = this.spine.state.addAnimation(0, motion.animation, tailShouldRepeat, 0);
+      tailEntry.mixDuration = tailMixDuration;
+      tailEntry.animationStart = Number(tailSegment.from || 0);
+      tailEntry.animationEnd = Number(tailSegment.to || tailEntry.animation.duration);
+      tailEntry.trackTime = 0;
     }
 
     if (motion.repeatSegment && segment && !(segment.loop ?? motion.loop ?? true)) {
-      const repeatCount = Math.max(1, Number(motion.repeatCount || 480));
       const mixDuration = Number(motion.repeatMixDurationMs || this.config.spine.mixDurationMs || 280) / 1000;
-      for (let index = 0; index < repeatCount; index += 1) {
-        const repeatEntry = this.spine.state.addAnimation(0, motion.animation, false, 0);
-        repeatEntry.mixDuration = mixDuration;
-        repeatEntry.animationStart = Number(segment.from || 0);
-        repeatEntry.animationEnd = Number(segment.to || repeatEntry.animation.duration);
-        repeatEntry.trackTime = 0;
-      }
+      const repeatEntry = this.spine.state.addAnimation(0, motion.animation, true, 0);
+      repeatEntry.mixDuration = mixDuration;
+      repeatEntry.animationStart = Number(segment.from || 0);
+      repeatEntry.animationEnd = Number(segment.to || repeatEntry.animation.duration);
+      repeatEntry.trackTime = 0;
     }
 
     if (motion.returnTo && motion.returnAfterMs && !force) {
@@ -313,6 +337,7 @@ export class SpinePlayer {
 
     this.applyStableAnchor();
     this.layout();
+    return entry;
   }
 
   stateDurationMs(state = {}) {
@@ -324,6 +349,18 @@ export class SpinePlayer {
     const from = Number(segment?.from ?? 0);
     const to = Number(segment?.to ?? animation.duration ?? 0);
     return Math.max(0, to - from) * 1000;
+  }
+
+  playOneShot(state = {}, onComplete) {
+    const entry = this.applyState(state, true);
+    if (!entry) return null;
+    const token = Symbol("one-shot");
+    this.oneShotToken = token;
+    attachTrackCompletion(entry, () => {
+      this.oneShotToken = null;
+      onComplete?.();
+    }, () => this.oneShotToken === token);
+    return entry;
   }
 
   measureStableBounds(stateIds) {
@@ -385,7 +422,7 @@ export class SpinePlayer {
 
   applyStableAnchor() {
     if (!this.spine) return;
-    const bounds = this.stableBounds || this.spine.getLocalBounds();
+    const bounds = this.fitBounds || this.stableBounds || this.spine.getLocalBounds();
     this.spine.x = -(bounds.x + bounds.width / 2);
     this.spine.y = -(bounds.y + bounds.height);
   }
@@ -427,8 +464,8 @@ export class SpinePlayer {
   }
 
   updateAnchor(stageWidth, stageHeight) {
-    if (!this.spine || !this.stableBounds) return;
-    const bounds = this.stableBounds;
+    if (!this.spine || !(this.fitBounds || this.stableBounds)) return;
+    const bounds = this.fitBounds || this.stableBounds;
     const side = this.direction === "left" ? 1 : -1;
     const smallModel = this.userScale < 0.82;
     const tinyModel = this.userScale < 0.68;
@@ -514,6 +551,10 @@ export class SpinePlayer {
       clientWidth: Number(view?.clientWidth || 0),
       clientHeight: Number(view?.clientHeight || 0),
       lastFrameAt: this.lastFrameAt,
+      lastTrackProgressAt: this.lastTrackProgressAt,
+      trackStale: Boolean(this.spine?.state?.getCurrent?.(0))
+        && this.lastTrackProgressAt > 0
+        && Date.now() - this.lastTrackProgressAt > 7000,
       contextLost,
       hasModel: Boolean(this.spine),
       screenScale: this.screenScale,

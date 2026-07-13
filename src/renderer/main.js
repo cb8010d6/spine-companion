@@ -71,7 +71,6 @@ let mousePassthroughFrame = 0;
 let runtimeConfig = null;
 let providerErrorToastTimer = null;
 let onboardingDismissedForSession = false;
-let clickReturnTimer = 0;
 let gpuRecoveryInFlight = false;
 let rendererHealthTimer = 0;
 let rendererRecoveryCount = 0;
@@ -345,7 +344,6 @@ function updateCompletionToast(state) {
 
 async function returnToIdle(source = "user") {
   const idleState = { state: "idle", source };
-  window.clearTimeout(clickReturnTimer);
   player?.applyState(idleState, true);
   updateHud(idleState);
   completionToast.hidden = true;
@@ -495,16 +493,8 @@ async function importSelectedModel(source = "settings") {
   emptyImport.disabled = true;
   try {
     const result = await window.companion.importModel({ id });
-    runtimeConfig = {
-      ...runtimeConfig,
-      spine: {
-        ...runtimeConfig.spine,
-        skel: result.skel,
-        assetUrl: `${result.assetUrl}?t=${Date.now()}`,
-        assetDirConfigured: true
-      }
-    };
-    await loadPlayer(runtimeConfig);
+    // config-changed is emitted only after the downloaded asset set is
+    // committed, so it is the single authoritative model reload channel.
     modelStatus.textContent = t("app.model.importedFrom", { path: result.assetDir });
     if (!emptyState.hidden) {
       emptyState.querySelector("span").textContent = t("app.model.imported");
@@ -612,9 +602,9 @@ function startRendererHealthProbe() {
     const now = Date.now();
     const stale = health.lastFrameAt > 0 && now - health.lastFrameAt > 3500;
     const invalidCanvas = health.canvasWidth <= 0 || health.canvasHeight <= 0 || health.clientWidth <= 0 || health.clientHeight <= 0;
-    const status = health.contextLost ? "context-lost" : stale ? "stale" : invalidCanvas ? "invalid-canvas" : "ok";
+    const status = health.contextLost ? "context-lost" : stale ? "stale" : invalidCanvas ? "invalid-canvas" : health.trackStale ? "track-stale" : "ok";
     window.companion?.updateRendererHealth?.(rendererHealthPayload(status, status)).catch?.(() => {});
-    if ((health.contextLost || stale || invalidCanvas) && !gpuRecoveryInFlight) {
+    if ((health.contextLost || stale || invalidCanvas || health.trackStale) && !gpuRecoveryInFlight) {
       recoverGpuRenderer({
         reason: `health-${status}`,
         recreateWindow: stale || invalidCanvas
@@ -793,18 +783,14 @@ function wireDragging() {
     const clickState = {
       state: "reminder",
       source: "click",
-      message: "",
-      autoReturnMs: Math.max(7000, Math.ceil(player?.stateDurationMs?.({ state: "reminder" }) || 0) + 420),
-      returnTo: "idle"
+      message: ""
     };
-    player?.applyState(clickState, true);
-    updateBubble(previousState);
-    window.clearTimeout(clickReturnTimer);
-    clickReturnTimer = window.setTimeout(() => {
-      player?.applyState(previousState);
+    player?.playOneShot(clickState, () => {
+      player?.applyState(previousState, true);
       updateHud(previousState);
       updateBubble(previousState);
-    }, Number(clickState.autoReturnMs));
+    });
+    updateBubble(previousState);
   });
 }
 
@@ -863,17 +849,8 @@ async function boot() {
     refreshMousePassthroughSoon();
   });
 
-  window.companion?.onModelImported?.(async (result) => {
-    runtimeConfig = {
-      ...runtimeConfig,
-      spine: {
-        ...runtimeConfig.spine,
-        skel: result.skel,
-        assetUrl: `${result.assetUrl}?t=${Date.now()}`,
-        assetDirConfigured: true
-      }
-    };
-    await hotReloadPlayer(runtimeConfig, `Imported and loaded from ${result.assetDir}.`);
+  window.companion?.onModelImported?.((result) => {
+    if (modelStatus) modelStatus.textContent = `Imported from ${result.assetDir}.`;
   });
 
   window.companion?.onConfigChanged?.(async (config) => {

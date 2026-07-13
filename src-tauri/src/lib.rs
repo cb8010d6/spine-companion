@@ -1355,19 +1355,27 @@ async fn download_model_file(
 ) -> Result<Vec<u8>, String> {
     let mut attempts = Vec::new();
     for url in urls {
-        match client.get(url).send().await {
-            Ok(response) => {
-                let status = response.status();
-                if !status.is_success() {
-                    attempts.push(format!("{} (HTTP {})", url, status.as_u16()));
-                    continue;
+        for retry in 0..2 {
+            match client.get(url).send().await {
+                Ok(response) => {
+                    let status = response.status();
+                    if !status.is_success() {
+                        attempts.push(format!("{} (HTTP {})", url, status.as_u16()));
+                        if !status.is_server_error() {
+                            break;
+                        }
+                    } else {
+                        match response.bytes().await {
+                            Ok(bytes) => return Ok(bytes.to_vec()),
+                            Err(error) => attempts.push(format!("{} ({})", url, error)),
+                        }
+                    }
                 }
-                match response.bytes().await {
-                    Ok(bytes) => return Ok(bytes.to_vec()),
-                    Err(error) => attempts.push(format!("{} ({})", url, error)),
-                }
+                Err(error) => attempts.push(format!("{} ({})", url, error)),
             }
-            Err(error) => attempts.push(format!("{} ({})", url, error)),
+            if retry == 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
         }
     }
     Err(format!("{}; tried {}", file_name, attempts.join("; ")))
@@ -1614,6 +1622,33 @@ async fn get_diagnostics(data: State<'_, AppData>) -> Result<serde_json::Value, 
         "GPU mode is only applied on Windows WebView2."
     };
     let renderer_health = data.renderer_health.lock().unwrap().clone();
+    let models_cache_dir = data.config_dir.join("models");
+    let preview_cache_dir = data.config_dir.join("preview-assets");
+    let _ = std::fs::create_dir_all(&models_cache_dir);
+    let _ = std::fs::create_dir_all(&preview_cache_dir);
+    let cache_stats = |root: &Path| {
+        let mut files = 0_u64;
+        let mut bytes = 0_u64;
+        let mut pending = vec![root.to_path_buf()];
+        while let Some(dir) = pending.pop() {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Ok(metadata) = entry.metadata() else {
+                    continue;
+                };
+                if metadata.is_dir() {
+                    pending.push(path);
+                } else if metadata.is_file() {
+                    files += 1;
+                    bytes = bytes.saturating_add(metadata.len());
+                }
+            }
+        }
+        serde_json::json!({ "files": files, "bytes": bytes })
+    };
     let webview_cache_dir = data
         .config_dir
         .parent()
@@ -1635,6 +1670,12 @@ async fn get_diagnostics(data: State<'_, AppData>) -> Result<serde_json::Value, 
         "hasPng": has_png,
         "modelHealth": model_health,
         "modelRecovery": recovery,
+        "cache": {
+            "modelsDir": models_cache_dir.to_string_lossy().to_string(),
+            "models": cache_stats(&models_cache_dir),
+            "previewsDir": preview_cache_dir.to_string_lossy().to_string(),
+            "previews": cache_stats(&preview_cache_dir)
+        },
         "logsDir": data.config_dir.join("logs").to_string_lossy().to_string(),
         "shortcut": {
             "enabled": ui.shortcut_enabled,
@@ -2922,6 +2963,35 @@ fn recreate_main_window(app: &AppHandle, reason: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn start_renderer_watchdog(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            let Some(window) = app.get_webview_window("main") else {
+                continue;
+            };
+            if !window.is_visible().unwrap_or(false) {
+                continue;
+            }
+            let now = now_ms();
+            let stale = {
+                let data = app.state::<AppData>();
+                let health = data.renderer_health.lock().unwrap();
+                renderer_heartbeat_stale(&health, now)
+            };
+            if stale {
+                let _ = recreate_main_window(&app, "native-heartbeat-timeout");
+            }
+        }
+    });
+}
+
+fn renderer_heartbeat_stale(health: &RendererHealth, now: u64) -> bool {
+    health.last_heartbeat_at > 0
+        && now.saturating_sub(health.last_heartbeat_at) > 8_000
+        && now.saturating_sub(health.last_recovery_at) > 15_000
+}
+
 fn should_reveal_for_state(settings: &UiSettings, state: &CompanionState) -> bool {
     settings.auto_reveal_on_mcp && is_ai_source(&state.source) && state.state != "idle"
 }
@@ -3813,6 +3883,7 @@ pub fn run() {
         })
         .setup(move |app| {
             start_pointer_passthrough_monitor(app.handle().clone());
+            start_renderer_watchdog(app.handle().clone());
             if let Some(panel) = app.get_webview_window("panel") {
                 let panel_for_event = panel.clone();
                 panel.on_window_event(move |event| {
@@ -4088,6 +4159,18 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn renderer_watchdog_requires_timeout_and_recovery_cooldown() {
+        let mut health = RendererHealth {
+            last_heartbeat_at: 1_000,
+            ..RendererHealth::default()
+        };
+        assert!(!renderer_heartbeat_stale(&health, 8_999));
+        assert!(renderer_heartbeat_stale(&health, 20_000));
+        health.last_recovery_at = 18_000;
+        assert!(!renderer_heartbeat_stale(&health, 20_000));
+    }
 
     #[tokio::test]
     async fn mcp_probe_response_has_a_deadline() {
