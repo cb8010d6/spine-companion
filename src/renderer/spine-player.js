@@ -21,6 +21,13 @@ export function attachTrackCompletion(entry, onComplete, isCurrent = () => true)
   return entry;
 }
 
+export function selectAvailableAnimation(animationNames = [], requested = "") {
+  if (animationNames.includes(requested)) return requested;
+  return ["Idle", "Default", "Relax"].find((name) => animationNames.includes(name))
+    || animationNames[0]
+    || "";
+}
+
 export class SpinePlayer {
   constructor(stage, config) {
     this.stageElement = stage;
@@ -282,6 +289,21 @@ export class SpinePlayer {
         ? { ...motion, animation: "Move", loop: true, segment: null, tailSegment: null, repeatSegment: false }
         : { ...motion, animation: "Relax", loop: true, segment: null, tailSegment: null, repeatSegment: false };
     }
+    const animationNames = this.spine.spineData.animations.map((animation) => animation.name);
+    const resolvedAnimation = selectAvailableAnimation(animationNames, motion.animation);
+    if (!resolvedAnimation) return;
+    motion = resolvedAnimation === motion.animation
+      ? motion
+      : {
+          ...motion,
+          animation: resolvedAnimation,
+          loop: true,
+          segment: null,
+          tailSegment: null,
+          repeatSegment: false,
+          returnTo: null,
+          returnAfterMs: null
+        };
     const segment = motion.segment ? this.config.specialSegments?.[motion.segment] : null;
     const tailSegment = motion.tailSegment ? this.config.specialSegments?.[motion.tailSegment] : null;
     const nextDirection = motion.state === "running" ? (state.direction || "right") : "right";

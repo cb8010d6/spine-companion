@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { attachTrackCompletion, modelCoreFitStates } from "../src/renderer/spine-player.js";
+import { attachTrackCompletion, modelCoreFitStates, selectAvailableAnimation } from "../src/renderer/spine-player.js";
 
 describe("Spine player transitions", () => {
   it("uses only stable everyday states to normalize model layout", () => {
@@ -17,5 +17,11 @@ describe("Spine player transitions", () => {
     current = false;
     entry.listener.complete();
     expect(complete).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to a safe animation when a model lacks companion actions", () => {
+    expect(selectAvailableAnimation(["Default", "Idle"], "Interact")).toBe("Idle");
+    expect(selectAvailableAnimation(["Attack", "Move"], "Relax")).toBe("Attack");
+    expect(selectAvailableAnimation(["Relax"], "Relax")).toBe("Relax");
   });
 });

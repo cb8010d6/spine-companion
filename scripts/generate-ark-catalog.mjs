@@ -57,8 +57,12 @@ async function mapWithConcurrency(items, limit, mapper) {
   return results;
 }
 
-function titleFromDirectory(directory) {
-  return directory
+function titleFromDirectory(directory, source = {}) {
+  const withoutPrefix = (source.stripPrefixes || []).reduce(
+    (value, prefix) => value.replace(new RegExp(`^${prefix}[_-]?`, "i"), ""),
+    directory
+  );
+  return withoutPrefix
     .replace(/^\d+[_-]?/, "")
     .split(/[_-]+/)
     .filter(Boolean)
@@ -178,7 +182,9 @@ export async function scanGithubRepository(source, { fetchImpl = fetch, localRoo
     const textureCount = entries.filter((entry) => TEXTURE_EXTENSIONS.has(extension(entry.name))).length;
     return skelCount === 1 && atlasCount > 0 && textureCount > 0 ? entries : [];
   });
-  const verifiedFiles = new Map(await mapWithConcurrency(verificationEntries, Number(process.env.CATALOG_CONCURRENCY || 24), async (entry) => {
+  const verifiedFiles = source.metadataOnly
+    ? new Map(verificationEntries.map((entry) => [entry.path, { sha256: "", spineVersion: "" }]))
+    : new Map(await mapWithConcurrency(verificationEntries, Number(process.env.CATALOG_CONCURRENCY || 24), async (entry) => {
     const url = `https://raw.githubusercontent.com/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/${revision}/${encodePath(entry.path)}`;
     const fallbackUrl = `https://cdn.jsdelivr.net/gh/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}@${revision}/${encodePath(entry.path)}`;
     try {
@@ -193,7 +199,7 @@ export async function scanGithubRepository(source, { fetchImpl = fetch, localRoo
     } catch (error) {
       return [entry.path, { error: error.message || String(error) }];
     }
-  }));
+    }));
   for (const directory of requestedDirectories) {
     if (!filesByModel.has(directory)) {
       skippedModels.push({ directory, reason: `Directory was not found under ${modelsPath}.` });
@@ -226,7 +232,7 @@ export async function scanGithubRepository(source, { fetchImpl = fetch, localRoo
       files.push({
         name: entry.name,
         url,
-        sha256: verified.sha256,
+        ...(verified.sha256 ? { sha256: verified.sha256 } : {}),
         sizeBytes: entry.sizeBytes,
         githubBlobSha: entry.gitSha,
         fallbackUrls: [fallbackUrl]
@@ -250,7 +256,7 @@ export async function scanGithubRepository(source, { fetchImpl = fetch, localRoo
     assert(slug, `Model directory ${directory} cannot produce an id.`);
     models.push({
       id: `${source.id}-${slug}`,
-      name: titleFromDirectory(directory),
+      name: titleFromDirectory(directory, source),
       source: source.name,
       author: source.author,
       license: source.license,
@@ -262,8 +268,11 @@ export async function scanGithubRepository(source, { fetchImpl = fetch, localRoo
       spine: detectedVersion
         ? { min: detectedVersion, max: detectedVersion }
         : { min: source.spine.min, max: source.spine.max },
+      versionVerified: Boolean(detectedVersion),
       description: `Generated from ${repository.owner}/${repository.name} at ${revision}.`,
-      tags: [...new Set([...(source.tags || []), "spine-3.8"])].sort(compareStrings)
+      tags: [...new Set([...(source.tags || []), "spine-3.8"])].sort(compareStrings),
+      category: source.category || "operator",
+      compatibilityProfile: source.compatibilityProfile || "companion"
     });
   }
 
@@ -322,7 +331,7 @@ export function validateCatalog(document) {
       names.add(file.name);
       assert(SUPPORTED_EXTENSIONS.has(extension(file.name)), `Model ${model.id} has unsupported runtime file ${file.name}.`);
       assert(/^https:\/\//.test(file.url || ""), `Model ${model.id} file ${file.name} must use HTTPS.`);
-      assert(SHA256_PATTERN.test(file.sha256 || ""), `Model ${model.id} file ${file.name} requires a SHA-256 digest.`);
+      assert(SHA256_PATTERN.test(file.sha256 || "") || GIT_SHA_PATTERN.test(file.githubBlobSha || ""), `Model ${model.id} file ${file.name} requires an integrity digest.`);
       assert(Number.isSafeInteger(file.sizeBytes) && file.sizeBytes >= 0, `Model ${model.id} file ${file.name} requires sizeBytes.`);
       assert(GIT_SHA_PATTERN.test(file.githubBlobSha || ""), `Model ${model.id} file ${file.name} requires githubBlobSha.`);
       assert(Array.isArray(file.fallbackUrls) && file.fallbackUrls.every((url) => /^https:\/\//.test(url) && url !== file.url), `Model ${model.id} file ${file.name} has invalid fallback URLs.`);

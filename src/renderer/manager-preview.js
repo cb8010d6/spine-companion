@@ -15,7 +15,11 @@ export function installManagerPreviewBridge() {
       locale: params.get("locale") || "zh-CN",
       theme: params.get("theme") || "system"
     },
-    models: { sources: [{ id: "ark-models", label: "Ark-Models (GitHub)", catalogUrl: "https://example.invalid/catalog.json", kind: "official", enabled: true }], catalog: [
+    models: { sources: [
+      { id: "ark-models", label: "Operators / 基建小人", catalogUrl: "https://example.invalid/operators.json", kind: "official", enabled: true },
+      { id: "ark-illustrations", label: "Dynamic illustrations / 动态立绘", catalogUrl: "https://example.invalid/illustrations.json", kind: "official", enabled: true },
+      { id: "ark-enemies", label: "Enemies / 敌人", catalogUrl: "https://example.invalid/enemies.json", kind: "official", enabled: true }
+    ], catalog: [
       { id: "ark-1001-amiya2-sale-16", name: "Amiya Guard Skin #16", source: "Ark-Models", spineVersion: "Spine 3.8", licenseNote: "Third-party source; review before download.", repositoryUrl: "https://github.com/isHarryh/Ark-Models" },
       { id: "sample-local-avatar", name: "Sample Local Avatar", source: "Local preview", spineVersion: "Spine 3.8" }
     ] },
@@ -43,7 +47,15 @@ export function installManagerPreviewBridge() {
     duplicateAvatarPack: async (input) => ({ path: `${input.destinationParent}/${input.id}`, id: input.id, duplicated: true }),
     deleteAvatarPack: async () => ({ deleted: true }),
     repackAvatarPack: async (path) => ({ path, repacked: true }),
-    refreshModelCatalogs: async () => ({ models: [{ catalogSourceId: "ark-models", id: "ark-models-002-amiya", name: "Amiya", source: "Ark-Models", author: "isHarryh/Ark-Models contributors", license: "NOASSERTION", licenseNote: "Third-party source; review before download.", repositoryUrl: "https://github.com/isHarryh/Ark-Models/tree/main/models/002_amiya", skel: "build_char_002_amiya.skel", files: [], spine: { min: "3.8.99", max: "3.8.99" } }], sources: [{ sourceId: "ark-models", state: "stale", modelCount: 1, error: "Preview mode" }] }),
+    refreshModelCatalogs: async (sources = []) => {
+      const source = sources[0]?.id || "ark-models";
+      const variants = {
+        "ark-models": { id: "ark-models-002-amiya", name: "Amiya", category: "operator", compatibilityProfile: "companion" },
+        "ark-illustrations": { id: "ark-illustrations-amiya", name: "Amiya Dynamic Illustration", category: "illustration", compatibilityProfile: "idle-only" },
+        "ark-enemies": { id: "ark-enemies-gopro", name: "Gopro", category: "enemy", compatibilityProfile: "experimental" }
+      };
+      return { models: [{ catalogSourceId: source, ...variants[source], source: "Ark-Models", author: "isHarryh/Ark-Models contributors", license: "NOASSERTION", licenseNote: "Third-party source; review before download.", repositoryUrl: "https://github.com/isHarryh/Ark-Models", skel: "model.skel", files: [], spine: { min: "3.8.99", max: "3.8.99" } }], sources: [{ sourceId: source, state: "stale", modelCount: 1, error: "Preview mode" }] };
+    },
     importCatalogModel: async (entry) => ({ id: entry.id || entry.model?.id, name: entry.name || entry.model?.name }),
     prepareModelPreview: async (entry) => ({ id: entry.id, skel: entry.skel, assetUrl: "", cached: false }),
     getCurrentModel: async () => ({ id: "sample-local-avatar", name: "Sample Local Avatar" }),

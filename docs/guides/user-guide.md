@@ -35,6 +35,11 @@ The Manager has five main views:
 
 - **Library**: browse supported catalog models, search by name/source, download,
   and activate an installed model.
+  - **Base operators** provide the full companion action set.
+  - **Dynamic illustrations** are display-oriented and usually fall back to
+    Idle/Default for task states.
+  - **Enemies** are experimental because upstream animation names vary.
+  Limited models show a warning before download; state messages still work.
 - **Installed**: inspect local models, open folders, set the active model, or
   remove inactive models.
 - **Downloads**: see recent download progress and errors.

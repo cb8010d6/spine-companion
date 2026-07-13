@@ -3628,7 +3628,7 @@ dependencies = [
 
 [[package]]
 name = "spine-companion"
-version = "0.2.6-rc.6"
+version = "0.2.6-rc.7"
 dependencies = [
  "axum",
  "chrono",
@@ -3636,6 +3636,7 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sha1",
  "sha2",
  "sys-locale",
  "tauri",

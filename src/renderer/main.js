@@ -75,6 +75,7 @@ let gpuRecoveryInFlight = false;
 let rendererHealthTimer = 0;
 let rendererRecoveryCount = 0;
 let lastRendererRecoveryAt = 0;
+let rendererHealthGraceUntil = 0;
 let hitboxDebug = null;
 const NATIVE_DRAG_STOP_IDLE_POLLS = 8;
 const NATIVE_DRAG_POLL_MS = 40;
@@ -600,6 +601,14 @@ function startRendererHealthProbe() {
     updateHitboxDebug();
     if (!health) return;
     const now = Date.now();
+    if (document.visibilityState !== "visible") {
+      window.companion?.updateRendererHealth?.(rendererHealthPayload("suspended", "window-hidden")).catch?.(() => {});
+      return;
+    }
+    if (now < rendererHealthGraceUntil) {
+      window.companion?.updateRendererHealth?.(rendererHealthPayload("resuming", "visibility-grace")).catch?.(() => {});
+      return;
+    }
     const stale = health.lastFrameAt > 0 && now - health.lastFrameAt > 3500;
     const invalidCanvas = health.canvasWidth <= 0 || health.canvasHeight <= 0 || health.clientWidth <= 0 || health.clientHeight <= 0;
     const status = health.contextLost ? "context-lost" : stale ? "stale" : invalidCanvas ? "invalid-canvas" : health.trackStale ? "track-stale" : "ok";
@@ -822,6 +831,11 @@ async function boot() {
   showOnboardingIfNeeded(config);
   wireDragging();
   wireMousePassthrough();
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+      rendererHealthGraceUntil = Date.now() + 8000;
+    }
+  });
 
   try {
     await loadPlayer(config);

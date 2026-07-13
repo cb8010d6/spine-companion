@@ -110,10 +110,28 @@ pub struct CatalogModel {
     pub skel: String,
     pub files: Vec<CatalogFile>,
     pub spine: SpineCompatibility,
+    #[serde(default = "default_true")]
+    pub version_verified: bool,
     #[serde(default)]
     pub description: String,
     #[serde(default)]
     pub tags: Vec<String>,
+    #[serde(default = "default_model_category")]
+    pub category: String,
+    #[serde(default = "default_compatibility_profile")]
+    pub compatibility_profile: String,
+}
+
+fn default_model_category() -> String {
+    "operator".to_string()
+}
+
+fn default_compatibility_profile() -> String {
+    "companion".to_string()
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl CatalogModel {
@@ -128,6 +146,8 @@ impl CatalogModel {
             return Err(format!("Model skel must be a .skel file: {}", self.skel));
         }
         self.spine.validate()?;
+        validate_identifier(&self.category, "Model category")?;
+        validate_identifier(&self.compatibility_profile, "Compatibility profile")?;
         if self.files.is_empty() {
             return Err(format!("Model {} has no downloadable files.", self.id));
         }
@@ -179,7 +199,10 @@ impl CatalogModel {
 pub struct CatalogFile {
     pub name: String,
     pub url: String,
+    #[serde(default)]
     pub sha256: String,
+    #[serde(default)]
+    pub github_blob_sha: String,
     #[serde(default)]
     pub fallback_urls: Vec<String>,
     #[serde(default)]
@@ -190,14 +213,13 @@ impl CatalogFile {
     pub fn validate(&self) -> Result<(), String> {
         validate_safe_file_name(&self.name, "Model file name")?;
         validate_https_url(&self.url, "Model file URL")?;
-        if self.sha256.len() != 64
-            || !self
-                .sha256
-                .bytes()
-                .all(|character| character.is_ascii_hexdigit())
-        {
+        let valid_sha256 = self.sha256.len() == 64
+            && self.sha256.bytes().all(|character| character.is_ascii_hexdigit());
+        let valid_blob_sha = self.github_blob_sha.len() == 40
+            && self.github_blob_sha.bytes().all(|character| character.is_ascii_hexdigit());
+        if !valid_sha256 && !valid_blob_sha {
             return Err(format!(
-                "Model file {} must include a 64-character SHA-256 digest.",
+                "Model file {} must include a SHA-256 or Git blob digest.",
                 self.name
             ));
         }
@@ -773,6 +795,7 @@ mod tests {
                     url: "https://raw.githubusercontent.com/example/models/main/model.skel"
                         .to_string(),
                     sha256: SHA.to_string(),
+                    github_blob_sha: String::new(),
                     fallback_urls: vec![
                         "https://cdn.jsdelivr.net/gh/example/models@main/model.skel".to_string(),
                     ],
@@ -783,6 +806,7 @@ mod tests {
                     url: "https://raw.githubusercontent.com/example/models/main/model.atlas"
                         .to_string(),
                     sha256: SHA.to_string(),
+                    github_blob_sha: String::new(),
                     fallback_urls: vec![],
                     size_bytes: Some(12),
                 },
@@ -791,6 +815,7 @@ mod tests {
                     url: "https://raw.githubusercontent.com/example/models/main/model.png"
                         .to_string(),
                     sha256: SHA.to_string(),
+                    github_blob_sha: String::new(),
                     fallback_urls: vec![],
                     size_bytes: Some(12),
                 },
@@ -799,8 +824,11 @@ mod tests {
                 min: SpineVersion::parse(spine).unwrap(),
                 max: None,
             },
+            version_verified: true,
             description: "A test model".to_string(),
             tags: vec!["test".to_string()],
+            category: "operator".to_string(),
+            compatibility_profile: "companion".to_string(),
         }
     }
 
