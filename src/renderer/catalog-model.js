@@ -101,6 +101,20 @@ export function catalogDownloadRequest(model) {
   };
 }
 
+export function beginDownloadRecord(catalogEntry = null, label = "") {
+  return {
+    status: "pending",
+    current: 0,
+    total: 1,
+    file: label,
+    catalogEntry: catalogEntry || null
+  };
+}
+
+export function retryCatalogEntry(download = {}) {
+  return download?.catalogEntry || null;
+}
+
 export function mergeInstalledModelMetadata(catalogModel = {}, installedModel = {}) {
   const installedName = String(installedModel.name || "").trim();
   const installedUsesIdAsName = !installedName || installedName === installedModel.id;

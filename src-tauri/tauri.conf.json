@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicholasrice/tauri/next/packages/tauri-utils/schema.json",
   "productName": "Spine Companion",
-  "version": "0.2.6-rc.7.1",
+  "version": "0.2.6-rc.7.2",
   "identifier": "dev.spine-companion.desktop",
   "build": {
     "frontendDist": "../dist",

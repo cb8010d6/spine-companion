@@ -44,11 +44,13 @@ import {
   catalogModelSizeBytes,
   catalogModelSourceId,
   catalogSpineDisplayVersion,
+  beginDownloadRecord,
   enabledCatalogSources,
   mergeInstalledModelMetadata,
   normalizeCatalogEntries,
   resolveCatalogSourceId,
   selectPreviewBatch,
+  retryCatalogEntry,
   upsertInstalledModel
 } from "./catalog-model.js";
 import { createAvatarEditor } from "./avatar-editor-view.js";
@@ -455,7 +457,7 @@ const dashboardRefresh = createCoalescedRefresh(() => {
 });
 
 async function startDownload(id, catalogEntry = null) {
-  downloads[id] = { status: "pending", current: 0, total: 1, file: t("manager.download.initializing") };
+  downloads[id] = beginDownloadRecord(catalogEntry, t("manager.download.initializing"));
   librarySession?.refreshModel(id);
   try {
     const installer = catalogEntry
@@ -904,7 +906,7 @@ function downloadsView() {
       h("div", { class: "download-meta" }, `${String(dl.status || "pending").toUpperCase()} ${dl.file || ""} ${dl.current || 0}/${dl.total || 1}`),
       h("div", { class: "progress-bar" }, h("div", { class: "progress-fill", style: { width: `${percent}%` } })),
       dl.error ? h("div", { class: "error-text" }, dl.error) : null,
-      dl.status === "failed" ? h("button", { class: "btn", type: "button", onClick: () => startDownload(id) }, t("manager.actions.retry")) : null
+      dl.status === "failed" ? h("button", { class: "btn", type: "button", onClick: () => startDownload(id, retryCatalogEntry(dl)) }, t("manager.actions.retry")) : null
     );
   }) : [h("p", { class: "empty-text" }, t("manager.empty.noDownloads"))];
   return h("section", {}, h("h2", { class: "view-title" }, t("manager.downloads.title")), h("div", { class: "grid-2" }, cards));

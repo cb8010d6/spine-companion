@@ -108,6 +108,17 @@ If the tray icon appears but the window does not:
 - Check whether the model is off-screen after display changes.
 - Reset scale and offsets in **Manager > Settings**.
 
+## Touch and Pen Input
+
+- Tap the character to play its interaction animation.
+- Drag with one finger or a pen to move the companion window.
+- Pinch with two fingers over the character to change its scale.
+- Touch-friendly Manager controls use larger targets on coarse-pointer devices.
+- Windows keeps native dynamic pointer bounds. On Linux and macOS, the current
+  compatibility mode keeps the companion interactive instead of enabling full
+  transparent-area click-through. macOS trackpad zoom is handled through the
+  WebView wheel gesture path; Apple does not currently ship touchscreen Macs.
+
 If Windows reports `LiveKernelEvent 141`, `0x80263001`, or a black rectangle
 where the transparent companion should be:
 

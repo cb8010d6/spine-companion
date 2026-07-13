@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   LIBRARY_PAGE_SIZE,
   LIBRARY_PREVIEW_BATCH_SIZE,
+  beginDownloadRecord,
   canRemoveCatalogSource,
   catalogDisplayName,
   catalogDownloadRequest,
@@ -15,6 +16,7 @@ import {
   mergeInstalledModelMetadata,
   normalizeCatalogEntries,
   resolveCatalogSourceId,
+  retryCatalogEntry,
   selectPreviewBatch,
   upsertInstalledModel
 } from "../src/renderer/catalog-model.js";
@@ -133,5 +135,12 @@ describe("catalog model", () => {
   it("keeps official sources disable-only", () => {
     expect(canRemoveCatalogSource({ kind: "official" })).toBe(false);
     expect(canRemoveCatalogSource({ kind: "customRaw" })).toBe(true);
+  });
+
+  it("keeps the remote catalog entry available for a failed download retry", () => {
+    const entry = { catalogSourceId: "ark-enemies", model: { id: "enemy" } };
+    const record = beginDownloadRecord(entry, "Preparing download...");
+    const failed = { ...record, status: "failed", error: "offline" };
+    expect(retryCatalogEntry(failed)).toBe(entry);
   });
 });

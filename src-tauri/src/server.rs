@@ -364,8 +364,8 @@ pub async fn start_api_server(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{body::Body, http::Request};
     use crate::state::{create_reminder_broadcast, create_reminder_store, create_state_store};
+    use axum::{body::Body, http::Request};
     use tower::ServiceExt;
 
     #[tokio::test]

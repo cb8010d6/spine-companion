@@ -12,6 +12,20 @@
   transition: background var(--sc-motion-fast), border-color var(--sc-motion-fast), transform var(--sc-motion-fast);
 }
 
+@media (any-pointer: coarse) {
+  .btn,
+  .input,
+  .select {
+    min-height: 44px;
+  }
+
+  .btn-icon,
+  .icon-btn {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+
 .btn:hover:not(:disabled) {
   border-color: var(--sc-border-strong);
   background: var(--sc-bg-hover);
