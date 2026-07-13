@@ -1,6 +1,6 @@
 # 架构
 
-[English](architecture.md) | [简体中文](architecture.zh-CN.md)
+[English](overview.md) | [简体中文](overview.zh-CN.md)
 
 ```mermaid
 flowchart LR

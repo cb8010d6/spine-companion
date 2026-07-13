@@ -1637,8 +1637,8 @@ async function avatarStudioView() {
         h("article", { class: "card" },
           h("h3", {}, t("manager.avatar.docsTitle")),
           h("div", { class: "model-actions" },
-            h("button", { class: "btn", type: "button", onClick: () => window.companion?.openExternal?.("https://github.com/cb8010d6/spine-companion/blob/main/docs/avatar-studio.md") }, "English"),
-            h("button", { class: "btn", type: "button", onClick: () => window.companion?.openExternal?.("https://github.com/cb8010d6/spine-companion/blob/main/docs/avatar-studio.zh-CN.md") }, "中文")
+            h("button", { class: "btn", type: "button", onClick: () => window.companion?.openExternal?.("https://github.com/cb8010d6/spine-companion/blob/main/docs/guides/avatar-studio.md") }, "English"),
+            h("button", { class: "btn", type: "button", onClick: () => window.companion?.openExternal?.("https://github.com/cb8010d6/spine-companion/blob/main/docs/guides/avatar-studio.zh-CN.md") }, "中文")
           )
         )
       ),

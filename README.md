@@ -55,10 +55,10 @@ bun run dev
 `bun run dev` and `bun run tauri:dev` both start the Tauri application.
 
 For detailed deployment, startup, MCP, and troubleshooting steps, see
-[docs/deployment.md](docs/deployment.md). For a UI-focused walkthrough, see
-[docs/user-guide.md](docs/user-guide.md).
+[docs/guides/deployment.md](docs/guides/deployment.md). For a UI-focused walkthrough, see
+[docs/guides/user-guide.md](docs/guides/user-guide.md).
 The planned AI-assisted character workflow is documented in
-[docs/avatar-studio.md](docs/avatar-studio.md).
+[docs/guides/avatar-studio.md](docs/guides/avatar-studio.md).
 
 The renderer preview is available at:
 
@@ -121,7 +121,7 @@ bun run ai:configure -- --target all
 
 Supported targets include Codex Desktop, Codex CLI, Cursor, Claude Desktop,
 Claude Code, and Claude CLI. Unsupported MCP tools can copy the JSON snippets in
-[docs/ai-tools.md](docs/ai-tools.md).
+[docs/guides/ai-tools.md](docs/guides/ai-tools.md).
 
 ## One-Click Codex Plugin
 
@@ -165,7 +165,7 @@ The renderer supports these state sources:
 - JSON polling, useful for scripts that write a status file.
 - WebSocket, useful for push-style bridge services.
 
-See [docs/architecture.md](docs/architecture.md) for the intended MCP bridge
+See [docs/architecture/overview.md](docs/architecture/overview.md) for the intended MCP bridge
 shape.
 
 ## Desktop Controls

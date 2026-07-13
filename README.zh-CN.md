@@ -51,9 +51,9 @@ bun run dev
 
 `bun run dev` 和 `bun run tauri:dev` 都会启动 Tauri 应用。
 
-部署、启动、MCP 和排障步骤见 [docs/deployment.zh-CN.md](docs/deployment.zh-CN.md)。
-偏 UI 的使用说明见 [docs/user-guide.zh-CN.md](docs/user-guide.zh-CN.md)。
-计划中的 AI 辅助形象制作流程见 [docs/avatar-studio.zh-CN.md](docs/avatar-studio.zh-CN.md)。
+部署、启动、MCP 和排障步骤见 [docs/guides/deployment.zh-CN.md](docs/guides/deployment.zh-CN.md)。
+偏 UI 的使用说明见 [docs/guides/user-guide.zh-CN.md](docs/guides/user-guide.zh-CN.md)。
+计划中的 AI 辅助形象制作流程见 [docs/guides/avatar-studio.zh-CN.md](docs/guides/avatar-studio.zh-CN.md)。
 
 渲染器预览地址：
 
@@ -114,7 +114,7 @@ bun run ai:configure -- --target all
 ```
 
 支持的目标包括 Codex Desktop、Codex CLI、Cursor、Claude Desktop、Claude Code 和
-Claude CLI。不支持 MCP 工具的环境可以复制 [docs/ai-tools.zh-CN.md](docs/ai-tools.zh-CN.md)
+Claude CLI。不支持 MCP 工具的环境可以复制 [docs/guides/ai-tools.zh-CN.md](docs/guides/ai-tools.zh-CN.md)
 里的 JSON 片段。
 
 ## Codex 插件一键安装
@@ -156,7 +156,7 @@ plugins/spine-companion-status
 - JSON 轮询，适合写入状态文件的脚本。
 - WebSocket，适合 push 风格的桥接服务。
 
-MCP bridge 的设计形态见 [docs/architecture.zh-CN.md](docs/architecture.zh-CN.md)。
+MCP bridge 的设计形态见 [docs/architecture/overview.zh-CN.md](docs/architecture/overview.zh-CN.md)。
 
 ## 桌面控制
 
