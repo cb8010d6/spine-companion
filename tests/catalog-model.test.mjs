@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   LIBRARY_PAGE_SIZE,
+  LIBRARY_COUNT_DURATION_MS,
   LIBRARY_PREVIEW_BATCH_SIZE,
   beginDownloadRecord,
   canRemoveCatalogSource,
@@ -12,6 +13,8 @@ import {
   catalogSpineDisplayVersion,
   enabledCatalogSources,
   filterCatalog,
+  libraryCardRevealDelay,
+  libraryCountValue,
   mergeCatalogSources,
   mergeInstalledModelMetadata,
   normalizeCatalogEntries,
@@ -107,6 +110,16 @@ describe("catalog model", () => {
     expect(LIBRARY_PAGE_SIZE).toBe(12);
     expect(LIBRARY_PREVIEW_BATCH_SIZE).toBe(6);
     expect(selectPreviewBatch(Array.from({ length: 12 }, (_, id) => ({ id })))).toHaveLength(6);
+  });
+
+  it("keeps library motion short, bounded and deterministic", () => {
+    expect(LIBRARY_COUNT_DURATION_MS).toBe(420);
+    expect(libraryCountValue(128, 0)).toBe(0);
+    expect(libraryCountValue(128, 1)).toBe(128);
+    expect(libraryCountValue(128, 0.5)).toBeGreaterThan(64);
+    expect(libraryCardRevealDelay(0)).toBe(0);
+    expect(libraryCardRevealDelay(11)).toBe(374);
+    expect(libraryCardRevealDelay(99)).toBe(374);
   });
 
   it("does not present an unverified patch floor as an exact Spine version", () => {

@@ -94,8 +94,6 @@ struct UiSettings {
     drag_mode: String,
     auto_reveal_on_mcp: bool,
     system_notifications: bool,
-    shortcut_enabled: bool,
-    shortcut_accelerator: String,
     update_auto_check: bool,
     update_channel: String,
     max_device_pixel_ratio: f64,
@@ -115,8 +113,6 @@ struct UiSettingsPatch {
     drag_mode: Option<String>,
     auto_reveal_on_mcp: Option<bool>,
     system_notifications: Option<bool>,
-    shortcut_enabled: Option<bool>,
-    shortcut_accelerator: Option<String>,
     update_auto_check: Option<bool>,
     update_channel: Option<String>,
     max_device_pixel_ratio: Option<f64>,
@@ -278,8 +274,6 @@ fn fallback_config() -> serde_json::Value {
             "dragMode": "compatible",
             "autoRevealOnMcp": true,
             "systemNotifications": true,
-            "shortcutEnabled": true,
-            "shortcutAccelerator": "CommandOrControl+Shift+S",
             "updateAutoCheck": true,
             "updateChannel": "auto",
             "maxDevicePixelRatio": 2,
@@ -487,9 +481,6 @@ fn ui_settings_from_config(config: &serde_json::Value) -> UiSettings {
     let drag_mode = string_at(config, &["ui", "dragMode"])
         .unwrap_or("compatible")
         .to_string();
-    let shortcut = string_at(config, &["ui", "shortcutAccelerator"])
-        .unwrap_or("CommandOrControl+Shift+S")
-        .to_string();
     let gpu_mode = string_at(config, &["ui", "gpuMode"])
         .unwrap_or("hardware")
         .to_string();
@@ -502,12 +493,6 @@ fn ui_settings_from_config(config: &serde_json::Value) -> UiSettings {
         drag_mode: normalize_drag_mode(&drag_mode),
         auto_reveal_on_mcp: bool_at(config, &["ui", "autoRevealOnMcp"], true),
         system_notifications: bool_at(config, &["ui", "systemNotifications"], true),
-        shortcut_enabled: bool_at(config, &["ui", "shortcutEnabled"], true),
-        shortcut_accelerator: if shortcut.trim().is_empty() {
-            "CommandOrControl+Shift+S".to_string()
-        } else {
-            shortcut.trim().to_string()
-        },
         update_auto_check: bool_at(config, &["ui", "updateAutoCheck"], true),
         update_channel: normalize_update_channel(
             string_at(config, &["ui", "updateChannel"]).unwrap_or("auto"),
@@ -604,14 +589,6 @@ fn apply_ui_patch(settings: &mut UiSettings, patch: UiSettingsPatch) {
     }
     if let Some(value) = patch.system_notifications {
         settings.system_notifications = value;
-    }
-    if let Some(value) = patch.shortcut_enabled {
-        settings.shortcut_enabled = value;
-    }
-    if let Some(value) = patch.shortcut_accelerator {
-        if !value.trim().is_empty() {
-            settings.shortcut_accelerator = value.trim().to_string();
-        }
     }
     if let Some(value) = patch.update_auto_check {
         settings.update_auto_check = value;
@@ -835,6 +812,25 @@ fn load_runtime_config() -> RuntimeConfig {
             }
         }
     }
+    let active_model_metadata = model_by_skel(&config, &skel).or_else(|| {
+        if asset_dir.is_empty() {
+            None
+        } else {
+            std::fs::read_to_string(PathBuf::from(&asset_dir).join(".companion-model.json"))
+                .ok()
+                .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        }
+    });
+    let model_category = active_model_metadata
+        .as_ref()
+        .and_then(|model| model.get("category"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("operator");
+    let compatibility_profile = active_model_metadata
+        .as_ref()
+        .and_then(|model| model.get("compatibilityProfile"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("companion");
     let config_dir = config_dir_path.to_string_lossy().to_string();
     let ui_settings = ui_settings_from_config(&config);
 
@@ -859,7 +855,9 @@ fn load_runtime_config() -> RuntimeConfig {
             "framePadding": config["spine"]["framePadding"].clone(),
             "maxViewportFill": config["spine"]["maxViewportFill"].clone(),
             "stageBottomInset": config["spine"]["stageBottomInset"].clone(),
-            "fitStates": config["spine"]["fitStates"].clone()
+            "fitStates": config["spine"]["fitStates"].clone(),
+            "modelCategory": model_category,
+            "compatibilityProfile": compatibility_profile
         },
         "ui": config["ui"].clone(),
         "models": config["models"].clone(),
@@ -1153,7 +1151,9 @@ async fn install_model_value(
                     "spine": {
                         "assetDir": canonical_model_dir.to_string_lossy().to_string(),
                         "assetDirConfigured": true,
-                        "skel": skel.clone()
+                        "skel": skel.clone(),
+                        "modelCategory": model.get("category").cloned().unwrap_or_else(|| serde_json::json!("operator")),
+                        "compatibilityProfile": model.get("compatibilityProfile").cloned().unwrap_or_else(|| serde_json::json!("companion"))
                     }
                 }),
             );
@@ -1801,12 +1801,6 @@ async fn get_diagnostics(data: State<'_, AppData>) -> Result<serde_json::Value, 
             "previews": cache_stats(&preview_cache_dir)
         },
         "logsDir": data.config_dir.join("logs").to_string_lossy().to_string(),
-        "shortcut": {
-            "enabled": ui.shortcut_enabled,
-            "registered": false,
-            "accelerator": ui.shortcut_accelerator,
-            "error": "Global shortcuts are not implemented in the Tauri runtime yet."
-        },
         "gpu": {
             "mode": gpu_mode,
             "effective": gpu_effective,
@@ -2016,7 +2010,9 @@ async fn activate_installed_model(
                 "spine": {
                     "assetDir": canonical_model_dir.to_string_lossy().to_string(),
                     "assetDirConfigured": true,
-                    "skel": skel.clone()
+                    "skel": skel.clone(),
+                    "modelCategory": model.as_ref().and_then(|value| value.get("category")).cloned().unwrap_or_else(|| serde_json::json!("operator")),
+                    "compatibilityProfile": model.as_ref().and_then(|value| value.get("compatibilityProfile")).cloned().unwrap_or_else(|| serde_json::json!("companion"))
                 }
             }),
         );

@@ -48,7 +48,6 @@ describe("ui-settings", () => {
       dragMode: "smooth",
       hitboxPadding: 12,
       maxDevicePixelRatio: 2.5,
-      shortcutEnabled: false,
       updateAutoCheck: false,
       updateChannel: "stable"
     });
@@ -60,7 +59,6 @@ describe("ui-settings", () => {
       dragMode: "smooth",
       hitboxPadding: 12,
       maxDevicePixelRatio: 2.5,
-      shortcutEnabled: false,
       updateAutoCheck: false,
       updateChannel: "stable",
       autoRevealOnMcp: true,
@@ -85,15 +83,11 @@ describe("ui-settings", () => {
     expect(normalizeUiSettings({ hitboxPadding: -4 }).hitboxPadding).toBe(0);
   });
 
-  it("applies shortcut and update settings", () => {
+  it("applies update settings", () => {
     const next = applyUiSettingsPatch(DEFAULT_UI_SETTINGS, {
-      shortcutEnabled: false,
-      shortcutAccelerator: "Alt+Shift+S",
       updateAutoCheck: false,
       updateChannel: "prerelease"
     });
-    expect(next.shortcutEnabled).toBe(false);
-    expect(next.shortcutAccelerator).toBe("Alt+Shift+S");
     expect(next.updateAutoCheck).toBe(false);
     expect(next.updateChannel).toBe("prerelease");
   });

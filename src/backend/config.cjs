@@ -74,8 +74,6 @@ const fallbackConfig = {
     dragMode: "compatible",
     autoRevealOnMcp: true,
     systemNotifications: true,
-    shortcutEnabled: true,
-    shortcutAccelerator: "CommandOrControl+Shift+S",
     updateAutoCheck: true,
     updateChannel: "auto",
     maxDevicePixelRatio: 2,

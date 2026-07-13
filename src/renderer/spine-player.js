@@ -11,6 +11,28 @@ export function modelCoreFitStates(spineConfig = {}) {
     : ["idle", "working", "running", "waiting"];
 }
 
+export function modelViewportProfile(spineConfig = {}) {
+  const illustration = spineConfig.modelCategory === "illustration"
+    || spineConfig.compatibilityProfile === "idle-only";
+  const configuredPadding = Math.max(1, Number(spineConfig.framePadding || 1.12));
+  const configuredFill = Math.max(0.45, Math.min(0.9, Number(spineConfig.maxViewportFill || 0.72)));
+  return illustration
+    ? {
+        framePadding: Math.min(configuredPadding, 1.02),
+        availableWidth: 0.92,
+        availableHeight: 0.98,
+        viewportFill: Math.max(configuredFill, 0.88),
+        scaleBoost: 1.15
+      }
+    : {
+        framePadding: configuredPadding,
+        availableWidth: 0.86,
+        availableHeight: 0.94,
+        viewportFill: configuredFill,
+        scaleBoost: 1
+      };
+}
+
 export function attachTrackCompletion(entry, onComplete, isCurrent = () => true) {
   if (!entry) return null;
   entry.listener = {
@@ -482,11 +504,12 @@ export class SpinePlayer {
     const fitBounds = this.fitBounds || this.stableBounds || this.spine.getLocalBounds();
     const boundsWidth = Math.max(80, Number(fitBounds.width || 0));
     const boundsHeight = Math.max(120, Number(fitBounds.height || 0));
-    const padding = Math.max(1, Number(this.config.spine.framePadding || 1.12));
-    const availableWidth = Math.max(1, width * 0.86);
+    const viewport = modelViewportProfile(this.config.spine);
+    const padding = viewport.framePadding;
+    const availableWidth = Math.max(1, width * viewport.availableWidth);
     const bottomInset = this.hudVisible ? Number(this.config.spine.stageBottomInset || 0) : 0;
     const usableHeight = Math.max(1, height - bottomInset);
-    const availableHeight = Math.max(1, usableHeight * 0.94);
+    const availableHeight = Math.max(1, usableHeight * viewport.availableHeight);
     const measuredFitScale = Math.min(availableWidth / (boundsWidth * padding), availableHeight / (boundsHeight * padding));
     const sizeChanged = Math.abs(width - this.lastLayoutSize.width) > 8 || Math.abs(height - this.lastLayoutSize.height) > 8;
     if (!this.baseFitScale || options.forceFitRecalc || sizeChanged) {
@@ -495,10 +518,10 @@ export class SpinePlayer {
     }
     const fitScale = Math.min(measuredFitScale, this.baseFitScale * 1.08);
     const configuredScale = Number(this.config.spine.scale || 1);
-    const rawScale = fitScale * configuredScale * this.userScale;
-    const fill = Math.max(0.45, Math.min(0.9, Number(this.config.spine.maxViewportFill || 0.72)));
+    const rawScale = fitScale * configuredScale * this.userScale * viewport.scaleBoost;
+    const fill = viewport.viewportFill;
     const maxScaleByHeight = (height * fill) / boundsHeight;
-    const maxScaleByWidth = (width * 0.86) / boundsWidth;
+    const maxScaleByWidth = (width * viewport.availableWidth) / boundsWidth;
     const scale = Math.max(0.01, Math.min(rawScale, maxScaleByHeight, maxScaleByWidth));
     const mirror = this.direction === "left" ? -1 : 1;
 

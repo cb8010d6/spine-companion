@@ -41,8 +41,6 @@ const uiSettingsSchema = z.object({
   dragMode: z.enum(["compatible", "smooth"]).optional(),
   autoRevealOnMcp: z.boolean().optional(),
   systemNotifications: z.boolean().optional(),
-  shortcutEnabled: z.boolean().optional(),
-  shortcutAccelerator: z.string().trim().min(1).max(80).optional(),
   updateAutoCheck: z.boolean().optional(),
   updateChannel: z.enum(["auto", "stable", "prerelease"]).optional(),
   maxDevicePixelRatio: z.number().min(1).max(3).optional(),
