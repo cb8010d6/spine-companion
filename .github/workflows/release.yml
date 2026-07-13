@@ -122,12 +122,23 @@ jobs:
           TAG: ${{ steps.tag.outputs.tag }}
           PRERELEASE: ${{ steps.tag.outputs.prerelease }}
         run: |
+          NOTES_FILE="docs/releases/release-notes-${TAG}.md"
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             if [[ "$PRERELEASE" == "true" ]]; then
-              gh release create "$TAG" --title "$TAG" --notes "Automated prerelease from develop." --prerelease
+              if [[ -f "$NOTES_FILE" ]]; then
+                gh release create "$TAG" --title "$TAG" --notes-file "$NOTES_FILE" --prerelease
+              else
+                gh release create "$TAG" --title "$TAG" --notes "Automated prerelease." --prerelease
+              fi
             else
-              gh release create "$TAG" --title "$TAG" --notes "Automated release."
+              if [[ -f "$NOTES_FILE" ]]; then
+                gh release create "$TAG" --title "$TAG" --notes-file "$NOTES_FILE"
+              else
+                gh release create "$TAG" --title "$TAG" --notes "Automated release."
+              fi
             fi
+          elif [[ -f "$NOTES_FILE" ]]; then
+            gh release edit "$TAG" --notes-file "$NOTES_FILE"
           fi
           mapfile -d '' files < <(find release-artifacts -type f -print0)
           if [[ "${#files[@]}" -eq 0 ]]; then
