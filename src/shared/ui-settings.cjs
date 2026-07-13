@@ -7,8 +7,6 @@ const DEFAULT_UI_SETTINGS = Object.freeze({
   dragMode: "compatible",
   autoRevealOnMcp: true,
   systemNotifications: true,
-  shortcutEnabled: true,
-  shortcutAccelerator: "CommandOrControl+Shift+S",
   updateAutoCheck: true,
   updateChannel: "auto",
   maxDevicePixelRatio: 2,
@@ -37,10 +35,6 @@ function normalizeUiSettings(input = {}, defaults = DEFAULT_UI_SETTINGS) {
     dragMode: DRAG_MODES.has(source.dragMode) ? source.dragMode : defaults.dragMode,
     autoRevealOnMcp: typeof source.autoRevealOnMcp === "boolean" ? source.autoRevealOnMcp : defaults.autoRevealOnMcp,
     systemNotifications: typeof source.systemNotifications === "boolean" ? source.systemNotifications : defaults.systemNotifications,
-    shortcutEnabled: typeof source.shortcutEnabled === "boolean" ? source.shortcutEnabled : defaults.shortcutEnabled,
-    shortcutAccelerator: typeof source.shortcutAccelerator === "string" && source.shortcutAccelerator.trim()
-      ? source.shortcutAccelerator.trim()
-      : defaults.shortcutAccelerator,
     updateAutoCheck: typeof source.updateAutoCheck === "boolean" ? source.updateAutoCheck : defaults.updateAutoCheck,
     updateChannel: UPDATE_CHANNELS.has(source.updateChannel) ? source.updateChannel : defaults.updateChannel,
     maxDevicePixelRatio: Number.isFinite(Number(source.maxDevicePixelRatio))
@@ -66,10 +60,6 @@ function applyUiSettingsPatch(current = DEFAULT_UI_SETTINGS, patch = {}) {
   if (DRAG_MODES.has(patch.dragMode)) next.dragMode = patch.dragMode;
   if (typeof patch.autoRevealOnMcp === "boolean") next.autoRevealOnMcp = patch.autoRevealOnMcp;
   if (typeof patch.systemNotifications === "boolean") next.systemNotifications = patch.systemNotifications;
-  if (typeof patch.shortcutEnabled === "boolean") next.shortcutEnabled = patch.shortcutEnabled;
-  if (typeof patch.shortcutAccelerator === "string" && patch.shortcutAccelerator.trim()) {
-    next.shortcutAccelerator = patch.shortcutAccelerator.trim();
-  }
   if (typeof patch.updateAutoCheck === "boolean") next.updateAutoCheck = patch.updateAutoCheck;
   if (UPDATE_CHANNELS.has(patch.updateChannel)) next.updateChannel = patch.updateChannel;
   if (Number.isFinite(Number(patch.maxDevicePixelRatio))) {

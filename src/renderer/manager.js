@@ -35,6 +35,7 @@ import { installManagerPreviewBridge } from "./manager-preview.js";
 import { applyThemePreference } from "./theme.js";
 import { integrationBrand } from "./integration-icons.js";
 import {
+  LIBRARY_COUNT_DURATION_MS,
   LIBRARY_PAGE_SIZE,
   LIBRARY_PREVIEW_BATCH_SIZE,
   LIBRARY_PREVIEW_CONFIRM_BYTES,
@@ -46,6 +47,8 @@ import {
   catalogSpineDisplayVersion,
   beginDownloadRecord,
   enabledCatalogSources,
+  libraryCardRevealDelay,
+  libraryCountValue,
   mergeInstalledModelMetadata,
   normalizeCatalogEntries,
   resolveCatalogSourceId,
@@ -181,6 +184,73 @@ function navTo(viewName) {
   renderView(viewName);
 }
 
+function animateLibraryCount(element, target) {
+  const finalValue = Math.max(0, Math.floor(Number(target) || 0));
+  element.textContent = "0";
+  if (window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches) {
+    element.textContent = String(finalValue);
+    return;
+  }
+  let startedAt = 0;
+  const frame = (timestamp) => {
+    if (!element.isConnected) return;
+    if (!startedAt) startedAt = timestamp;
+    const progress = Math.min(1, (timestamp - startedAt) / LIBRARY_COUNT_DURATION_MS);
+    element.textContent = String(libraryCountValue(finalValue, progress));
+    if (progress < 1) window.requestAnimationFrame(frame);
+  };
+  window.setTimeout(() => window.requestAnimationFrame(frame), 70);
+}
+
+function libraryLoadingView() {
+  const enabledSources = enabledCatalogSources(config.models?.sources || []);
+  librarySelectedSource = resolveCatalogSourceId(enabledSources, librarySelectedSource);
+  const sourceFilter = h("select", {
+    class: "select library-filter",
+    "aria-label": t("manager.library.sourceFilterLabel"),
+    disabled: enabledSources.length === 0,
+    onChange: (event) => {
+      librarySelectedSource = event.target.value;
+      renderView("library");
+    }
+  }, ...(enabledSources.length
+    ? enabledSources.map((source) => h("option", { value: source.id }, catalogSourceLabel(source)))
+    : [h("option", { value: "" }, t("manager.library.noEnabledSources"))]));
+  sourceFilter.value = librarySelectedSource;
+  const skeletonCards = Array.from({ length: 6 }, (_, index) => h("article", {
+    class: "model-card model-card-skeleton",
+    style: { "--reveal-delay": `${libraryCardRevealDelay(index)}ms` },
+    "aria-hidden": "true"
+  },
+  h("div", { class: "model-preview skeleton-block" }),
+  h("div", { class: "model-info" },
+    h("span", { class: "skeleton-line skeleton-title" }),
+    h("span", { class: "skeleton-line skeleton-meta" }),
+    h("span", { class: "skeleton-line skeleton-detail" })
+  )));
+  return h("section", { class: "library-loading-shell", "aria-busy": "true" },
+    h("div", { class: "view-header" },
+      h("div", {},
+        h("h2", { class: "view-title" }, t("manager.library.title")),
+        h("p", { class: "empty-text" }, t("manager.library.subtitle"))
+      ),
+      h("button", { class: "btn", type: "button", onClick: () => navTo("installed") }, t("manager.library.manageInstalled"))
+    ),
+    h("div", { class: "library-summary" },
+      h("div", {}, h("strong", {}, "0"), h("span", {}, t("manager.library.catalogCount"))),
+      h("div", {}, h("strong", {}, "0"), h("span", {}, t("manager.library.installedCount"))),
+      h("div", {}, h("strong", {}, "0"), h("span", {}, t("manager.library.activeCount")))
+    ),
+    h("div", { class: "library-toolbar" },
+      sourceFilter,
+      h("input", { class: "input", type: "search", placeholder: t("manager.search.placeholder"), disabled: true }),
+      h("select", { class: "select library-filter", disabled: true }, h("option", {}, t("manager.library.filter.all"))),
+      h("button", { class: "btn", type: "button", disabled: true }, ...iconLabel(Eye, t("manager.library.previewBatch", { count: LIBRARY_PREVIEW_BATCH_SIZE })))
+    ),
+    h("div", { class: "grid-2 library-grid" }, ...skeletonCards)
+  );
+}
+
 function catalogModel(id) {
   return (config.models?.catalog || []).find((model) => model.id === id) || {};
 }
@@ -288,7 +358,6 @@ function localizedDiagnosticMessage(message) {
     "No active asset directory.": "manager.diagnostics.message.noAssetDirectory",
     "No recoverable downloaded catalog model was found.": "manager.diagnostics.message.noRecoverableModel",
     "Spine asset set is healthy.": "manager.diagnostics.message.assetsHealthy",
-    "Global shortcuts are not implemented in the Tauri runtime yet.": "manager.diagnostics.message.shortcutUnavailable",
     "WebView2 uses hardware acceleration.": "manager.diagnostics.message.hardwareAcceleration",
     "WebView2 uses software rendering because hardware acceleration is disabled in Settings.": "manager.diagnostics.message.softwareRendering",
     "If Windows reports LiveKernelEvent 141 or display driver reset, restart the renderer or clear WebView GPU cache.": "manager.diagnostics.message.tdrAdvice"
@@ -569,6 +638,7 @@ async function libraryView() {
   const pager = h("div", { class: "library-pager" });
   const cardControllers = new Map();
   let currentPagePreviewTasks = [];
+  let revealCards = true;
   const previewButtonLabel = () => t("manager.library.previewBatch", { count: LIBRARY_PREVIEW_BATCH_SIZE });
   const runPreviewBatch = async (tasks) => {
     previewCurrentPageButton.disabled = true;
@@ -629,6 +699,8 @@ async function libraryView() {
   };
 
   function renderCards(query = "", selectedFilter = "all") {
+    const shouldRevealCards = revealCards;
+    revealCards = false;
     cardControllers.clear();
     const normalized = query.trim().toLowerCase();
     const filtered = catalog
@@ -640,7 +712,7 @@ async function libraryView() {
     currentPagePreviewTasks = [];
     const cards = filtered
       .slice((catalogPage - 1) * pageSize, catalogPage * pageSize)
-      .map((model) => {
+      .map((model, index) => {
         const download = downloads[model.id];
         const downloadBusy = download?.status === "pending" || download?.status === "downloading";
         const installed = installedIds.has(model.id);
@@ -683,7 +755,10 @@ async function libraryView() {
         }
         const sourceUrl = model.repositoryUrl || model.sourceUrl || "";
         const displayName = catalogDisplayName(model);
-        return h("article", { class: "model-card fade-in" },
+        return h("article", {
+          class: `model-card ${shouldRevealCards ? "library-card-enter" : ""}`.trim(),
+          style: { "--reveal-delay": `${libraryCardRevealDelay(index)}ms` }
+        },
           previewNode(model, (task) => currentPagePreviewTasks.push(task)),
           h("div", { class: "model-info" },
             h("div", { class: "model-title", title: displayName }, displayName),
@@ -716,9 +791,9 @@ async function libraryView() {
       h("p", { class: "empty-text" }, t("manager.library.emptyBody"))
     )]));
     pager.replaceChildren(
-      h("button", { class: "btn", type: "button", disabled: catalogPage <= 1, onClick: () => { catalogPage -= 1; renderCards(query, selectedFilter); } }, t("manager.library.previousPage")),
+      h("button", { class: "btn", type: "button", disabled: catalogPage <= 1, onClick: () => { catalogPage -= 1; revealCards = true; renderCards(query, selectedFilter); } }, t("manager.library.previousPage")),
       h("span", {}, t("manager.library.page", { page: catalogPage, pages: pageCount, count: filtered.length })),
-      h("button", { class: "btn", type: "button", disabled: catalogPage >= pageCount, onClick: () => { catalogPage += 1; renderCards(query, selectedFilter); } }, t("manager.library.nextPage"))
+      h("button", { class: "btn", type: "button", disabled: catalogPage >= pageCount, onClick: () => { catalogPage += 1; revealCards = true; renderCards(query, selectedFilter); } }, t("manager.library.nextPage"))
     );
   }
 
@@ -738,9 +813,12 @@ async function libraryView() {
     }
   };
 
-  const catalogCount = h("strong", {}, String(catalog.filter((model) => model.sourceId === sourceValue).length));
-  const installedCount = h("strong", {}, String(installedModels.length));
-  const activeCount = h("strong", {}, activeId ? "1" : "0");
+  const catalogCountTarget = catalog.filter((model) => model.sourceId === sourceValue).length;
+  const installedCountTarget = installedModels.length;
+  const activeCountTarget = activeId ? 1 : 0;
+  const catalogCount = h("strong", {}, "0");
+  const installedCount = h("strong", {}, "0");
+  const activeCount = h("strong", {}, "0");
   renderCards();
   const content = h("section", {},
     h("div", { class: "view-header" },
@@ -778,6 +856,11 @@ async function libraryView() {
     grid,
     pager
   );
+  window.requestAnimationFrame(() => {
+    animateLibraryCount(catalogCount, catalogCountTarget);
+    animateLibraryCount(installedCount, installedCountTarget);
+    animateLibraryCount(activeCount, activeCountTarget);
+  });
   return { content, session, remoteCatalog, sourceId: sourceValue };
 }
 
@@ -993,16 +1076,6 @@ function settingsView() {
         ))
       ),
       section(t("manager.settings.interaction"), t("manager.settings.interactionHelp"),
-        isTauri()
-          ? h("p", { class: "empty-text" }, t("manager.diagnostics.message.shortcutUnavailable"))
-          : [
-              check(t("manager.field.shortcutEnabled"), ui.shortcutEnabled !== false, (checked) => saveUi({ shortcutEnabled: checked })),
-              field(t("manager.field.shortcutAccelerator"), h("input", {
-                class: "input",
-                value: ui.shortcutAccelerator || "CommandOrControl+Shift+S",
-                onChange: (e) => saveUi({ shortcutAccelerator: e.target.value })
-              }))
-            ],
         rangeNumber(t("manager.field.hitboxPadding"), "set-hitbox-padding", Number(ui.hitboxPadding || 8), 0, 48, 1, () => saveUi({ hitboxPadding: numeric("set-hitbox-padding-number") }))
       ),
       section(t("manager.settings.compatibility"), t("manager.settings.compatibilityHelp"),
@@ -1498,10 +1571,6 @@ async function diagnosticsView() {
             size: formatBytes(diagnostics.cache.previews?.bytes || 0)
           })
         ) : null,
-        row(t("manager.diagnostics.shortcut"), diagnostics.shortcut?.registered || diagnostics.shortcut?.enabled === false,
-          diagnostics.shortcut?.enabled === false
-            ? t("manager.status.disabled")
-            : localizedDiagnosticMessage(diagnostics.shortcut?.error) || diagnostics.shortcut?.accelerator),
         diagnostics.gpu ? row(t("manager.diagnostics.gpu"), true, localizedDiagnosticMessage(diagnostics.gpu.message) || diagnostics.gpu.mode) : null,
         diagnostics.gpu?.renderer ? row(t("manager.diagnostics.renderer"), diagnostics.gpu.renderer.status !== "context-lost", t("manager.diagnostics.rendererSummary", { status: localizedRendererState(diagnostics.gpu.renderer.status), count: diagnostics.gpu.renderer.recoveryCount || 0 })) : null,
         diagnostics.gpu?.webviewCacheDir ? h("p", { class: "model-meta", title: diagnostics.gpu.webviewCacheDir }, diagnostics.gpu.webviewCacheDir) : null,
@@ -1792,7 +1861,8 @@ async function renderView(viewName) {
     await renderDashboard();
     return;
   }
-  viewContainer.replaceChildren(h("p", { class: "empty-text" }, t("manager.status.loading")));
+  if (viewName === "library") render(libraryLoadingView(), viewContainer);
+  else viewContainer.replaceChildren(h("p", { class: "empty-text" }, t("manager.status.loading")));
   setStatus(t("manager.status.viewing", { view: t(`manager.nav.${viewName}`) }));
   if (viewName === "library") {
     const result = await libraryView();

@@ -1,10 +1,22 @@
 import { describe, expect, it, vi } from "vitest";
-import { attachTrackCompletion, modelCoreFitStates, selectAvailableAnimation } from "../src/renderer/spine-player.js";
+import { attachTrackCompletion, modelCoreFitStates, modelViewportProfile, selectAvailableAnimation } from "../src/renderer/spine-player.js";
 
 describe("Spine player transitions", () => {
   it("uses only stable everyday states to normalize model layout", () => {
     expect(modelCoreFitStates({})).toEqual(["idle", "working", "running", "waiting"]);
     expect(modelCoreFitStates({ coreFitStates: ["idle", "working"] })).toEqual(["idle", "working"]);
+  });
+
+  it("gives dynamic illustrations a larger but bounded viewport profile", () => {
+    expect(modelViewportProfile({ modelCategory: "operator", maxViewportFill: 0.72 })).toMatchObject({
+      viewportFill: 0.72,
+      scaleBoost: 1
+    });
+    expect(modelViewportProfile({ modelCategory: "illustration", framePadding: 1.08, maxViewportFill: 0.72 })).toMatchObject({
+      framePadding: 1.02,
+      viewportFill: 0.88,
+      scaleBoost: 1.15
+    });
   });
 
   it("returns from a one-shot only when its active track entry completes", () => {

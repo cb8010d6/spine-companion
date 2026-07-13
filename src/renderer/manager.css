@@ -449,6 +449,45 @@ button:disabled {
   overflow: hidden;
 }
 
+.library-card-enter,
+.model-card-skeleton {
+  opacity: 0;
+  animation: library-card-enter 260ms ease-out var(--reveal-delay, 0ms) forwards;
+}
+
+.model-card-skeleton {
+  pointer-events: none;
+}
+
+.skeleton-block,
+.skeleton-line {
+  background: color-mix(in srgb, var(--bg-hover) 74%, var(--border));
+}
+
+.skeleton-line {
+  display: block;
+  height: 9px;
+  margin-bottom: 10px;
+  border-radius: 3px;
+}
+
+.skeleton-title { width: 58%; height: 12px; }
+.skeleton-meta { width: 82%; }
+.skeleton-detail { width: 42%; }
+
+@keyframes library-card-enter {
+  from { opacity: 0; transform: translateY(7px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .library-card-enter,
+  .model-card-skeleton {
+    opacity: 1;
+    animation: none;
+  }
+}
+
 .model-preview span {
   font-weight: 800;
   color: rgba(255, 255, 255, 0.88);

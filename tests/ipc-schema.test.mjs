@@ -19,14 +19,12 @@ describe("IPC schema validation", () => {
     });
     expect(validateSaveSettings({
       ui: {
-        shortcutEnabled: false,
-        shortcutAccelerator: "Alt+Shift+S",
         updateAutoCheck: false,
         updateChannel: "prerelease",
         maxDevicePixelRatio: 3,
         hitboxPadding: 12
       }
-    }).ui).toMatchObject({ shortcutAccelerator: "Alt+Shift+S" });
+    }).ui).toMatchObject({ updateChannel: "prerelease" });
     expect(validateReminder({ text: "Stand up", inSeconds: 30 })).toMatchObject({ text: "Stand up" });
   });
 

@@ -37,6 +37,18 @@ export function normalizeCatalogEntries(entries = []) {
 export const LIBRARY_PAGE_SIZE = 12;
 export const LIBRARY_PREVIEW_BATCH_SIZE = 6;
 export const LIBRARY_PREVIEW_CONFIRM_BYTES = 30 * 1024 * 1024;
+export const LIBRARY_COUNT_DURATION_MS = 420;
+
+export function libraryCountValue(target, progress) {
+  const normalizedTarget = Math.max(0, Math.floor(Number(target) || 0));
+  const normalizedProgress = Math.max(0, Math.min(1, Number(progress) || 0));
+  const eased = 1 - ((1 - normalizedProgress) ** 3);
+  return Math.min(normalizedTarget, Math.round(normalizedTarget * eased));
+}
+
+export function libraryCardRevealDelay(index) {
+  return Math.max(0, Math.min(11, Math.floor(Number(index) || 0))) * 34;
+}
 
 export function enabledCatalogSources(sources = []) {
   return (sources || []).filter((source) => source?.enabled !== false && source?.id);
