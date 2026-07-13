@@ -6,6 +6,7 @@ mod server;
 mod source_registry;
 mod state;
 
+use sha1::Sha1;
 use sha2::{Digest, Sha256};
 use state::{
     create_reminder, create_reminder_broadcast, create_reminder_store, create_state_store,
@@ -277,13 +278,29 @@ fn fallback_config() -> serde_json::Value {
             "debugHitbox": false
         },
         "models": {
-            "sources": [{
-                "id": "ark-models",
-                "label": "Ark-Models",
-                "catalogUrl": "https://raw.githubusercontent.com/cb8010d6/spine-companion/main/catalog/catalog.json",
-                "kind": "official",
-                "enabled": true
-            }],
+            "sources": [
+                {
+                    "id": "ark-models",
+                    "label": "Operators / 基建小人",
+                    "catalogUrl": "https://raw.githubusercontent.com/cb8010d6/spine-companion/main/catalog/catalog.json",
+                    "kind": "official",
+                    "enabled": true
+                },
+                {
+                    "id": "ark-illustrations",
+                    "label": "Dynamic illustrations / 动态立绘",
+                    "catalogUrl": "https://raw.githubusercontent.com/cb8010d6/spine-companion/main/catalog/illustrations.json",
+                    "kind": "official",
+                    "enabled": true
+                },
+                {
+                    "id": "ark-enemies",
+                    "label": "Enemies / 敌人",
+                    "catalogUrl": "https://raw.githubusercontent.com/cb8010d6/spine-companion/main/catalog/enemies.json",
+                    "kind": "official",
+                    "enabled": true
+                }
+            ],
             "catalog": [
                 {
                     "id": "ark-1001-amiya2-sale-16",
@@ -313,7 +330,7 @@ fn fallback_config() -> serde_json::Value {
         "specialSegments": {
             "review": { "from": 2.6, "to": 4.35, "loop": true },
             "success": { "from": 4.4, "to": 14.433, "loop": false },
-            "successLoop": { "from": 9.2, "to": 14.433, "loop": true, "mixDurationMs": 420, "repeatCount": 240 },
+            "successLoop": { "from": 9.2, "to": 14.433, "loop": true, "mixDurationMs": 420 },
             "special": { "from": 0, "to": 14.433, "loop": true }
         }
     })
@@ -755,6 +772,7 @@ fn load_runtime_config() -> RuntimeConfig {
             }
         }
     }
+    ensure_official_model_sources(&mut config);
     let config_dir_path = user_config_dir().unwrap_or_else(|| root.clone());
     let local_config_path = if resolved_local_config_path.is_empty() {
         default_local_config_path(&root)
@@ -1012,7 +1030,7 @@ async fn import_model(
                 );
                 message
             })?;
-        if let Some(expected) = file.get("sha256").and_then(|value| value.as_str()) {
+        if let Some(expected) = file.get("sha256").and_then(|value| value.as_str()).filter(|value| !value.is_empty()) {
             let actual = format!("{:x}", Sha256::digest(&bytes));
             if !actual.eq_ignore_ascii_case(expected) {
                 let _ = remove_dir_if_exists_blocking(&temp_model_dir);
@@ -1020,6 +1038,11 @@ async fn import_model(
                     "Integrity check failed for {file_name}: expected {expected}, got {actual}"
                 ));
             }
+        } else if let Some(expected) = file.get("githubBlobSha").and_then(|value| value.as_str()) {
+            verify_git_blob_sha(&bytes, expected).map_err(|error| {
+                let _ = remove_dir_if_exists_blocking(&temp_model_dir);
+                format!("Integrity check failed for {file_name}: {error}")
+            })?;
         }
         tokio::fs::write(temp_model_dir.join(file_name), bytes)
             .await
@@ -1259,14 +1282,17 @@ async fn prepare_model_preview(
                     let _ = remove_dir_if_exists_blocking(&temp_dir);
                     format!("Failed to prepare preview: {error}")
                 })?;
-            let expected = file
-                .get("sha256")
-                .and_then(|hash| hash.as_str())
-                .ok_or_else(|| format!("Preview file {file_name} is missing SHA-256"))?;
-            let actual = format!("{:x}", Sha256::digest(&bytes));
-            if !actual.eq_ignore_ascii_case(expected) {
-                let _ = remove_dir_if_exists_blocking(&temp_dir);
-                return Err(format!("Preview integrity check failed for {file_name}"));
+            if let Some(expected) = file.get("sha256").and_then(|hash| hash.as_str()).filter(|value| !value.is_empty()) {
+                let actual = format!("{:x}", Sha256::digest(&bytes));
+                if !actual.eq_ignore_ascii_case(expected) {
+                    let _ = remove_dir_if_exists_blocking(&temp_dir);
+                    return Err(format!("Preview integrity check failed for {file_name}"));
+                }
+            } else if let Some(expected) = file.get("githubBlobSha").and_then(|hash| hash.as_str()) {
+                verify_git_blob_sha(&bytes, expected).map_err(|error| {
+                    let _ = remove_dir_if_exists_blocking(&temp_dir);
+                    format!("Preview integrity check failed for {file_name}: {error}")
+                })?;
             }
             tokio::fs::write(temp_dir.join(file_name), bytes)
                 .await
@@ -1379,6 +1405,42 @@ async fn download_model_file(
         }
     }
     Err(format!("{}; tried {}", file_name, attempts.join("; ")))
+}
+
+fn verify_git_blob_sha(bytes: &[u8], expected: &str) -> Result<(), String> {
+    let mut digest = Sha1::new();
+    digest.update(format!("blob {}\0", bytes.len()).as_bytes());
+    digest.update(bytes);
+    let actual = format!("{:x}", digest.finalize());
+    if actual.eq_ignore_ascii_case(expected) {
+        Ok(())
+    } else {
+        Err(format!("expected {expected}, got {actual}"))
+    }
+}
+
+fn ensure_official_model_sources(config: &mut serde_json::Value) {
+    let defaults = fallback_config();
+    let Some(default_sources) = defaults
+        .get("models")
+        .and_then(|models| models.get("sources"))
+        .and_then(|sources| sources.as_array())
+    else {
+        return;
+    };
+    let Some(sources) = config
+        .get_mut("models")
+        .and_then(|models| models.get_mut("sources"))
+        .and_then(|sources| sources.as_array_mut())
+    else {
+        return;
+    };
+    for source in default_sources {
+        let id = source.get("id").and_then(|value| value.as_str());
+        if !sources.iter().any(|current| current.get("id").and_then(|value| value.as_str()) == id) {
+            sources.push(source.clone());
+        }
+    }
 }
 
 async fn remove_dir_if_exists(path: &Path) -> Result<(), String> {
@@ -2947,13 +3009,27 @@ fn create_main_window(app: &AppHandle) -> Result<WebviewWindow, String> {
 }
 
 fn recreate_main_window(app: &AppHandle, reason: &str) -> Result<(), String> {
+    let mut previous_position = None;
+    let mut previous_size = None;
+    let mut was_visible = true;
     if let Some(win) = app.get_webview_window("main") {
+        previous_position = win.outer_position().ok();
+        previous_size = win.outer_size().ok();
+        was_visible = win.is_visible().unwrap_or(true);
         let _ = win.set_ignore_cursor_events(false);
         let _ = win.close();
         std::thread::sleep(std::time::Duration::from_millis(140));
     }
     let win = create_main_window(app)?;
-    show_companion_window(&win);
+    if let Some(size) = previous_size {
+        let _ = win.set_size(size);
+    }
+    if let Some(position) = previous_position {
+        let _ = win.set_position(position);
+    }
+    if was_visible {
+        show_companion_window(&win);
+    }
     let data = app.state::<AppData>();
     let mut health = data.renderer_health.lock().unwrap();
     health.status = "recreated".to_string();
@@ -2987,7 +3063,8 @@ fn start_renderer_watchdog(app: AppHandle) {
 }
 
 fn renderer_heartbeat_stale(health: &RendererHealth, now: u64) -> bool {
-    health.last_heartbeat_at > 0
+    !matches!(health.status.as_str(), "starting" | "suspended" | "resuming")
+        && health.last_heartbeat_at > 0
         && now.saturating_sub(health.last_heartbeat_at) > 8_000
         && now.saturating_sub(health.last_recovery_at) > 15_000
 }
@@ -4161,14 +4238,48 @@ mod tests {
     use super::*;
 
     #[test]
+    fn verifies_immutable_git_blob_digests() {
+        assert!(verify_git_blob_sha(b"hello\n", "ce013625030ba8dba906f756967f9e9ca394464a").is_ok());
+        assert!(verify_git_blob_sha(b"changed", "ce013625030ba8dba906f756967f9e9ca394464a").is_err());
+    }
+
+    #[test]
+    fn adds_new_official_catalogs_without_removing_user_sources() {
+        let mut config = serde_json::json!({
+            "models": { "sources": [{
+                "id": "custom",
+                "label": "Custom",
+                "catalogUrl": "https://example.com/catalog.json",
+                "kind": "customCdn",
+                "enabled": true
+            }] }
+        });
+        ensure_official_model_sources(&mut config);
+        let ids = config["models"]["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|source| source["id"].as_str())
+            .collect::<Vec<_>>();
+        assert!(ids.contains(&"custom"));
+        assert!(ids.contains(&"ark-models"));
+        assert!(ids.contains(&"ark-illustrations"));
+        assert!(ids.contains(&"ark-enemies"));
+    }
+
+    #[test]
     fn renderer_watchdog_requires_timeout_and_recovery_cooldown() {
         let mut health = RendererHealth {
+            status: "ok".to_string(),
             last_heartbeat_at: 1_000,
             ..RendererHealth::default()
         };
         assert!(!renderer_heartbeat_stale(&health, 8_999));
         assert!(renderer_heartbeat_stale(&health, 20_000));
         health.last_recovery_at = 18_000;
+        assert!(!renderer_heartbeat_stale(&health, 20_000));
+        health.status = "suspended".to_string();
+        health.last_recovery_at = 0;
         assert!(!renderer_heartbeat_stale(&health, 20_000));
     }
 

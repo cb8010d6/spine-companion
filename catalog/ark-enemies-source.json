@@ -1,22 +1,20 @@
 {
-  "id": "ark-models",
-  "name": "Ark-Models",
+  "id": "ark-enemies",
+  "name": "Ark-Models Enemies",
   "repository": {
     "owner": "isHarryh",
     "name": "Ark-Models",
     "ref": "main",
-    "modelsPath": "models"
+    "modelsPath": "models_enemies"
   },
   "author": "isHarryh/Ark-Models contributors",
   "license": "NOASSERTION",
   "licenseWarning": "Upstream license and redistribution rights are not verified by this catalog. Review the source terms and obtain permission before downloading, using, or redistributing any model asset.",
   "licenseNote": "Third-party Ark-Models content is downloaded only to the user's local machine. Do not commit, bundle, or redistribute model files from this source.",
-  "spine": {
-    "min": "3.8.0",
-    "max": "3.8.99"
-  },
-  "requireDetectedSpineVersion": true,
-  "category": "operator",
-  "compatibilityProfile": "companion",
-  "tags": ["ark-models", "third-party"]
+  "spine": { "min": "3.8.0", "max": "3.8.99" },
+  "requireDetectedSpineVersion": false,
+  "metadataOnly": true,
+  "category": "enemy",
+  "compatibilityProfile": "experimental",
+  "tags": ["ark-models", "enemy", "third-party"]
 }

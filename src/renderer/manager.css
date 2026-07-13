@@ -534,6 +534,15 @@ button:disabled {
   margin-top: auto;
 }
 
+.model-download-progress {
+  max-width: 150px;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .model-action,
 .model-preview-button {
   display: inline-flex;

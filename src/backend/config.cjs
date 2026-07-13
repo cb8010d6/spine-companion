@@ -111,7 +111,7 @@ const fallbackConfig = {
   specialSegments: {
     review: { from: 2.6, to: 4.35, loop: true },
     success: { from: 4.4, to: 14.433, loop: false },
-    successLoop: { from: 9.2, to: 14.433, loop: true, mixDurationMs: 420, repeatCount: 240 },
+    successLoop: { from: 9.2, to: 14.433, loop: true, mixDurationMs: 420 },
     special: { from: 0, to: 14.433, loop: true }
   }
 };

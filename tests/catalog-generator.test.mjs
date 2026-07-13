@@ -44,9 +44,11 @@ function mockFetch(treePaths = Object.keys(bytes)) {
 
 describe("Ark catalog generator", () => {
   it("validates the committed catalog without contacting GitHub", async () => {
-    const catalogPath = fileURLToPath(new URL("../catalog/catalog.json", import.meta.url));
-    const catalog = JSON.parse(await readFile(catalogPath, "utf8"));
-    expect(validateCatalog(catalog)).toBe(catalog);
+    for (const name of ["catalog.json", "illustrations.json", "enemies.json"]) {
+      const catalogPath = fileURLToPath(new URL(`../catalog/${name}`, import.meta.url));
+      const catalog = JSON.parse(await readFile(catalogPath, "utf8"));
+      expect(validateCatalog(catalog)).toBe(catalog);
+    }
   });
 
   it("creates deterministic, commit-pinned metadata with SHA-256 digests", async () => {
@@ -77,7 +79,27 @@ describe("Ark catalog generator", () => {
   it("rejects catalog entries that omit an integrity digest", async () => {
     const catalog = await scanGithubRepository(source, { fetchImpl: mockFetch() });
     catalog.models[0].files[0].sha256 = "";
-    expect(() => validateCatalog(catalog)).toThrow("requires a SHA-256 digest");
+    catalog.models[0].files[0].githubBlobSha = "";
+    expect(() => validateCatalog(catalog)).toThrow("requires an integrity digest");
+  });
+
+  it("can generate a metadata-only catalog backed by immutable Git blob digests", async () => {
+    const catalog = await scanGithubRepository({
+      ...source,
+      metadataOnly: true,
+      requireDetectedSpineVersion: false,
+      category: "illustration",
+      compatibilityProfile: "idle-only"
+    }, { fetchImpl: mockFetch() });
+    expect(catalog.models[0]).toMatchObject({
+      category: "illustration",
+      compatibilityProfile: "idle-only",
+      versionVerified: false,
+      spine: source.spine
+    });
+    expect(catalog.models[0].files[0]).not.toHaveProperty("sha256");
+    expect(catalog.models[0].files[0].githubBlobSha).toBe(BLOB_SHA);
+    expect(validateCatalog(catalog)).toBe(catalog);
   });
 
   it("skips incomplete runtime folders without blocking valid catalog entries", async () => {
