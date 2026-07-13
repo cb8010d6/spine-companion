@@ -82,11 +82,19 @@ const integrationTestResults = new Map();
 let integrationFilter = "all";
 let selectedIntegrationId = "";
 let dashboardRenderRevision = 0;
+let librarySession = null;
 let modalReturnFocus = null;
 let modalOnDismiss = null;
 
 function setStatus(text) {
   topbarStatus.textContent = text;
+}
+
+function formatBytes(value) {
+  const bytes = Math.max(0, Number(value) || 0);
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function showToast(message) {
@@ -415,7 +423,7 @@ const dashboardRefresh = createCoalescedRefresh(() => {
 
 async function startDownload(id, catalogEntry = null) {
   downloads[id] = { status: "pending", current: 0, total: 1, file: t("manager.download.initializing") };
-  renderView(activeView);
+  librarySession?.refresh();
   try {
     const result = catalogEntry
       ? await window.companion?.importCatalogModel?.(catalogEntry)
@@ -435,7 +443,8 @@ async function startDownload(id, catalogEntry = null) {
       } }, t("manager.actions.retry"))
     ]);
   }
-  if (activeView === "library" || activeView === "downloads" || activeView === "installed") renderView(activeView);
+  if (activeView === "library") librarySession?.refresh({ installed: true });
+  else if (activeView === "downloads" || activeView === "installed") renderView(activeView);
 }
 
 async function refreshRemoteCatalog() {
@@ -453,8 +462,8 @@ async function libraryView() {
   const staticCatalog = (config.models?.catalog || []).map((model) => ({ ...model, _catalogEntry: null }));
   const remoteModels = normalizeCatalogEntries(remoteCatalog.models);
   const catalog = [...remoteModels, ...staticCatalog.filter((item) => !remoteModels.some((remote) => remote.id === item.id))];
-  const installedIds = new Set(installedModels.map((model) => model.id));
-  const activeId = activeInstalledId();
+  let installedIds = new Set(installedModels.map((model) => model.id));
+  let activeId = activeInstalledId();
   let filterValue = "all";
   const enabledSources = (config.models?.sources || []).filter((source) => source.enabled !== false);
   let sourceValue = enabledSources.length === 1 ? enabledSources[0].id : "all";
@@ -547,11 +556,12 @@ async function libraryView() {
       .slice((catalogPage - 1) * pageSize, catalogPage * pageSize)
       .map((model) => {
         const download = downloads[model.id];
+        const downloadBusy = download?.status === "pending" || download?.status === "downloading";
         const installed = isInstalled(model.id);
         const active = activeInstalledId() === model.id;
         const actionLabel = installed
           ? (active ? t("manager.status.active") : t("manager.actions.setActive"))
-          : (download?.status === "downloading" ? t("manager.status.downloading") : t("manager.actions.download"));
+          : (downloadBusy ? t("manager.status.downloading") : t("manager.actions.download"));
         const button = installed
           ? h("button", {
               class: "btn model-action",
@@ -562,7 +572,7 @@ async function libraryView() {
           : h("button", {
               class: "btn btn-primary model-action",
               type: "button",
-              disabled: download?.status === "downloading",
+              disabled: downloadBusy,
               onClick: () => confirmDownload(model)
             }, ...iconLabel(Download, actionLabel));
         const sourceUrl = model.repositoryUrl || model.sourceUrl || "";
@@ -599,6 +609,16 @@ async function libraryView() {
       h("button", { class: "btn", type: "button", disabled: catalogPage >= pageCount, onClick: () => { catalogPage += 1; renderCards(query, selectedFilter); } }, t("manager.library.nextPage"))
     );
   }
+
+  librarySession = {
+    refresh({ installed = false } = {}) {
+      if (installed) {
+        installedIds = new Set(installedModels.map((model) => model.id));
+        activeId = activeInstalledId();
+      }
+      renderCards(search.value, filterValue);
+    }
+  };
 
   renderCards();
   return h("section", {},
@@ -1325,6 +1345,22 @@ async function diagnosticsView() {
         ...(diagnostics.configWarnings || []).map((warning) => h("p", { class: "error-text selectable", title: warning.file }, t("manager.diagnostics.configWarning", { message: warning.message }))),
         row(t("manager.diagnostics.spineAssets"), diagnostics.assetDirExists && diagnostics.hasSkel && diagnostics.hasAtlas && diagnostics.hasPng, "skel / atlas / png"),
         row(t("manager.diagnostics.modelHealth"), diagnostics.modelHealth?.ok, localizedDiagnosticMessage(diagnostics.modelHealth?.message)),
+        diagnostics.cache ? row(
+          t("manager.diagnostics.modelCache"),
+          true,
+          t("manager.diagnostics.cacheSummary", {
+            files: diagnostics.cache.models?.files || 0,
+            size: formatBytes(diagnostics.cache.models?.bytes || 0)
+          })
+        ) : null,
+        diagnostics.cache ? row(
+          t("manager.diagnostics.previewCache"),
+          true,
+          t("manager.diagnostics.cacheSummary", {
+            files: diagnostics.cache.previews?.files || 0,
+            size: formatBytes(diagnostics.cache.previews?.bytes || 0)
+          })
+        ) : null,
         row(t("manager.diagnostics.shortcut"), diagnostics.shortcut?.registered || diagnostics.shortcut?.enabled === false,
           diagnostics.shortcut?.enabled === false
             ? t("manager.status.disabled")
@@ -1336,6 +1372,8 @@ async function diagnosticsView() {
         row(t("manager.diagnostics.runtime"), true, runtimeName()),
         h("div", { class: "model-actions" },
           h("button", { class: "btn", type: "button", onClick: () => window.companion?.openFolder?.(config.paths?.configDir) }, t("manager.actions.openConfigFolder")),
+          diagnostics.cache?.modelsDir ? h("button", { class: "btn", type: "button", onClick: () => window.companion?.openFolder?.(diagnostics.cache.modelsDir) }, t("manager.actions.openModelCache")) : null,
+          diagnostics.cache?.previewsDir ? h("button", { class: "btn", type: "button", onClick: () => window.companion?.openFolder?.(diagnostics.cache.previewsDir) }, t("manager.actions.openPreviewCache")) : null,
           h("button", { class: "btn", type: "button", onClick: async () => {
             await window.companion?.restartRenderer?.({ reason: "manager-diagnostics" });
             showToast(t("manager.status.rendererRestarted"));
@@ -1610,6 +1648,7 @@ async function avatarStudioView() {
 }
 
 async function renderView(viewName) {
+  if (viewName !== "library") librarySession = null;
   if (viewName === "dashboard") {
     setStatus(t("manager.status.viewing", { view: t("manager.nav.dashboard") }));
     await renderDashboard();
@@ -1656,12 +1695,18 @@ async function boot() {
   });
   window.companion?.onDownloadProgress?.((p) => {
     downloads[p.id] = { ...(downloads[p.id] || {}), ...p, status: p.status || "downloading" };
-    if (activeView === "downloads" || activeView === "library") renderView(activeView);
+    if (activeView === "library") librarySession?.refresh();
+    else if (activeView === "downloads") renderView(activeView);
   });
   window.companion?.onConfigChanged?.(async (nextConfig) => {
     config = nextConfig || await window.companion?.getConfig?.() || config;
     applyUiLocale();
-    if (activeView === "settings" || activeView === "installed" || activeView === "library" || activeView === "dashboard") renderView(activeView);
+    if (activeView === "library") {
+      await refreshConfig();
+      librarySession?.refresh({ installed: true });
+    } else if (activeView === "settings" || activeView === "installed" || activeView === "dashboard") {
+      renderView(activeView);
+    }
   });
   window.companion?.onReminders?.((nextReminders) => {
     reminders = Array.isArray(nextReminders) ? nextReminders : [];
