@@ -99,6 +99,16 @@ bun run mcp:install:codex
 - 检查多显示器切换后窗口是否跑到屏幕外。
 - 在 **Manager > Settings** 重置 scale 和 offset。
 
+## 触摸屏与触控笔
+
+- 单击人物会播放互动动作。
+- 使用单指或触控笔拖动桌宠窗口。
+- 在人物区域双指缩放可调整模型大小。
+- 检测到粗指针设备时，Manager 控件会使用更大的触摸目标。
+- Windows 继续使用原生动态命中区域。Linux 和 macOS 当前优先保证窗口可交互，
+  暂不启用完整的透明空白区域穿透。macOS 触控板缩放通过 WebView 的滚轮手势路径处理；
+  Apple 当前没有提供带触摸屏的 Mac。
+
 如果 Windows 可靠性监视器出现 `LiveKernelEvent 141`、`0x80263001`，
 或者透明窗口变成黑色矩形：
 

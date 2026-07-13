@@ -2042,6 +2042,7 @@ async fn activate_installed_model(
         asset_url: format!("{}/assets/spine/{}", origin, url_encode_path_segment(&skel)),
         local_config_path: data.local_config_path.to_string_lossy().to_string(),
         requires_restart: false,
+        activated: true,
     };
     let _ = app.emit("companion:model-imported", result.clone());
     let _ = app.emit("companion:config-changed", public_config_with_ui(&data));
@@ -3008,10 +3009,15 @@ async fn set_mouse_passthrough(
     if let Ok(mut current) = data.pointer_bounds.lock() {
         *current = bounds;
     }
+    // macOS and Linux do not yet have the native bounds monitor used on Windows.
+    // Keep the window interactive there instead of making touch and pointer input
+    // impossible to recover after the WebView starts ignoring cursor events.
     #[cfg(not(target_os = "windows"))]
-    window
-        .set_ignore_cursor_events(enabled)
-        .map_err(|error| error.to_string())?;
+    if enabled {
+        window
+            .set_ignore_cursor_events(false)
+            .map_err(|error| error.to_string())?;
+    }
     if !enabled {
         window
             .set_ignore_cursor_events(false)

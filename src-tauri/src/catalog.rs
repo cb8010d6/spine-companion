@@ -214,9 +214,15 @@ impl CatalogFile {
         validate_safe_file_name(&self.name, "Model file name")?;
         validate_https_url(&self.url, "Model file URL")?;
         let valid_sha256 = self.sha256.len() == 64
-            && self.sha256.bytes().all(|character| character.is_ascii_hexdigit());
+            && self
+                .sha256
+                .bytes()
+                .all(|character| character.is_ascii_hexdigit());
         let valid_blob_sha = self.github_blob_sha.len() == 40
-            && self.github_blob_sha.bytes().all(|character| character.is_ascii_hexdigit());
+            && self
+                .github_blob_sha
+                .bytes()
+                .all(|character| character.is_ascii_hexdigit());
         if !valid_sha256 && !valid_blob_sha {
             return Err(format!(
                 "Model file {} must include a SHA-256 or Git blob digest.",

@@ -9,6 +9,7 @@ describe("update-checker", () => {
     expect(compareVersions("0.1.9", "0.2.0")).toBe(-1);
     expect(compareVersions("0.2.3-alpha.2", "0.2.3-alpha.1")).toBe(1);
     expect(compareVersions("0.2.6-rc.7.1", "0.2.6-rc.7")).toBe(1);
+    expect(compareVersions("0.2.6-rc.7.2", "0.2.6-rc.7.1")).toBe(1);
     expect(compareVersions("0.2.3-alpha.1", "0.2.2")).toBe(1);
     expect(compareVersions("0.2.3", "0.2.3-alpha.2")).toBe(1);
   });

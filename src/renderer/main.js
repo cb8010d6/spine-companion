@@ -9,6 +9,7 @@ import { bindManagerButton } from "./manager-action.js";
 import { defaultMessageForState, isAiSource, notificationForState, shouldNotifyState, sourceDisplayName } from "../shared/notification-policy.js";
 import { createI18n, getLocale, t } from "../shared/i18n.js";
 import { applyThemePreference } from "./theme.js";
+import { pinchScaleDelta, pointerDistance, shouldUseNativeWindowDrag } from "./input-gesture.js";
 
 const stage = document.getElementById("stage");
 const shell = document.getElementById("stage-shell");
@@ -50,6 +51,8 @@ const errorRoot = document.getElementById("error-root");
 let provider = null;
 let player = null;
 let drag = null;
+const touchPointers = new Map();
+let pinchGesture = null;
 let currentState = { state: "idle", source: "system" };
 let lastCompletionKey = "";
 let currentUiSettings = {
@@ -693,6 +696,26 @@ async function hotReloadPlayer(nextConfig, statusText = "") {
 function wireDragging() {
   shell.addEventListener("pointerdown", (event) => {
     if (event.button !== 0 || event.target.closest(".hud")) return;
+    if (event.pointerType === "touch") {
+      event.preventDefault();
+      touchPointers.set(event.pointerId, { x: event.screenX, y: event.screenY });
+      setMousePassthrough(false);
+      if (touchPointers.size >= 2) {
+        if (drag) {
+          const returnState = drag.returnState || currentState;
+          window.companion?.dragEnd?.();
+          drag = null;
+          player?.setDragActive(false);
+          document.body.classList.remove("is-dragging");
+          player?.applyState(returnState, true);
+          updateHud(returnState);
+          updateBubble(returnState);
+        }
+        pinchGesture = { distance: pointerDistance([...touchPointers.values()]) };
+        shell.setPointerCapture(event.pointerId);
+        return;
+      }
+    }
     if (isDismissibleTaskState(currentState)) {
       returnToIdle("task-result-click");
       return;
@@ -713,7 +736,9 @@ function wireDragging() {
       nativePollTimer: 0,
       nativeIdlePolls: 0,
       lastWindowX: null,
-      lastWindowY: null
+      lastWindowY: null,
+      pointerId: event.pointerId,
+      pointerType: event.pointerType || "mouse"
     };
     document.body.classList.add("is-dragging");
     player?.setDragActive(true);
@@ -727,7 +752,19 @@ function wireDragging() {
   });
 
   shell.addEventListener("pointermove", (event) => {
+    if (event.pointerType === "touch" && touchPointers.has(event.pointerId)) {
+      touchPointers.set(event.pointerId, { x: event.screenX, y: event.screenY });
+      if (pinchGesture && touchPointers.size >= 2) {
+        event.preventDefault();
+        const distance = pointerDistance([...touchPointers.values()]);
+        player?.adjustUserScale(pinchScaleDelta(pinchGesture.distance, distance));
+        pinchGesture.distance = distance;
+        refreshMousePassthroughSoon();
+        return;
+      }
+    }
     if (!drag) return;
+    if (event.pointerId !== drag.pointerId) return;
     if (drag.native) return;
     const fallbackDx = event.screenX - drag.lastX;
     const fallbackDy = event.screenY - drag.lastY;
@@ -742,7 +779,7 @@ function wireDragging() {
       drag.moved = true;
       progressBubble.hidden = true;
     }
-    if (drag.moved && window.companion?.nativeStartDrag) {
+    if (drag.moved && window.companion?.nativeStartDrag && shouldUseNativeWindowDrag(drag.pointerType)) {
       beginNativeDrag(event);
       return;
     }
@@ -776,8 +813,21 @@ function wireDragging() {
     });
   });
 
-  shell.addEventListener("pointerup", async (event) => {
+  const finishPointer = async (event, cancelled = false) => {
+    if (event.pointerType === "touch") {
+      touchPointers.delete(event.pointerId);
+      if (pinchGesture) {
+        if (touchPointers.size < 2) pinchGesture = null;
+        try {
+          if (shell.hasPointerCapture?.(event.pointerId)) shell.releasePointerCapture(event.pointerId);
+        } catch {}
+        updateBubble(currentState);
+        refreshMousePassthroughSoon();
+        return;
+      }
+    }
     if (!drag) return;
+    if (event.pointerId !== drag.pointerId) return;
     if (drag.native) return;
     const completedDrag = drag.moved;
     const returnState = drag.returnState || { state: "idle", source: "drag-end" };
@@ -790,11 +840,18 @@ function wireDragging() {
     drag = null;
     player?.setDragActive(false);
     document.body.classList.remove("is-dragging");
-    shell.releasePointerCapture(event.pointerId);
+    try {
+      if (shell.hasPointerCapture?.(event.pointerId)) shell.releasePointerCapture(event.pointerId);
+    } catch {}
     if (completedDrag) {
       if (provider) {
         await provider.setState(returnState);
       }
+      return;
+    }
+    if (cancelled) {
+      updateBubble(returnState);
+      refreshMousePassthroughSoon();
       return;
     }
     const previousState = { ...currentState };
@@ -809,7 +866,10 @@ function wireDragging() {
       updateBubble(previousState);
     });
     updateBubble(previousState);
-  });
+  };
+
+  shell.addEventListener("pointerup", (event) => finishPointer(event));
+  shell.addEventListener("pointercancel", (event) => finishPointer(event, true));
 }
 
 function wireMousePassthrough() {
