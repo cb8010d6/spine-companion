@@ -10,7 +10,7 @@
     "repository": {
       "owner": "isHarryh",
       "name": "Ark-Models",
-      "configuredRef": "main",
+      "configuredRef": "2f3187f780108847d7327946e1906fc6b80bead3",
       "resolvedRevision": "2f3187f780108847d7327946e1906fc6b80bead3",
       "url": "https://github.com/isHarryh/Ark-Models"
     },
@@ -60,10 +60,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -114,10 +114,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -168,10 +168,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -222,10 +222,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -276,10 +276,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -330,10 +330,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -384,10 +384,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -447,10 +447,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -501,10 +501,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -555,10 +555,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -609,10 +609,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -663,10 +663,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -717,10 +717,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -771,10 +771,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -825,10 +825,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -879,10 +879,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -933,10 +933,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -987,10 +987,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -1041,10 +1041,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -1095,10 +1095,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -1149,10 +1149,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -1203,10 +1203,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -1257,10 +1257,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -1311,10 +1311,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -1365,10 +1365,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -1419,10 +1419,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -1473,10 +1473,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -1527,10 +1527,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -1581,10 +1581,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -1635,10 +1635,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -1689,10 +1689,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -1743,10 +1743,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -1797,10 +1797,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -1851,10 +1851,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -1905,10 +1905,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -1959,10 +1959,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -2013,10 +2013,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -2067,10 +2067,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -2130,10 +2130,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -2184,10 +2184,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -2238,10 +2238,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -2292,10 +2292,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -2346,10 +2346,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -2409,10 +2409,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -2463,10 +2463,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -2526,10 +2526,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -2580,10 +2580,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -2634,10 +2634,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -2688,10 +2688,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -2742,10 +2742,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -2796,10 +2796,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -2850,10 +2850,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -2904,10 +2904,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -2958,10 +2958,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -3012,10 +3012,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -3066,10 +3066,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -3120,10 +3120,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -3174,10 +3174,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -3228,10 +3228,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -3282,10 +3282,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -3336,10 +3336,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -3390,10 +3390,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -3453,10 +3453,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -3507,10 +3507,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -3561,10 +3561,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -3615,10 +3615,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -3669,10 +3669,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -3732,10 +3732,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -3786,10 +3786,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -3840,10 +3840,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -3894,10 +3894,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -3948,10 +3948,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -4002,10 +4002,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -4056,10 +4056,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -4110,10 +4110,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -4164,10 +4164,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -4218,10 +4218,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -4272,10 +4272,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -4326,10 +4326,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -4380,10 +4380,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -4434,10 +4434,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -4488,10 +4488,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -4542,10 +4542,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -4596,10 +4596,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -4650,10 +4650,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -4704,10 +4704,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -4758,10 +4758,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",
@@ -4812,10 +4812,10 @@
         }
       ],
       "spine": {
-        "min": "3.8.0",
+        "min": "3.8.99",
         "max": "3.8.99"
       },
-      "versionVerified": false,
+      "versionVerified": true,
       "description": "Generated from isHarryh/Ark-Models at 2f3187f780108847d7327946e1906fc6b80bead3.",
       "tags": [
         "ark-models",

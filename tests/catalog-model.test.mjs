@@ -1,5 +1,23 @@
 import { describe, expect, it } from "vitest";
-import { catalogDisplayName, catalogDownloadRequest, catalogInstallState, filterCatalog, mergeCatalogSources, mergeInstalledModelMetadata, normalizeCatalogEntries } from "../src/renderer/catalog-model.js";
+import {
+  LIBRARY_PAGE_SIZE,
+  LIBRARY_PREVIEW_BATCH_SIZE,
+  canRemoveCatalogSource,
+  catalogDisplayName,
+  catalogDownloadRequest,
+  catalogInstallState,
+  catalogModelSizeBytes,
+  catalogModelSourceId,
+  catalogSpineDisplayVersion,
+  enabledCatalogSources,
+  filterCatalog,
+  mergeCatalogSources,
+  mergeInstalledModelMetadata,
+  normalizeCatalogEntries,
+  resolveCatalogSourceId,
+  selectPreviewBatch,
+  upsertInstalledModel
+} from "../src/renderer/catalog-model.js";
 
 describe("catalog model", () => {
   it("keeps healthy sources usable when another source fails", () => {
@@ -42,6 +60,7 @@ describe("catalog model", () => {
       spineVersion: "3.8.99"
     });
     expect(model._catalogEntry.catalogSourceId).toBe("ark-models");
+    expect(model.versionVerified).toBe(true);
     expect(catalogDownloadRequest(model)).toEqual({
       id: "ark-models-002-amiya",
       catalogEntry: model._catalogEntry
@@ -63,5 +82,56 @@ describe("catalog model", () => {
   it("always provides a readable catalog display name", () => {
     expect(catalogDisplayName({ id: "ark-models-002-amiya", name: "Amiya" })).toBe("Amiya");
     expect(catalogDisplayName({ id: "ark-models-1001-amiya2-sale-16" })).toBe("Amiya2 Sale #16");
+  });
+
+  it("resolves enabled sources before a catalog refresh", () => {
+    const sources = [
+      { id: "operators", enabled: false },
+      { id: "enemies", enabled: true }
+    ];
+    expect(enabledCatalogSources(sources).map((source) => source.id)).toEqual(["enemies"]);
+    expect(resolveCatalogSourceId(sources, "operators")).toBe("enemies");
+    expect(resolveCatalogSourceId([{ id: "operators", enabled: false }], "operators")).toBe("");
+  });
+
+  it("keeps installed catalog metadata attached to its original source", () => {
+    expect(catalogModelSourceId({ catalogSourceId: "ark-enemies" })).toBe("ark-enemies");
+    expect(catalogModelSourceId({})).toBe("ark-models");
+  });
+
+  it("reports remote size and limits bulk preview work", () => {
+    const model = { files: [{ sizeBytes: 1024 }, { sizeBytes: 2048 }, { sizeBytes: -1 }] };
+    expect(catalogModelSizeBytes(model)).toBe(3072);
+    expect(LIBRARY_PAGE_SIZE).toBe(12);
+    expect(LIBRARY_PREVIEW_BATCH_SIZE).toBe(6);
+    expect(selectPreviewBatch(Array.from({ length: 12 }, (_, id) => ({ id })))).toHaveLength(6);
+  });
+
+  it("does not present an unverified patch floor as an exact Spine version", () => {
+    expect(catalogSpineDisplayVersion({
+      spine: { min: "3.8.0", max: "3.8.99" },
+      versionVerified: false
+    })).toBe("3.8");
+    expect(catalogSpineDisplayVersion({
+      spine: { min: "3.8.84", max: "3.8.84" },
+      versionVerified: true
+    })).toBe("3.8.84");
+    expect(catalogSpineDisplayVersion({ spineVersion: "Spine 3.8" })).toBe("3.8");
+  });
+
+  it("immediately merges a completed install into the local library state", () => {
+    expect(upsertInstalledModel(
+      [{ id: "local", name: "Local" }],
+      { id: "amiya", name: "amiya", dir: "C:/models/amiya", activated: false },
+      { id: "amiya", name: "Amiya", source: "Ark-Models", skel: "amiya.skel" }
+    )).toEqual([
+      { id: "local", name: "Local" },
+      expect.objectContaining({ id: "amiya", name: "Amiya", source: "Ark-Models", dir: "C:/models/amiya" })
+    ]);
+  });
+
+  it("keeps official sources disable-only", () => {
+    expect(canRemoveCatalogSource({ kind: "official" })).toBe(false);
+    expect(canRemoveCatalogSource({ kind: "customRaw" })).toBe(true);
   });
 });

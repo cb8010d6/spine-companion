@@ -21,7 +21,10 @@ describe("Spine player transitions", () => {
 
   it("falls back to a safe animation when a model lacks companion actions", () => {
     expect(selectAvailableAnimation(["Default", "Idle"], "Interact")).toBe("Idle");
-    expect(selectAvailableAnimation(["Attack", "Move"], "Relax")).toBe("Attack");
+    expect(selectAvailableAnimation(["Attack", "Move"], "Relax")).toBe("");
     expect(selectAvailableAnimation(["Relax"], "Relax")).toBe("Relax");
+    expect(selectAvailableAnimation(["A_Attack", "A_Default", "A_Idle"], "Relax")).toBe("A_Idle");
+    expect(selectAvailableAnimation(["Move_Loop", "Idle"], "move")).toBe("Move_Loop");
+    expect(selectAvailableAnimation(["idle"], "Relax")).toBe("idle");
   });
 });

@@ -25,14 +25,31 @@ export function installManagerPreviewBridge() {
     ] },
     spine: {}
   };
+  let previewInstalledModels = [{ id: "sample-local-avatar", name: "Sample Local Avatar", source: "Local preview", skel: "sample.skel" }];
+  const installPreviewModel = (entry, activated = false) => {
+    const model = entry?.model || entry || {};
+    const result = {
+      id: model.id,
+      name: model.name || model.id,
+      source: model.source || "Preview",
+      skel: model.skel || "model.skel",
+      activated
+    };
+    previewInstalledModels = [
+      ...previewInstalledModels.filter((installed) => installed.id !== result.id),
+      result
+    ];
+    return result;
+  };
   window.companion = {
     getConfig: async () => previewConfig,
     saveSettings: async (patch = {}) => {
       previewConfig.ui = { ...previewConfig.ui, ...(patch.ui || {}) };
       previewConfig.spine = { ...previewConfig.spine, ...(patch.spine || {}) };
+      previewConfig.models = { ...previewConfig.models, ...(patch.models || {}) };
       return previewConfig;
     },
-    getInstalledModels: async () => [{ id: "sample-local-avatar", name: "Sample Local Avatar", source: "Local preview", skel: "sample.skel" }],
+    getInstalledModels: async () => previewInstalledModels.map((model) => ({ ...model })),
     listReminders: async () => [],
     checkUpdates: async () => ({ currentVersion: "preview", updateAvailable: false, channel: previewConfig.ui?.updateChannel === "stable" ? "stable" : "prerelease" }),
     listAiIntegrations: async () => previewIntegrations,
@@ -56,7 +73,9 @@ export function installManagerPreviewBridge() {
       };
       return { models: [{ catalogSourceId: source, ...variants[source], source: "Ark-Models", author: "isHarryh/Ark-Models contributors", license: "NOASSERTION", licenseNote: "Third-party source; review before download.", repositoryUrl: "https://github.com/isHarryh/Ark-Models", skel: "model.skel", files: [], spine: { min: "3.8.99", max: "3.8.99" } }], sources: [{ sourceId: source, state: "stale", modelCount: 1, error: "Preview mode" }] };
     },
-    importCatalogModel: async (entry) => ({ id: entry.id || entry.model?.id, name: entry.name || entry.model?.name }),
+    installModel: async (input) => installPreviewModel(input, false),
+    importCatalogModel: async (entry, activate = true) => installPreviewModel(entry, activate),
+    installCatalogModel: async (entry) => installPreviewModel(entry, false),
     prepareModelPreview: async (entry) => ({ id: entry.id, skel: entry.skel, assetUrl: "", cached: false }),
     getCurrentModel: async () => ({ id: "sample-local-avatar", name: "Sample Local Avatar" }),
     setActiveModel: async (id) => ({ id }),

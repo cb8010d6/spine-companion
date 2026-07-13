@@ -102,6 +102,22 @@ describe("Ark catalog generator", () => {
     expect(validateCatalog(catalog)).toBe(catalog);
   });
 
+  it("can verify only the Spine header for metadata-only catalogs", async () => {
+    const catalog = await scanGithubRepository({
+      ...source,
+      metadataOnly: true,
+      verifySpineHeaders: true,
+      requireDetectedSpineVersion: true,
+      category: "enemy",
+      compatibilityProfile: "experimental"
+    }, { fetchImpl: mockFetch() });
+    expect(catalog.models[0]).toMatchObject({
+      versionVerified: true,
+      spine: { min: "3.8.99", max: "3.8.99" }
+    });
+    expect(catalog.models[0].files[0]).not.toHaveProperty("sha256");
+  });
+
   it("skips incomplete runtime folders without blocking valid catalog entries", async () => {
     const catalog = await scanGithubRepository(source, {
       fetchImpl: mockFetch(["models/1001_alpha/alpha.skel", "models/1001_alpha/alpha.png"])

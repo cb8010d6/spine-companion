@@ -66,6 +66,8 @@ struct RendererHealth {
     recovery_count: u64,
     last_recovery_at: u64,
     last_heartbeat_at: u64,
+    #[serde(default)]
+    status_changed_at: u64,
 }
 
 impl Default for RendererHealth {
@@ -76,6 +78,7 @@ impl Default for RendererHealth {
             recovery_count: 0,
             last_recovery_at: 0,
             last_heartbeat_at: 0,
+            status_changed_at: now_ms(),
         }
     }
 }
@@ -221,6 +224,12 @@ fn start_pointer_passthrough_monitor(_app: AppHandle) {}
 #[serde(rename_all = "camelCase")]
 struct ImportModelInput {
     id: String,
+    #[serde(default = "default_model_activation")]
+    activate: bool,
+}
+
+fn default_model_activation() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -233,6 +242,7 @@ struct ImportModelResult {
     asset_url: String,
     local_config_path: String,
     requires_restart: bool,
+    activated: bool,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -281,22 +291,22 @@ fn fallback_config() -> serde_json::Value {
             "sources": [
                 {
                     "id": "ark-models",
-                    "label": "Operators / 基建小人",
-                    "catalogUrl": "https://raw.githubusercontent.com/cb8010d6/spine-companion/main/catalog/catalog.json",
+                    "label": "Operators",
+                    "catalogUrl": "https://raw.githubusercontent.com/cb8010d6/spine-companion/v0.2.6-rc.7.1/catalog/catalog.json",
                     "kind": "official",
                     "enabled": true
                 },
                 {
                     "id": "ark-illustrations",
-                    "label": "Dynamic illustrations / 动态立绘",
-                    "catalogUrl": "https://raw.githubusercontent.com/cb8010d6/spine-companion/main/catalog/illustrations.json",
+                    "label": "Dynamic illustrations",
+                    "catalogUrl": "https://raw.githubusercontent.com/cb8010d6/spine-companion/v0.2.6-rc.7.1/catalog/illustrations.json",
                     "kind": "official",
                     "enabled": true
                 },
                 {
                     "id": "ark-enemies",
-                    "label": "Enemies / 敌人",
-                    "catalogUrl": "https://raw.githubusercontent.com/cb8010d6/spine-companion/main/catalog/enemies.json",
+                    "label": "Enemies",
+                    "catalogUrl": "https://raw.githubusercontent.com/cb8010d6/spine-companion/v0.2.6-rc.7.1/catalog/enemies.json",
                     "kind": "official",
                     "enabled": true
                 }
@@ -306,21 +316,24 @@ fn fallback_config() -> serde_json::Value {
                     "id": "ark-1001-amiya2-sale-16",
                     "name": "Amiya Guard Skin #16",
                     "source": "Ark-Models",
+                    "sourceId": "ark-models",
+                    "catalogSourceId": "ark-models",
+                    "catalogVisible": false,
                     "licenseNote": "Downloaded from isHarryh/Ark-Models for local use only. Do not commit or redistribute the asset files in this repository.",
-                    "repositoryUrl": "https://github.com/isHarryh/Ark-Models/tree/main/models/1001_amiya2_sale%2316",
+                    "repositoryUrl": "https://github.com/isHarryh/Ark-Models/tree/2f3187f780108847d7327946e1906fc6b80bead3/models/1001_amiya2_sale%2316",
                     "skel": "build_char_1001_amiya2_sale#16.skel",
                     "files": [
                         {
                             "name": "build_char_1001_amiya2_sale#16.atlas",
-                            "url": "https://raw.githubusercontent.com/isHarryh/Ark-Models/main/models/1001_amiya2_sale%2316/build_char_1001_amiya2_sale%2316.atlas"
+                            "url": "https://raw.githubusercontent.com/isHarryh/Ark-Models/2f3187f780108847d7327946e1906fc6b80bead3/models/1001_amiya2_sale%2316/build_char_1001_amiya2_sale%2316.atlas"
                         },
                         {
                             "name": "build_char_1001_amiya2_sale#16.png",
-                            "url": "https://raw.githubusercontent.com/isHarryh/Ark-Models/main/models/1001_amiya2_sale%2316/build_char_1001_amiya2_sale%2316.png"
+                            "url": "https://raw.githubusercontent.com/isHarryh/Ark-Models/2f3187f780108847d7327946e1906fc6b80bead3/models/1001_amiya2_sale%2316/build_char_1001_amiya2_sale%2316.png"
                         },
                         {
                             "name": "build_char_1001_amiya2_sale#16.skel",
-                            "url": "https://raw.githubusercontent.com/isHarryh/Ark-Models/main/models/1001_amiya2_sale%2316/build_char_1001_amiya2_sale%2316.skel"
+                            "url": "https://raw.githubusercontent.com/isHarryh/Ark-Models/2f3187f780108847d7327946e1906fc6b80bead3/models/1001_amiya2_sale%2316/build_char_1001_amiya2_sale%2316.skel"
                         }
                     ]
                 }
@@ -965,6 +978,15 @@ async fn import_model(
         .map_err(|_| "Config lock is poisoned".to_string())?;
     let model = model_by_id(&public_config, &input.id)
         .ok_or_else(|| format!("Unknown model id: {}", input.id))?;
+    install_model_value(&app, &data, input, model).await
+}
+
+async fn install_model_value(
+    app: &tauri::AppHandle,
+    data: &AppData,
+    input: ImportModelInput,
+    model: serde_json::Value,
+) -> Result<ImportModelResult, String> {
     let name = model
         .get("name")
         .and_then(|value| value.as_str())
@@ -1030,7 +1052,11 @@ async fn import_model(
                 );
                 message
             })?;
-        if let Some(expected) = file.get("sha256").and_then(|value| value.as_str()).filter(|value| !value.is_empty()) {
+        if let Some(expected) = file
+            .get("sha256")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.is_empty())
+        {
             let actual = format!("{:x}", Sha256::digest(&bytes));
             if !actual.eq_ignore_ascii_case(expected) {
                 let _ = remove_dir_if_exists_blocking(&temp_model_dir);
@@ -1085,9 +1111,65 @@ async fn import_model(
     let canonical_model_dir = model_dir
         .canonicalize()
         .map_err(|error| error.to_string())?;
-    write_local_model_config(&data.local_config_path, &canonical_model_dir, &skel).map_err(
-        |error| {
-            let message = format!("Failed to activate downloaded model: {}", error);
+    if input.activate {
+        write_local_model_config(&data.local_config_path, &canonical_model_dir, &skel).map_err(
+            |error| {
+                let message = format!("Failed to activate downloaded model: {}", error);
+                let _ = app.emit(
+                    "companion:download-progress",
+                    serde_json::json!({
+                        "id": input.id,
+                        "file": "Activation",
+                        "current": total_files,
+                        "total": total_files,
+                        "status": "failed",
+                        "error": message
+                    }),
+                );
+                message
+            },
+        )?;
+        verify_local_model_config(&data.local_config_path, &canonical_model_dir, &skel).map_err(
+            |error| {
+                let message = format!("Downloaded model was not activated: {}", error);
+                let _ = app.emit(
+                    "companion:download-progress",
+                    serde_json::json!({
+                        "id": input.id,
+                        "file": "Activation",
+                        "current": total_files,
+                        "total": total_files,
+                        "status": "failed",
+                        "error": message
+                    }),
+                );
+                message
+            },
+        )?;
+        if let Ok(mut public) = data.public_config.lock() {
+            merge_json(
+                &mut public,
+                serde_json::json!({
+                    "spine": {
+                        "assetDir": canonical_model_dir.to_string_lossy().to_string(),
+                        "assetDirConfigured": true,
+                        "skel": skel.clone()
+                    }
+                }),
+            );
+        }
+        {
+            let mut asset_root = data.asset_root.write().await;
+            *asset_root = Some(canonical_model_dir.clone());
+        }
+        let public = public_config_with_ui(data);
+        let configured_dir = string_at(&public, &["spine", "assetDir"])
+            .map(PathBuf::from)
+            .unwrap_or_default();
+        if configured_dir != canonical_model_dir
+            || string_at(&public, &["spine", "skel"]) != Some(skel.as_str())
+        {
+            let message = "Downloaded model was not activated in public config".to_string();
             let _ = app.emit(
                 "companion:download-progress",
                 serde_json::json!({
@@ -1099,62 +1181,8 @@ async fn import_model(
                     "error": message
                 }),
             );
-            message
-        },
-    )?;
-    verify_local_model_config(&data.local_config_path, &canonical_model_dir, &skel).map_err(
-        |error| {
-            let message = format!("Downloaded model was not activated: {}", error);
-            let _ = app.emit(
-                "companion:download-progress",
-                serde_json::json!({
-                    "id": input.id,
-                    "file": "Activation",
-                    "current": total_files,
-                    "total": total_files,
-                    "status": "failed",
-                    "error": message
-                }),
-            );
-            message
-        },
-    )?;
-    if let Ok(mut public) = data.public_config.lock() {
-        merge_json(
-            &mut public,
-            serde_json::json!({
-                "spine": {
-                    "assetDir": canonical_model_dir.to_string_lossy().to_string(),
-                    "assetDirConfigured": true,
-                    "skel": skel.clone()
-                }
-            }),
-        );
-    }
-    {
-        let mut asset_root = data.asset_root.write().await;
-        *asset_root = Some(canonical_model_dir.clone());
-    }
-    let public = public_config_with_ui(&data);
-    if !public
-        .get("spine")
-        .and_then(|spine| spine.get("assetDirConfigured"))
-        .and_then(|value| value.as_bool())
-        .unwrap_or(false)
-    {
-        let message = "Downloaded model was not activated in public config".to_string();
-        let _ = app.emit(
-            "companion:download-progress",
-            serde_json::json!({
-                "id": input.id,
-                "file": "Activation",
-                "current": total_files,
-                "total": total_files,
-                "status": "failed",
-                "error": message
-            }),
-        );
-        return Err(message);
+            return Err(message);
+        }
     }
     let _ = app.emit(
         "companion:download-progress",
@@ -1167,6 +1195,7 @@ async fn import_model(
         }),
     );
 
+    let public = public_config_with_ui(data);
     let origin = public
         .get("server")
         .and_then(|server| server.get("origin"))
@@ -1181,10 +1210,13 @@ async fn import_model(
         asset_url: format!("{}/assets/spine/{}", origin, url_encode_path_segment(&skel)),
         local_config_path: data.local_config_path.to_string_lossy().to_string(),
         requires_restart: false,
+        activated: input.activate,
     };
 
     let _ = app.emit("companion:model-imported", result.clone());
-    let _ = app.emit("companion:config-changed", public_config_with_ui(&data));
+    if result.activated {
+        let _ = app.emit("companion:config-changed", public_config_with_ui(data));
+    }
 
     Ok(result)
 }
@@ -1194,6 +1226,7 @@ async fn import_catalog_model(
     app: tauri::AppHandle,
     data: State<'_, AppData>,
     entry: catalog::CatalogModelEntry,
+    activate: Option<bool>,
 ) -> Result<ImportModelResult, String> {
     entry.model.validate()?;
     let id = entry.model.id.clone();
@@ -1208,21 +1241,16 @@ async fn import_catalog_model(
             serde_json::Value::String(entry.model.spine.min.0.clone()),
         );
     }
-    {
-        let mut public = data
-            .public_config
-            .lock()
-            .map_err(|_| "Config lock is poisoned".to_string())?;
-        let catalog = public
-            .get_mut("models")
-            .and_then(|models| models.get_mut("catalog"))
-            .and_then(|catalog| catalog.as_array_mut())
-            .ok_or_else(|| "Model catalog config is unavailable".to_string())?;
-        catalog
-            .retain(|model| model.get("id").and_then(|value| value.as_str()) != Some(id.as_str()));
-        catalog.push(value.clone());
-    }
-    let result = import_model(app, data, ImportModelInput { id }).await?;
+    let result = install_model_value(
+        &app,
+        &data,
+        ImportModelInput {
+            id,
+            activate: activate.unwrap_or(true),
+        },
+        value.clone(),
+    )
+    .await?;
     std::fs::write(
         PathBuf::from(&result.asset_dir).join(".companion-model.json"),
         serde_json::to_vec_pretty(&value).map_err(|error| error.to_string())?,
@@ -1282,13 +1310,18 @@ async fn prepare_model_preview(
                     let _ = remove_dir_if_exists_blocking(&temp_dir);
                     format!("Failed to prepare preview: {error}")
                 })?;
-            if let Some(expected) = file.get("sha256").and_then(|hash| hash.as_str()).filter(|value| !value.is_empty()) {
+            if let Some(expected) = file
+                .get("sha256")
+                .and_then(|hash| hash.as_str())
+                .filter(|value| !value.is_empty())
+            {
                 let actual = format!("{:x}", Sha256::digest(&bytes));
                 if !actual.eq_ignore_ascii_case(expected) {
                     let _ = remove_dir_if_exists_blocking(&temp_dir);
                     return Err(format!("Preview integrity check failed for {file_name}"));
                 }
-            } else if let Some(expected) = file.get("githubBlobSha").and_then(|hash| hash.as_str()) {
+            } else if let Some(expected) = file.get("githubBlobSha").and_then(|hash| hash.as_str())
+            {
                 verify_git_blob_sha(&bytes, expected).map_err(|error| {
                     let _ = remove_dir_if_exists_blocking(&temp_dir);
                     format!("Preview integrity check failed for {file_name}: {error}")
@@ -1310,7 +1343,7 @@ async fn prepare_model_preview(
     tokio::fs::write(&signature_path, &signature)
         .await
         .map_err(|error| error.to_string())?;
-    prune_preview_asset_cache(&preview_root, &id, 48);
+    prune_preview_asset_cache(&preview_root, &id, 24, 256 * 1024 * 1024);
 
     let origin = public_config_with_ui(&data)
         .get("server")
@@ -1437,7 +1470,16 @@ fn ensure_official_model_sources(config: &mut serde_json::Value) {
     };
     for source in default_sources {
         let id = source.get("id").and_then(|value| value.as_str());
-        if !sources.iter().any(|current| current.get("id").and_then(|value| value.as_str()) == id) {
+        if let Some(current) = sources
+            .iter_mut()
+            .find(|current| current.get("id").and_then(|value| value.as_str()) == id)
+        {
+            let enabled = current.get("enabled").cloned();
+            *current = source.clone();
+            if let Some(enabled) = enabled {
+                current["enabled"] = enabled;
+            }
+        } else {
             sources.push(source.clone());
         }
     }
@@ -1459,7 +1501,23 @@ fn remove_dir_if_exists_blocking(path: &Path) -> Result<(), String> {
     }
 }
 
-fn prune_preview_asset_cache(root: &Path, keep_id: &str, max_entries: usize) {
+fn directory_size_bytes(path: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return 0;
+    };
+    entries
+        .filter_map(Result::ok)
+        .map(|entry| match entry.file_type() {
+            Ok(file_type) if file_type.is_dir() => directory_size_bytes(&entry.path()),
+            Ok(file_type) if file_type.is_file() => {
+                entry.metadata().map(|value| value.len()).unwrap_or(0)
+            }
+            _ => 0,
+        })
+        .sum()
+}
+
+fn prune_preview_asset_cache(root: &Path, keep_id: &str, max_entries: usize, max_bytes: u64) {
     let Ok(entries) = std::fs::read_dir(root) else {
         return;
     };
@@ -1477,20 +1535,24 @@ fn prune_preview_asset_cache(root: &Path, keep_id: &str, max_entries: usize) {
                 .metadata()
                 .and_then(|metadata| metadata.modified())
                 .unwrap_or(UNIX_EPOCH);
-            Some((name, entry.path(), modified))
+            let size = directory_size_bytes(&entry.path());
+            Some((name, entry.path(), modified, size))
         })
         .collect::<Vec<_>>();
     cached.sort_by(|left, right| right.2.cmp(&left.2));
-    let mut retained_others = 0usize;
-    for (name, path, _) in cached {
+    let mut retained_entries = cached.len();
+    let mut retained_bytes = cached.iter().map(|entry| entry.3).sum::<u64>();
+    for (name, path, _, size) in cached.into_iter().rev() {
+        if retained_entries <= max_entries.max(1) && retained_bytes <= max_bytes {
+            break;
+        }
         if name == keep_id {
             continue;
         }
-        if retained_others < max_entries.saturating_sub(1) {
-            retained_others += 1;
-            continue;
+        if std::fs::remove_dir_all(path).is_ok() {
+            retained_entries = retained_entries.saturating_sub(1);
+            retained_bytes = retained_bytes.saturating_sub(size);
         }
-        let _ = std::fs::remove_dir_all(path);
     }
 }
 
@@ -1514,7 +1576,7 @@ async fn replace_model_dir(temp_dir: &Path, final_dir: &Path) -> Result<(), Stri
             let _ = tokio::fs::rename(&backup_dir, final_dir).await;
         }
         return Err(format!(
-            "Failed to activate downloaded model directory: {}",
+            "Failed to install downloaded model directory: {}",
             error
         ));
     }
@@ -1771,6 +1833,7 @@ struct InstalledModel {
     dir: String,
     name: String,
     source: String,
+    catalog_source_id: String,
     version: String,
     license: String,
 }
@@ -1800,6 +1863,11 @@ fn get_installed_models(data: State<'_, AppData>) -> Result<Vec<InstalledModel>,
                             .get("source")
                             .and_then(|value| value.as_str())
                             .unwrap_or("Local")
+                            .to_string(),
+                        catalog_source_id: metadata
+                            .get("catalogSourceId")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("")
                             .to_string(),
                         version: metadata
                             .get("spine")
@@ -3036,17 +3104,38 @@ fn recreate_main_window(app: &AppHandle, reason: &str) -> Result<(), String> {
     health.last_reason = reason.to_string();
     health.recovery_count = health.recovery_count.saturating_add(1);
     health.last_recovery_at = now_ms();
+    health.status_changed_at = health.last_recovery_at;
     Ok(())
 }
 
 fn start_renderer_watchdog(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
+        let mut visible_since: Option<Instant> = None;
+        let mut last_probe = Instant::now();
         loop {
             tokio::time::sleep(Duration::from_secs(2)).await;
+            let probe_at = Instant::now();
+            let resumed_after_sleep = probe_at.duration_since(last_probe) > Duration::from_secs(6);
+            last_probe = probe_at;
             let Some(window) = app.get_webview_window("main") else {
+                visible_since = None;
                 continue;
             };
             if !window.is_visible().unwrap_or(false) {
+                visible_since = None;
+                continue;
+            }
+            if resumed_after_sleep {
+                visible_since = Some(probe_at);
+                let data = app.state::<AppData>();
+                let mut health = data.renderer_health.lock().unwrap();
+                health.status = "resuming".to_string();
+                health.last_reason = "native-resume-grace".to_string();
+                health.status_changed_at = now_ms();
+                continue;
+            }
+            let became_visible_at = visible_since.get_or_insert(probe_at);
+            if probe_at.duration_since(*became_visible_at) < Duration::from_secs(10) {
                 continue;
             }
             let now = now_ms();
@@ -3063,10 +3152,25 @@ fn start_renderer_watchdog(app: AppHandle) {
 }
 
 fn renderer_heartbeat_stale(health: &RendererHealth, now: u64) -> bool {
-    !matches!(health.status.as_str(), "starting" | "suspended" | "resuming")
-        && health.last_heartbeat_at > 0
-        && now.saturating_sub(health.last_heartbeat_at) > 8_000
-        && now.saturating_sub(health.last_recovery_at) > 15_000
+    if health.last_recovery_at > 0 && now.saturating_sub(health.last_recovery_at) <= 15_000 {
+        return false;
+    }
+    let transition_grace = match health.status.as_str() {
+        "starting" => 20_000,
+        "suspended" | "resuming" => 12_000,
+        _ => 0,
+    };
+    if transition_grace > 0
+        && health.status_changed_at > 0
+        && now.saturating_sub(health.status_changed_at) <= transition_grace
+    {
+        return false;
+    }
+    if health.last_heartbeat_at == 0 {
+        return health.status_changed_at > 0
+            && now.saturating_sub(health.status_changed_at) > transition_grace.max(20_000);
+    }
+    now.saturating_sub(health.last_heartbeat_at) > 8_000
 }
 
 fn should_reveal_for_state(settings: &UiSettings, state: &CompanionState) -> bool {
@@ -3164,6 +3268,7 @@ async fn recover_gpu_window(
     health.last_reason = reason;
     health.recovery_count = health.recovery_count.saturating_add(1);
     health.last_recovery_at = now_ms();
+    health.status_changed_at = health.last_recovery_at;
     Ok(())
 }
 
@@ -3179,7 +3284,18 @@ fn get_renderer_health(data: State<'_, AppData>) -> Result<RendererHealth, Strin
 
 #[tauri::command]
 fn update_renderer_health(data: State<'_, AppData>, input: RendererHealth) -> Result<(), String> {
-    *data.renderer_health.lock().unwrap() = input;
+    let mut health = data.renderer_health.lock().unwrap();
+    let mut next = input;
+    next.recovery_count = next.recovery_count.max(health.recovery_count);
+    next.last_recovery_at = next.last_recovery_at.max(health.last_recovery_at);
+    next.status_changed_at = if next.status != health.status {
+        now_ms()
+    } else if next.status_changed_at > 0 {
+        next.status_changed_at
+    } else {
+        health.status_changed_at
+    };
+    *health = next;
     Ok(())
 }
 
@@ -4238,21 +4354,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn model_import_activation_is_explicitly_overridable() {
+        let legacy: ImportModelInput =
+            serde_json::from_value(serde_json::json!({ "id": "model" })).unwrap();
+        let install_only: ImportModelInput = serde_json::from_value(serde_json::json!({
+            "id": "model",
+            "activate": false
+        }))
+        .unwrap();
+        assert!(legacy.activate);
+        assert!(!install_only.activate);
+    }
+
+    #[test]
     fn verifies_immutable_git_blob_digests() {
-        assert!(verify_git_blob_sha(b"hello\n", "ce013625030ba8dba906f756967f9e9ca394464a").is_ok());
-        assert!(verify_git_blob_sha(b"changed", "ce013625030ba8dba906f756967f9e9ca394464a").is_err());
+        assert!(
+            verify_git_blob_sha(b"hello\n", "ce013625030ba8dba906f756967f9e9ca394464a").is_ok()
+        );
+        assert!(
+            verify_git_blob_sha(b"changed", "ce013625030ba8dba906f756967f9e9ca394464a").is_err()
+        );
     }
 
     #[test]
     fn adds_new_official_catalogs_without_removing_user_sources() {
         let mut config = serde_json::json!({
-            "models": { "sources": [{
-                "id": "custom",
-                "label": "Custom",
-                "catalogUrl": "https://example.com/catalog.json",
-                "kind": "customCdn",
-                "enabled": true
-            }] }
+            "models": { "sources": [
+                {
+                    "id": "custom",
+                    "label": "Custom",
+                    "catalogUrl": "https://example.com/catalog.json",
+                    "kind": "customCdn",
+                    "enabled": true
+                },
+                {
+                    "id": "ark-models",
+                    "label": "Old operators label",
+                    "catalogUrl": "https://raw.githubusercontent.com/cb8010d6/spine-companion/main/catalog/catalog.json",
+                    "kind": "official",
+                    "enabled": false
+                }
+            ] }
         });
         ensure_official_model_sources(&mut config);
         let ids = config["models"]["sources"]
@@ -4265,6 +4407,17 @@ mod tests {
         assert!(ids.contains(&"ark-models"));
         assert!(ids.contains(&"ark-illustrations"));
         assert!(ids.contains(&"ark-enemies"));
+        let operators = config["models"]["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|source| source["id"] == "ark-models")
+            .unwrap();
+        assert_eq!(operators["enabled"], false);
+        assert!(operators["catalogUrl"]
+            .as_str()
+            .unwrap()
+            .contains("/v0.2.6-rc.7.1/"));
     }
 
     #[test]
@@ -4272,6 +4425,7 @@ mod tests {
         let mut health = RendererHealth {
             status: "ok".to_string(),
             last_heartbeat_at: 1_000,
+            status_changed_at: 1_000,
             ..RendererHealth::default()
         };
         assert!(!renderer_heartbeat_stale(&health, 8_999));
@@ -4280,7 +4434,14 @@ mod tests {
         assert!(!renderer_heartbeat_stale(&health, 20_000));
         health.status = "suspended".to_string();
         health.last_recovery_at = 0;
+        health.status_changed_at = 18_000;
         assert!(!renderer_heartbeat_stale(&health, 20_000));
+        assert!(renderer_heartbeat_stale(&health, 31_000));
+        health.status = "starting".to_string();
+        health.last_heartbeat_at = 0;
+        health.status_changed_at = 1_000;
+        assert!(!renderer_heartbeat_stale(&health, 20_000));
+        assert!(renderer_heartbeat_stale(&health, 22_000));
     }
 
     #[tokio::test]
@@ -4384,7 +4545,7 @@ mod tests {
         for name in ["current", "older-a", "older-b", "pending.preview-download"] {
             std::fs::create_dir_all(root.join(name)).unwrap();
         }
-        prune_preview_asset_cache(&root, "current", 2);
+        prune_preview_asset_cache(&root, "current", 2, u64::MAX);
         let completed = std::fs::read_dir(&root)
             .unwrap()
             .filter_map(Result::ok)
@@ -4398,6 +4559,25 @@ mod tests {
         assert_eq!(completed, 2);
         assert!(root.join("current").exists());
         assert!(root.join("pending.preview-download").exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn preview_cache_pruning_limits_total_bytes_without_removing_current_model() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis())
+            .unwrap_or(0);
+        let root =
+            std::env::temp_dir().join(format!("spine-companion-preview-size-test-{}", suffix));
+        for name in ["current", "older-a", "older-b"] {
+            let dir = root.join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("model.bin"), [0_u8; 4]).unwrap();
+        }
+        prune_preview_asset_cache(&root, "current", 10, 5);
+        assert!(root.join("current").exists());
+        assert_eq!(directory_size_bytes(&root), 4);
         let _ = std::fs::remove_dir_all(root);
     }
 

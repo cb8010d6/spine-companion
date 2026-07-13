@@ -34,7 +34,23 @@ import { renderSpinePreview } from "./spine-preview.js";
 import { installManagerPreviewBridge } from "./manager-preview.js";
 import { applyThemePreference } from "./theme.js";
 import { integrationBrand } from "./integration-icons.js";
-import { catalogDisplayName, catalogDownloadRequest, mergeInstalledModelMetadata, normalizeCatalogEntries } from "./catalog-model.js";
+import {
+  LIBRARY_PAGE_SIZE,
+  LIBRARY_PREVIEW_BATCH_SIZE,
+  LIBRARY_PREVIEW_CONFIRM_BYTES,
+  canRemoveCatalogSource,
+  catalogDisplayName,
+  catalogDownloadRequest,
+  catalogModelSizeBytes,
+  catalogModelSourceId,
+  catalogSpineDisplayVersion,
+  enabledCatalogSources,
+  mergeInstalledModelMetadata,
+  normalizeCatalogEntries,
+  resolveCatalogSourceId,
+  selectPreviewBatch,
+  upsertInstalledModel
+} from "./catalog-model.js";
 import { createAvatarEditor } from "./avatar-editor-view.js";
 import { createNavigationGuard } from "./navigation.js";
 import {
@@ -75,7 +91,7 @@ let history = [];
 let reminders = [];
 let integrations = [];
 let avatarPacks = [];
-let remoteCatalog = { models: [], sources: [] };
+const remoteCatalogCache = new Map();
 let updateStatus = null;
 let liveState = null;
 const downloads = {};
@@ -231,7 +247,9 @@ function previewNode(model, onPreviewReady = null) {
   const node = h("div", { class: `model-preview ${preview.imageUrl ? "has-image" : ""}`, style: preview.style, "aria-label": `Preview for ${preview.label}` },
     children
   );
-  if (previewButton && typeof onPreviewReady === "function") onPreviewReady(renderAndCache);
+  if (previewButton && typeof onPreviewReady === "function") {
+    onPreviewReady({ id: model.id, bytes: catalogModelSizeBytes(model), run: renderAndCache });
+  }
   if (!preview.imageUrl && preview.autoRenderSpinePreview) {
     window.requestAnimationFrame(() => {
       if (node.isConnected) renderAndCache();
@@ -249,6 +267,18 @@ function iconLabel(Icon, label) {
   icon.classList.add("btn-icon");
   icon.setAttribute("aria-hidden", "true");
   return [icon, h("span", {}, label)];
+}
+
+function catalogSourceLabel(source = {}) {
+  const key = `manager.library.officialSource.${source.id || "unknown"}`;
+  const translated = t(key);
+  return translated === key ? (source.label || source.id || t("manager.library.unknownSource")) : translated;
+}
+
+function catalogSourceStateLabel(state = "") {
+  const key = `manager.library.sourceState.${state}`;
+  const translated = t(key);
+  return translated === key ? state : translated;
 }
 
 function localizedDiagnosticMessage(message) {
@@ -428,12 +458,20 @@ async function startDownload(id, catalogEntry = null) {
   downloads[id] = { status: "pending", current: 0, total: 1, file: t("manager.download.initializing") };
   librarySession?.refreshModel(id);
   try {
-    const result = catalogEntry
-      ? await window.companion?.importCatalogModel?.(catalogEntry)
-      : await window.companion?.importModel?.({ id });
+    const installer = catalogEntry
+      ? window.companion?.installCatalogModel
+      : window.companion?.installModel;
+    if (!installer) throw new Error(t("manager.error.installUnavailable"));
+    const result = await installer(catalogEntry || { id });
     downloads[id] = { ...(downloads[id] || {}), status: "succeeded", current: downloads[id]?.total || 1, total: downloads[id]?.total || 1, file: t("manager.download.done") };
     await refreshConfig();
-    setStatus(t("manager.status.loadedModel", { name: result.name || id }));
+    installedModels = upsertInstalledModel(
+      installedModels,
+      { ...(result || {}), id: result?.id || id },
+      catalogEntry?.model || catalogEntry || { id }
+    );
+    librarySession?.refresh({ installed: true });
+    setStatus(t("manager.status.installedModel", { name: result?.name || id }));
   } catch (error) {
     const message = error.message || t("manager.error.downloadFailed");
     downloads[id] = { ...(downloads[id] || {}), status: "failed", error: message, current: 0, total: downloads[id]?.total || 1 };
@@ -450,36 +488,47 @@ async function startDownload(id, catalogEntry = null) {
   if (activeView === "downloads" || activeView === "installed") renderView(activeView);
 }
 
-async function refreshRemoteCatalog(sourceId = librarySelectedSource) {
-  if (!window.companion?.refreshModelCatalogs) return remoteCatalog;
-  const sources = (config.models?.sources || []).filter((source) =>
-    source.enabled !== false && (sourceId === "all" || source.id === sourceId));
-  if (!sources.length) return remoteCatalog;
-  remoteCatalog = await window.companion.refreshModelCatalogs(sources);
-  return remoteCatalog;
+async function refreshRemoteCatalog(sourceId, sources) {
+  const empty = { models: [], sources: [] };
+  if (!sourceId) return empty;
+  const cached = remoteCatalogCache.get(sourceId) || empty;
+  if (!window.companion?.refreshModelCatalogs) return cached;
+  const selectedSources = sources.filter((source) => source.id === sourceId);
+  if (!selectedSources.length) return empty;
+  try {
+    return await window.companion.refreshModelCatalogs(selectedSources);
+  } catch (error) {
+    return {
+      models: cached.models || [],
+      sources: [{
+        sourceId,
+        state: cached.models?.length ? "stale" : "failed",
+        modelCount: cached.models?.length || 0,
+        error: error?.message || String(error)
+      }]
+    };
+  }
 }
 
 async function libraryView() {
-  await refreshRemoteCatalog().catch((error) => {
-    remoteCatalog = { models: [], sources: [{ sourceId: "remote", state: "failed", error: error?.message || String(error) }] };
-  });
-  const staticCatalog = (config.models?.catalog || []).map((model) => ({
+  const enabledSources = enabledCatalogSources(config.models?.sources || []);
+  librarySelectedSource = resolveCatalogSourceId(enabledSources, librarySelectedSource);
+  const sourceValue = librarySelectedSource;
+  const remoteCatalog = await refreshRemoteCatalog(sourceValue, enabledSources);
+  const staticCatalog = (config.models?.catalog || []).filter((model) => model.catalogVisible !== false).map((model) => ({
     ...model,
-    sourceId: model.sourceId || "ark-models",
+    sourceId: catalogModelSourceId(model),
     _catalogEntry: null
   }));
   const remoteModels = normalizeCatalogEntries(remoteCatalog.models);
-  const catalog = [...remoteModels, ...staticCatalog.filter((item) => !remoteModels.some((remote) => remote.id === item.id))];
+  const catalog = sourceValue
+    ? [...remoteModels, ...staticCatalog.filter((item) => !remoteModels.some((remote) => remote.id === item.id))]
+    : [];
   let installedIds = new Set(installedModels.map((model) => model.id));
   let activeId = activeInstalledId();
   let filterValue = "all";
-  const enabledSources = (config.models?.sources || []).filter((source) => source.enabled !== false);
-  if (!enabledSources.some((source) => source.id === librarySelectedSource)) {
-    librarySelectedSource = enabledSources[0]?.id || "all";
-  }
-  let sourceValue = librarySelectedSource;
   let catalogPage = 1;
-  const pageSize = 24;
+  const pageSize = LIBRARY_PAGE_SIZE;
   const search = h("input", {
     class: "input",
     type: "search",
@@ -503,39 +552,61 @@ async function libraryView() {
   const sourceFilter = h("select", {
     class: "select library-filter",
     "aria-label": t("manager.library.sourceFilterLabel"),
+    disabled: enabledSources.length === 0,
     onChange: (event) => {
       librarySelectedSource = event.target.value;
       renderView("library");
     }
   },
-    ...enabledSources.map((source) => h("option", { value: source.id }, source.label))
+    ...(enabledSources.length
+      ? enabledSources.map((source) => h("option", { value: source.id }, catalogSourceLabel(source)))
+      : [h("option", { value: "" }, t("manager.library.noEnabledSources"))])
   );
   sourceFilter.value = sourceValue;
   const grid = h("div", { class: "grid-2 library-grid" });
   const pager = h("div", { class: "library-pager" });
   const cardControllers = new Map();
   let currentPagePreviewTasks = [];
+  const previewButtonLabel = () => t("manager.library.previewBatch", { count: LIBRARY_PREVIEW_BATCH_SIZE });
+  const runPreviewBatch = async (tasks) => {
+    previewCurrentPageButton.disabled = true;
+    previewCurrentPageButton.textContent = t("manager.library.previewingPage", { count: tasks.length });
+    let completed = 0;
+    for (let index = 0; index < tasks.length; index += 2) {
+      const results = await Promise.allSettled(tasks.slice(index, index + 2).map((task) => task.run()));
+      completed += results.filter((result) => result.status === "fulfilled" && result.value === true).length;
+    }
+    previewCurrentPageButton.disabled = false;
+    previewCurrentPageButton.replaceChildren(...iconLabel(Eye, previewButtonLabel()));
+    showToast(t("manager.library.previewPageResult", { completed, total: tasks.length }));
+  };
+  const requestPreviewBatch = () => {
+    const tasks = selectPreviewBatch(currentPagePreviewTasks);
+    if (!tasks.length) {
+      showToast(t("manager.library.previewPageEmpty"));
+      return;
+    }
+    const bytes = tasks.reduce((total, task) => total + task.bytes, 0);
+    if (bytes >= LIBRARY_PREVIEW_CONFIRM_BYTES) {
+      showModal(t("manager.library.previewConfirmTitle"), t("manager.library.previewConfirmBody", {
+        count: tasks.length,
+        size: formatBytes(bytes)
+      }), [
+        h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.cancel")),
+        h("button", { class: "btn btn-primary", type: "button", onClick: () => {
+          closeModal();
+          runPreviewBatch(tasks);
+        } }, t("manager.library.previewContinue"))
+      ]);
+      return;
+    }
+    runPreviewBatch(tasks);
+  };
   const previewCurrentPageButton = h("button", {
     class: "btn",
     type: "button",
-    onClick: async () => {
-      const tasks = [...currentPagePreviewTasks];
-      if (!tasks.length) {
-        showToast(t("manager.library.previewPageEmpty"));
-        return;
-      }
-      previewCurrentPageButton.disabled = true;
-      previewCurrentPageButton.textContent = t("manager.library.previewingPage", { count: tasks.length });
-      let completed = 0;
-      for (let index = 0; index < tasks.length; index += 3) {
-        const results = await Promise.allSettled(tasks.slice(index, index + 3).map((task) => task()));
-        completed += results.filter((result) => result.status === "fulfilled" && result.value === true).length;
-      }
-      previewCurrentPageButton.disabled = false;
-      previewCurrentPageButton.textContent = t("manager.library.previewCurrentPage");
-      showToast(t("manager.library.previewPageResult", { completed, total: tasks.length }));
-    }
-  }, t("manager.library.previewCurrentPage"));
+    onClick: requestPreviewBatch
+  }, ...iconLabel(Eye, previewButtonLabel()));
   const sourceLabelInput = h("input", { class: "input", placeholder: t("manager.library.sourceName") });
   const sourceUrlInput = h("input", { class: "input", placeholder: "https://raw.githubusercontent.com/.../catalog.json" });
   const addSource = async () => {
@@ -547,7 +618,8 @@ async function libraryView() {
     catch { showToast(t("manager.library.invalidSourceUrl")); return; }
     if (!catalogUrl.startsWith("https://")) { showToast(t("manager.library.invalidSourceUrl")); return; }
     const kind = host === "raw.githubusercontent.com" ? "customRaw" : "customCdn";
-    const id = label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 80);
+    const id = label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 80)
+      || `custom-${Date.now().toString(36)}`;
     const sources = [...(config.models?.sources || []).filter((source) => source.id !== id), { id, label, catalogUrl, kind, enabled: true }];
     await window.companion?.saveSettings?.({ models: { sources } });
     config.models = { ...(config.models || {}), sources };
@@ -555,6 +627,7 @@ async function libraryView() {
   };
 
   function renderCards(query = "", selectedFilter = "all") {
+    cardControllers.clear();
     const normalized = query.trim().toLowerCase();
     const filtered = catalog
       .filter((model) => !normalized || `${catalogDisplayName(model)} ${model.id} ${model.source}`.toLowerCase().includes(normalized))
@@ -568,8 +641,8 @@ async function libraryView() {
       .map((model) => {
         const download = downloads[model.id];
         const downloadBusy = download?.status === "pending" || download?.status === "downloading";
-        const installed = isInstalled(model.id);
-        const active = activeInstalledId() === model.id;
+        const installed = installedIds.has(model.id);
+        const active = activeId === model.id;
         const actionLabel = installed
           ? (active ? t("manager.status.active") : t("manager.actions.setActive"))
           : (downloadBusy ? t("manager.status.downloading") : t("manager.actions.download"));
@@ -617,8 +690,8 @@ async function libraryView() {
             model.author ? h("div", { class: "model-meta" }, t("manager.library.author", { author: model.author })) : null,
             h("div", { class: "model-badges" },
               badge(model.versionVerified === false
-                ? t("manager.library.spineDeclared", { version: model.spineVersion || "3.8" })
-                : (model.spineVersion || "Spine 3.8")),
+                ? t("manager.library.spineUnverified", { version: catalogSpineDisplayVersion(model) })
+                : `Spine ${catalogSpineDisplayVersion(model)}`),
               badge(t(`manager.library.category.${model.category || "operator"}`)),
               badge(t(`manager.library.compatibility.${model.compatibilityProfile || "companion"}`),
                 model.compatibilityProfile === "companion" ? "badge-success" : "badge-warning"),
@@ -647,7 +720,7 @@ async function libraryView() {
     );
   }
 
-  librarySession = {
+  const session = {
     refreshModel(id) {
       cardControllers.get(id)?.update();
     },
@@ -663,11 +736,11 @@ async function libraryView() {
     }
   };
 
-  renderCards();
   const catalogCount = h("strong", {}, String(catalog.filter((model) => model.sourceId === sourceValue).length));
   const installedCount = h("strong", {}, String(installedModels.length));
   const activeCount = h("strong", {}, activeId ? "1" : "0");
-  return h("section", {},
+  renderCards();
+  const content = h("section", {},
     h("div", { class: "view-header" },
       h("div", {},
         h("h2", { class: "view-title" }, t("manager.library.title")),
@@ -681,24 +754,29 @@ async function libraryView() {
       h("div", {}, activeCount, h("span", {}, t("manager.library.activeCount")))
     ),
     h("div", { class: "library-toolbar" }, sourceFilter, search, filter, previewCurrentPageButton),
-    h("div", { class: "catalog-source-strip" }, ...(remoteCatalog.sources || []).map((source) => h("span", { class: `badge ${source.state === "failed" ? "badge-warning" : ""}`, title: source.error || "" }, `${source.sourceId}: ${source.state}`))),
+    h("div", { class: "catalog-source-strip" }, ...(remoteCatalog.sources || []).map((status) => {
+      const source = enabledSources.find((item) => item.id === status.sourceId) || { id: status.sourceId, label: status.sourceId };
+      const warning = status.state === "failed" || status.state === "stale";
+      return h("span", { class: `badge ${warning ? "badge-warning" : ""}`, title: status.error || "" }, `${catalogSourceLabel(source)}: ${catalogSourceStateLabel(status.state)}`);
+    })),
     h("details", { class: "catalog-source-editor" }, h("summary", {}, t("manager.library.sources")),
       h("div", { class: "catalog-source-list" }, ...(config.models?.sources || []).map((source) => h("div", { class: "catalog-source-row" },
-        h("span", {}, source.label), h("small", { title: source.catalogUrl }, source.catalogUrl),
+        h("span", {}, catalogSourceLabel(source)), h("small", { title: source.catalogUrl }, source.catalogUrl),
         h("label", { class: "switch-row compact" }, h("input", { type: "checkbox", checked: source.enabled !== false, onChange: async (event) => {
           const sources = (config.models?.sources || []).map((item) => item.id === source.id ? { ...item, enabled: event.target.checked } : item);
           await window.companion?.saveSettings?.({ models: { sources } }); config.models.sources = sources; await renderView("library");
         } }), h("span", {}, t("manager.library.sourceEnabled"))),
-        h("button", { class: "btn danger", type: "button", onClick: async () => {
+        canRemoveCatalogSource(source) ? h("button", { class: "btn danger", type: "button", onClick: async () => {
           const sources = (config.models?.sources || []).filter((item) => item.id !== source.id);
           await window.companion?.saveSettings?.({ models: { sources } }); config.models.sources = sources; await renderView("library");
-        } }, t("manager.actions.remove"))
+        } }, t("manager.actions.remove")) : null
       ))),
       h("div", { class: "catalog-source-add" }, sourceLabelInput, sourceUrlInput, h("button", { class: "btn", type: "button", onClick: addSource }, t("manager.library.addSource")))
     ),
     grid,
     pager
   );
+  return { content, session, remoteCatalog, sourceId: sourceValue };
 }
 
 function confirmDownload(model) {
@@ -1706,7 +1784,7 @@ async function avatarStudioView() {
 
 async function renderView(viewName) {
   const navigation = navigationGuard.begin(viewName);
-  if (viewName !== "library") librarySession = null;
+  librarySession = null;
   if (viewName === "dashboard") {
     setStatus(t("manager.status.viewing", { view: t("manager.nav.dashboard") }));
     await renderDashboard();
@@ -1715,9 +1793,11 @@ async function renderView(viewName) {
   viewContainer.replaceChildren(h("p", { class: "empty-text" }, t("manager.status.loading")));
   setStatus(t("manager.status.viewing", { view: t(`manager.nav.${viewName}`) }));
   if (viewName === "library") {
-    const content = await libraryView();
+    const result = await libraryView();
     if (!navigationGuard.isCurrent(navigation, activeView)) return;
-    render(content, viewContainer);
+    librarySession = result.session;
+    if (result.sourceId) remoteCatalogCache.set(result.sourceId, result.remoteCatalog);
+    render(result.content, viewContainer);
   }
   else if (viewName === "installed") render(installedView(), viewContainer);
   else if (viewName === "downloads") render(downloadsView(), viewContainer);

@@ -76,6 +76,7 @@ let rendererHealthTimer = 0;
 let rendererRecoveryCount = 0;
 let lastRendererRecoveryAt = 0;
 let rendererHealthGraceUntil = 0;
+let lastRendererProbeAt = 0;
 let hitboxDebug = null;
 const NATIVE_DRAG_STOP_IDLE_POLLS = 8;
 const NATIVE_DRAG_POLL_MS = 40;
@@ -596,11 +597,19 @@ function rendererHealthPayload(status, reason = "") {
 
 function startRendererHealthProbe() {
   window.clearInterval(rendererHealthTimer);
+  lastRendererProbeAt = Date.now();
   rendererHealthTimer = window.setInterval(() => {
     const health = player?.getRendererHealth?.();
     updateHitboxDebug();
     if (!health) return;
     const now = Date.now();
+    const probeGap = now - lastRendererProbeAt;
+    lastRendererProbeAt = now;
+    if (probeGap > 6000) {
+      rendererHealthGraceUntil = now + 8000;
+      window.companion?.updateRendererHealth?.(rendererHealthPayload("resuming", "timer-resume-grace")).catch?.(() => {});
+      return;
+    }
     if (document.visibilityState !== "visible") {
       window.companion?.updateRendererHealth?.(rendererHealthPayload("suspended", "window-hidden")).catch?.(() => {});
       return;

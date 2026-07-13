@@ -96,14 +96,14 @@ function validateSource(source) {
   }
 }
 
-async function fetchResponse(fetchImpl, url) {
+async function fetchResponse(fetchImpl, url, options = {}) {
   let error;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
-      const headers = { "user-agent": "spine-companion-catalog-generator" };
+      const headers = { "user-agent": "spine-companion-catalog-generator", ...(options.headers || {}) };
       const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
       if (token && url.startsWith("https://api.github.com/")) headers.authorization = `Bearer ${token}`;
-      const response = await fetchImpl(url, { headers });
+      const response = await fetchImpl(url, { headers, signal: AbortSignal.timeout(30000) });
       if (response?.ok) return response;
       error = new Error(`Request failed (${response?.status || "unknown"}) for ${url}`);
     } catch (caught) {
@@ -134,6 +134,42 @@ async function fetchBytesFromUrls(fetchImpl, urls) {
   for (const url of urls) {
     try {
       return await fetchBytes(fetchImpl, url);
+    } catch (caught) {
+      error = caught;
+    }
+  }
+  throw error;
+}
+
+async function fetchPrefix(fetchImpl, url, maxBytes = 512) {
+  const response = await readResponse(await fetchResponse(fetchImpl, url, {
+    headers: { range: `bytes=0-${maxBytes - 1}` }
+  }), url);
+  if (!response.body?.getReader) {
+    return Buffer.from(await response.arrayBuffer()).subarray(0, maxBytes);
+  }
+  const reader = response.body.getReader();
+  const chunks = [];
+  let length = 0;
+  try {
+    while (length < maxBytes) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = Buffer.from(value);
+      chunks.push(chunk);
+      length += chunk.length;
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+  return Buffer.concat(chunks, length).subarray(0, maxBytes);
+}
+
+async function fetchPrefixFromUrls(fetchImpl, urls, maxBytes = 512) {
+  let error;
+  for (const url of urls) {
+    try {
+      return await fetchPrefix(fetchImpl, url, maxBytes);
     } catch (caught) {
       error = caught;
     }
@@ -183,7 +219,21 @@ export async function scanGithubRepository(source, { fetchImpl = fetch, localRoo
     return skelCount === 1 && atlasCount > 0 && textureCount > 0 ? entries : [];
   });
   const verifiedFiles = source.metadataOnly
-    ? new Map(verificationEntries.map((entry) => [entry.path, { sha256: "", spineVersion: "" }]))
+    ? new Map(await mapWithConcurrency(verificationEntries, Number(process.env.CATALOG_CONCURRENCY || 24), async (entry) => {
+      if (extension(entry.name) !== ".skel" || !source.verifySpineHeaders) {
+        return [entry.path, { sha256: "", spineVersion: "" }];
+      }
+      const url = `https://raw.githubusercontent.com/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/${revision}/${encodePath(entry.path)}`;
+      const fallbackUrl = `https://cdn.jsdelivr.net/gh/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}@${revision}/${encodePath(entry.path)}`;
+      try {
+        const bytes = localRoot
+          ? await readFile(path.resolve(localRoot, ...entry.path.split("/")))
+          : await fetchPrefixFromUrls(fetchImpl, [url, fallbackUrl]);
+        return [entry.path, { sha256: "", spineVersion: detectSpineVersion(bytes) }];
+      } catch (error) {
+        return [entry.path, { error: error.message || String(error) }];
+      }
+    }))
     : new Map(await mapWithConcurrency(verificationEntries, Number(process.env.CATALOG_CONCURRENCY || 24), async (entry) => {
     const url = `https://raw.githubusercontent.com/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/${revision}/${encodePath(entry.path)}`;
     const fallbackUrl = `https://cdn.jsdelivr.net/gh/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}@${revision}/${encodePath(entry.path)}`;

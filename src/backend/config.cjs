@@ -88,21 +88,24 @@ const fallbackConfig = {
         id: "ark-1001-amiya2-sale-16",
         name: "Amiya Guard Skin #16",
         source: "Ark-Models",
+        sourceId: "ark-models",
+        catalogSourceId: "ark-models",
+        catalogVisible: false,
         licenseNote: "Downloaded from isHarryh/Ark-Models for local use only. Do not commit or redistribute the asset files in this repository.",
-        repositoryUrl: "https://github.com/isHarryh/Ark-Models/tree/main/models/1001_amiya2_sale%2316",
+        repositoryUrl: "https://github.com/isHarryh/Ark-Models/tree/2f3187f780108847d7327946e1906fc6b80bead3/models/1001_amiya2_sale%2316",
         skel: "build_char_1001_amiya2_sale#16.skel",
         files: [
           {
             name: "build_char_1001_amiya2_sale#16.atlas",
-            url: "https://raw.githubusercontent.com/isHarryh/Ark-Models/main/models/1001_amiya2_sale%2316/build_char_1001_amiya2_sale%2316.atlas"
+            url: "https://raw.githubusercontent.com/isHarryh/Ark-Models/2f3187f780108847d7327946e1906fc6b80bead3/models/1001_amiya2_sale%2316/build_char_1001_amiya2_sale%2316.atlas"
           },
           {
             name: "build_char_1001_amiya2_sale#16.png",
-            url: "https://raw.githubusercontent.com/isHarryh/Ark-Models/main/models/1001_amiya2_sale%2316/build_char_1001_amiya2_sale%2316.png"
+            url: "https://raw.githubusercontent.com/isHarryh/Ark-Models/2f3187f780108847d7327946e1906fc6b80bead3/models/1001_amiya2_sale%2316/build_char_1001_amiya2_sale%2316.png"
           },
           {
             name: "build_char_1001_amiya2_sale#16.skel",
-            url: "https://raw.githubusercontent.com/isHarryh/Ark-Models/main/models/1001_amiya2_sale%2316/build_char_1001_amiya2_sale%2316.skel"
+            url: "https://raw.githubusercontent.com/isHarryh/Ark-Models/2f3187f780108847d7327946e1906fc6b80bead3/models/1001_amiya2_sale%2316/build_char_1001_amiya2_sale%2316.skel"
           }
         ]
       }

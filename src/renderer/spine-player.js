@@ -22,10 +22,31 @@ export function attachTrackCompletion(entry, onComplete, isCurrent = () => true)
 }
 
 export function selectAvailableAnimation(animationNames = [], requested = "") {
-  if (animationNames.includes(requested)) return requested;
-  return ["Idle", "Default", "Relax"].find((name) => animationNames.includes(name))
-    || animationNames[0]
-    || "";
+  const names = animationNames.filter((name) => typeof name === "string" && name);
+  const requestedKey = String(requested || "").toLowerCase();
+  const exact = names.find((name) => name.toLowerCase() === requestedKey);
+  if (exact) return exact;
+
+  const stable = ["idle", "default", "relax", "stand"];
+  const fallbacks = {
+    relax: ["relax", ...stable],
+    idle: stable,
+    default: ["default", "idle", "relax", "stand"],
+    move: ["move", "run", "walk", ...stable],
+    interact: ["interact", "touch", "tap", ...stable],
+    sit: ["sit", ...stable],
+    sleep: ["sleep", ...stable],
+    special: ["special", "interact", ...stable]
+  };
+  const semantics = fallbacks[requestedKey] || [requestedKey, ...stable].filter(Boolean);
+  const matchesSemantic = (name, semantic) => String(name).toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .some((part) => part === semantic || (part.startsWith(semantic) && /^\d+$/.test(part.slice(semantic.length))));
+  for (const semantic of semantics) {
+    const match = names.find((name) => matchesSemantic(name, semantic));
+    if (match) return match;
+  }
+  return "";
 }
 
 export class SpinePlayer {
@@ -397,16 +418,19 @@ export class SpinePlayer {
 
     for (const stateId of stateIds) {
       const motion = animationForState({ state: stateId }, this.config);
-      const animation = animations.get(motion.animation);
+      const resolvedAnimation = selectAvailableAnimation([...animations.keys()], motion.animation);
+      const animation = animations.get(resolvedAnimation);
       if (!animation) continue;
-      const segment = motion.segment ? this.config.specialSegments?.[motion.segment] : null;
+      const segment = resolvedAnimation === motion.animation && motion.segment
+        ? this.config.specialSegments?.[motion.segment]
+        : null;
       const from = Number(segment?.from ?? 0);
       const to = Number(segment?.to ?? animation.duration ?? 1);
       const span = Math.max(0.001, to - from);
 
       for (let index = 0; index < sampleCount; index += 1) {
         const ratio = sampleCount === 1 ? 0 : index / (sampleCount - 1);
-        this.sampleAnimationBounds(motion.animation, from + span * ratio, Boolean(segment?.loop ?? motion.loop ?? true), measured);
+        this.sampleAnimationBounds(resolvedAnimation, from + span * ratio, Boolean(segment?.loop ?? motion.loop ?? true), measured);
       }
     }
 
