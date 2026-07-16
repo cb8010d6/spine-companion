@@ -4,7 +4,8 @@ const DEFAULT_UI_SETTINGS = Object.freeze({
   bubbleShadow: true,
   bubbleBackground: "solid",
   bubbleHoldMs: 8000,
-  dragMode: "compatible",
+  dragMode: "smooth",
+  frameRateMode: "display",
   autoRevealOnMcp: true,
   systemNotifications: true,
   updateAutoCheck: true,
@@ -17,6 +18,7 @@ const DEFAULT_UI_SETTINGS = Object.freeze({
 
 const BUBBLE_BACKGROUNDS = new Set(["solid", "soft", "clear", "light"]);
 const DRAG_MODES = new Set(["compatible", "smooth"]);
+const FRAME_RATE_MODES = new Set(["display", "60", "30"]);
 const THEMES = new Set(["system", "light", "dark"]);
 const UPDATE_CHANNELS = new Set(["auto", "stable", "prerelease"]);
 
@@ -33,6 +35,9 @@ function normalizeUiSettings(input = {}, defaults = DEFAULT_UI_SETTINGS) {
       ? Math.min(60000, Math.max(1500, Number(source.bubbleHoldMs)))
       : defaults.bubbleHoldMs,
     dragMode: DRAG_MODES.has(source.dragMode) ? source.dragMode : defaults.dragMode,
+    frameRateMode: FRAME_RATE_MODES.has(String(source.frameRateMode))
+      ? String(source.frameRateMode)
+      : defaults.frameRateMode,
     autoRevealOnMcp: typeof source.autoRevealOnMcp === "boolean" ? source.autoRevealOnMcp : defaults.autoRevealOnMcp,
     systemNotifications: typeof source.systemNotifications === "boolean" ? source.systemNotifications : defaults.systemNotifications,
     updateAutoCheck: typeof source.updateAutoCheck === "boolean" ? source.updateAutoCheck : defaults.updateAutoCheck,
@@ -58,6 +63,7 @@ function applyUiSettingsPatch(current = DEFAULT_UI_SETTINGS, patch = {}) {
     next.bubbleHoldMs = Math.min(60000, Math.max(1500, Number(patch.bubbleHoldMs)));
   }
   if (DRAG_MODES.has(patch.dragMode)) next.dragMode = patch.dragMode;
+  if (FRAME_RATE_MODES.has(String(patch.frameRateMode))) next.frameRateMode = String(patch.frameRateMode);
   if (typeof patch.autoRevealOnMcp === "boolean") next.autoRevealOnMcp = patch.autoRevealOnMcp;
   if (typeof patch.systemNotifications === "boolean") next.systemNotifications = patch.systemNotifications;
   if (typeof patch.updateAutoCheck === "boolean") next.updateAutoCheck = patch.updateAutoCheck;
@@ -77,6 +83,7 @@ module.exports = {
   DEFAULT_UI_SETTINGS,
   BUBBLE_BACKGROUNDS,
   DRAG_MODES,
+  FRAME_RATE_MODES,
   THEMES,
   UPDATE_CHANNELS,
   normalizeUiSettings,

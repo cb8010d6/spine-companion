@@ -2,7 +2,38 @@ import * as PIXI from "pixi.js";
 import { Spine } from "pixi-spine";
 import { animationForState, stateMachine } from "./state.js";
 import { spineAssetUrl } from "../shared/asset-url.js";
-import { calculateInteractiveBounds, expandBounds } from "./hitbox.js";
+import { calculateInteractiveBounds, expandBounds, transformLocalBounds } from "./hitbox.js";
+import { acquireSpineAsset } from "./spine-asset-handle.js";
+
+const ACTIVE_BOUNDS_STATES = new Set(["working", "running", "reviewing", "success", "reminder", "failed"]);
+const TRACK_STALE_MS = 3000;
+const TRACK_REBUILD_DELAY_MS = 2000;
+const RECOVERY_COOLDOWN_MS = 30000;
+const RECOVERY_WINDOW_MS = 5 * 60 * 1000;
+const MAX_RECOVERIES_PER_WINDOW = 3;
+
+export function activeRecoveryHistory(history = [], now = Date.now()) {
+  return history.filter((at) => Number.isFinite(at) && now - at <= RECOVERY_WINDOW_MS);
+}
+
+export class ReplacementRevision {
+  constructor() {
+    this.current = 0;
+  }
+
+  begin() {
+    this.current += 1;
+    return this.current;
+  }
+
+  isCurrent(revision) {
+    return revision === this.current;
+  }
+
+  invalidate() {
+    this.current += 1;
+  }
+}
 
 export function modelCoreFitStates(spineConfig = {}) {
   const configured = spineConfig.coreFitStates;
@@ -71,6 +102,45 @@ export function selectAvailableAnimation(animationNames = [], requested = "") {
   return "";
 }
 
+export function normalizeFrameRateMode(value) {
+  const mode = String(value || "display");
+  return mode === "60" || mode === "30" ? mode : "display";
+}
+
+export function tickerMaxFps(frameRateMode, dragActive = false, dragMode = "smooth") {
+  const mode = normalizeFrameRateMode(frameRateMode);
+  const selected = mode === "60" ? 60 : mode === "30" ? 30 : 0;
+  if (dragActive && dragMode === "compatible") return selected > 0 ? Math.min(42, selected) : 42;
+  return selected;
+}
+
+export function trackEntryNeedsReplay(entry, lastProgressAt = 0, now = Date.now()) {
+  if (!entry) return true;
+  if (entry.loop) {
+    return Number(entry.timeScale ?? 1) > 0
+      && lastProgressAt > 0
+      && now - lastProgressAt > TRACK_STALE_MS;
+  }
+  return typeof entry.isComplete === "function" ? entry.isComplete() : false;
+}
+
+export function animationRecoveryAction({
+  step = 0,
+  stale = false,
+  progressed = false,
+  elapsedMs = 0,
+  previousRecoveryAgeMs = Infinity,
+  recentRecoveries = 0
+} = {}) {
+  if (progressed) return "none";
+  if (step === 0) {
+    if (!stale || previousRecoveryAgeMs < RECOVERY_COOLDOWN_MS) return "none";
+    return recentRecoveries >= MAX_RECOVERIES_PER_WINDOW ? "rate-limited" : "replay";
+  }
+  if (elapsedMs < TRACK_REBUILD_DELAY_MS) return "none";
+  return step === 1 ? "rebuild" : "recreate";
+}
+
 export class SpinePlayer {
   constructor(stage, config) {
     this.stageElement = stage;
@@ -90,8 +160,10 @@ export class SpinePlayer {
     this.screenScale = 1;
     this.anchor = { x: 20, y: 28, scale: 1 };
     this.anchorTarget = null;
-    this.dragMode = config.ui?.dragMode || "compatible";
+    this.dragMode = config.ui?.dragMode || "smooth";
+    this.frameRateMode = normalizeFrameRateMode(config.ui?.frameRateMode);
     this.dragActive = false;
+    this.pointerNear = false;
     this.minUserScale = 0.35;
     this.maxUserScale = 1.55;
     this.baseFitScale = null;
@@ -104,13 +176,27 @@ export class SpinePlayer {
     this.handleContextLost = null;
     this.handleContextRestored = null;
     this.lastFrameAt = 0;
+    this.frameCounter = 0;
+    this.resetDeltaOnNextTick = true;
+    this.resumeGraceUntil = 0;
     this.lastTrackSampleAt = 0;
     this.lastTrackTime = -1;
     this.lastTrackProgressAt = 0;
+    this.trackSnapshot = null;
+    this.animationRecoveryStep = 0;
+    this.animationRecoveryAt = 0;
+    this.animationRecoveryHistory = [];
+    this.animationRecoveryExhausted = false;
+    this.replacementRevision = new ReplacementRevision();
+    this.currentStateInput = { state: "idle", source: "system" };
     this.lastBoundsEmitAt = 0;
     this.lastEmittedBounds = null;
     this.onInteractiveBoundsChange = null;
     this.frameTicker = null;
+    this.handleVisibilityChange = null;
+    this.runtimeBoundsOffset = { x: 0, y: 0 };
+    this.runtimeBoundsSize = { x: 0, y: 0 };
+    this.runtimeBoundsScratch = [];
     this.hitboxPadding = Number.isFinite(Number(config.ui?.hitboxPadding))
       ? Math.min(48, Math.max(0, Number(config.ui.hitboxPadding)))
       : 8;
@@ -132,29 +218,10 @@ export class SpinePlayer {
       resolution: Math.min(window.devicePixelRatio || 1, dprLimit)
     });
     this.stageElement.appendChild(this.app.view);
-    this.frameTicker = () => {
-      this.lastFrameAt = Date.now();
-      if (this.lastFrameAt - this.lastTrackSampleAt >= 500) {
-        this.lastTrackSampleAt = this.lastFrameAt;
-        const trackTime = Number(this.spine?.state?.getCurrent?.(0)?.trackTime ?? -1);
-        if (trackTime < this.lastTrackTime || Math.abs(trackTime - this.lastTrackTime) >= 0.001) {
-          this.lastTrackTime = trackTime;
-          this.lastTrackProgressAt = this.lastFrameAt;
-        }
-      }
-      if (this.lastFrameAt - this.lastBoundsEmitAt >= 80) {
-        this.lastBoundsEmitAt = this.lastFrameAt;
-        const bounds = this.getPointerRecoveryBounds();
-        const previous = this.lastEmittedBounds;
-        const changed = !bounds || !previous
-          || ["left", "right", "top", "bottom"].some((key) => Math.abs(bounds[key] - previous[key]) >= 1);
-        if (changed) {
-          this.lastEmittedBounds = bounds ? { ...bounds } : null;
-          this.onInteractiveBoundsChange?.(this.lastEmittedBounds);
-        }
-      }
-    };
-    this.app.ticker.add(this.frameTicker);
+    this.disablePixiInteraction();
+    this.frameTicker = () => this.tick(this.app?.ticker?.deltaMS);
+    this.app.ticker.add(this.frameTicker, undefined, PIXI.UPDATE_PRIORITY.HIGH);
+    this.applyTickerMode();
     this.configureTransparentRenderer();
     this.bindContextRecovery();
     this.model = new PIXI.Container();
@@ -169,8 +236,104 @@ export class SpinePlayer {
       event.preventDefault();
       this.adjustUserScale(event.deltaY > 0 ? -0.05 : 0.05);
     };
+    this.handleVisibilityChange = () => {
+      this.resetDeltaOnNextTick = true;
+      this.resumeGraceUntil = Date.now() + 5000;
+      this.lastTrackProgressAt = Date.now();
+    };
     window.addEventListener("resize", this.handleResize);
+    document.addEventListener("visibilitychange", this.handleVisibilityChange);
     this.stageElement.addEventListener("wheel", this.handleWheel, { passive: false });
+  }
+
+  disablePixiInteraction() {
+    const interaction = this.app?.renderer?.plugins?.interaction;
+    if (!interaction) return;
+    interaction.useSystemTicker = false;
+    interaction.removeEvents?.();
+    this.app.stage.interactive = false;
+    this.app.stage.interactiveChildren = false;
+  }
+
+  tick(deltaMs) {
+    const now = Date.now();
+    this.lastFrameAt = now;
+    this.frameCounter += 1;
+    let safeDeltaMs = Number(deltaMs || 0);
+    if (this.resetDeltaOnNextTick || document.visibilityState !== "visible") {
+      safeDeltaMs = 0;
+      this.resetDeltaOnNextTick = false;
+    }
+    safeDeltaMs = Math.max(0, Math.min(100, safeDeltaMs));
+    if (this.spine && safeDeltaMs > 0) {
+      this.spine.update(safeDeltaMs / 1000);
+    }
+
+    if (now - this.lastTrackSampleAt >= 250) {
+      this.lastTrackSampleAt = now;
+      this.sampleTrackProgress(now);
+      this.recoverStalledAnimation(now);
+    }
+
+    const stateId = this.currentStateInput?.state || "idle";
+    const boundsInterval = this.pointerNear || this.dragActive || ACTIVE_BOUNDS_STATES.has(stateId) ? 33 : 100;
+    if (now - this.lastBoundsEmitAt >= boundsInterval) {
+      this.lastBoundsEmitAt = now;
+      this.emitInteractiveBounds();
+    }
+  }
+
+  sampleTrackProgress(now = Date.now()) {
+    const entry = this.spine?.state?.getCurrent?.(0) || null;
+    const animationName = String(entry?.animation?.name || "");
+    const trackTime = Number(entry?.trackTime ?? -1);
+    const changedTrack = animationName !== this.trackSnapshot?.animationName;
+    const progressed = changedTrack
+      || trackTime < this.lastTrackTime
+      || Math.abs(trackTime - this.lastTrackTime) >= 0.001;
+    if (progressed) {
+      this.lastTrackProgressAt = now;
+      if (this.animationRecoveryStep > 0) {
+        this.animationRecoveryStep = 0;
+        this.animationRecoveryAt = 0;
+      }
+    }
+    this.lastTrackTime = trackTime;
+    this.trackSnapshot = entry ? {
+      animationName,
+      trackTime,
+      animationEnd: Number(entry.animationEnd ?? entry.animation?.duration ?? 0),
+      loop: Boolean(entry.loop),
+      timeScale: Number(entry.timeScale ?? 1)
+    } : null;
+  }
+
+  resetTrackProgressBaseline(now = Date.now()) {
+    const entry = this.spine?.state?.getCurrent?.(0) || null;
+    this.lastTrackTime = Number(entry?.trackTime ?? -1);
+    this.lastTrackProgressAt = now;
+    this.trackSnapshot = entry ? {
+      animationName: String(entry.animation?.name || ""),
+      trackTime: this.lastTrackTime,
+      animationEnd: Number(entry.animationEnd ?? entry.animation?.duration ?? 0),
+      loop: Boolean(entry.loop),
+      timeScale: Number(entry.timeScale ?? 1)
+    } : null;
+  }
+
+  emitInteractiveBounds(force = false) {
+    const bounds = this.getInteractiveBounds();
+    const previous = this.lastEmittedBounds;
+    const changed = force || !bounds || !previous
+      || ["left", "right", "top", "bottom"].some((key) => Math.abs(bounds[key] - previous[key]) >= 1);
+    if (!changed) return;
+    this.lastEmittedBounds = bounds ? { ...bounds } : null;
+    this.onInteractiveBoundsChange?.(this.lastEmittedBounds);
+  }
+
+  setPointerProximity(near) {
+    this.pointerNear = Boolean(near);
+    if (this.pointerNear) this.emitInteractiveBounds(true);
   }
 
   configureTransparentRenderer() {
@@ -212,10 +375,10 @@ export class SpinePlayer {
     view.addEventListener("webglcontextrestored", this.handleContextRestored, false);
   }
 
-  requestGpuRecovery(reason) {
+  requestGpuRecovery(reason, recreateWindow = false) {
     if (this.gpuRecoveryRequested) return;
     this.gpuRecoveryRequested = true;
-    this.onGpuRecoveryRequested?.({ reason });
+    this.onGpuRecoveryRequested?.({ reason, recreateWindow });
   }
 
   async loadSpine() {
@@ -223,48 +386,46 @@ export class SpinePlayer {
       throw new Error("No Spine asset directory is configured.");
     }
 
-    const resource = await this.loadSpineResourceWithRetry();
+    const { resource, handle, identity } = await this.loadSpineResourceWithRetry(this.config);
+    this.assetHandle = handle;
+    this.assetIdentity = identity;
+    try {
+      this.spine = new Spine(resource.spineData);
+      this.configureSpineInstance(this.spine);
+      this.model.addChild(this.spine);
 
-    this.spine = new Spine(resource.spineData);
-    this.spine.autoUpdate = true;
-    this.model.addChild(this.spine);
-
-    const animations = this.spine.spineData.animations.map((animation) => animation.name);
-    for (const from of animations) {
-      for (const to of animations) {
-        this.spine.stateData.setMix(from, to, Number(this.config.spine.mixDurationMs || 280) / 1000);
-      }
+      this.stableBounds = this.measureStableBounds(stateMachine.states);
+      const coreFitStates = modelCoreFitStates(this.config.spine);
+      this.fitBounds = this.measureStableBounds(coreFitStates)
+        || this.measureStableBounds(this.config.spine.fitStates || stateMachine.states);
+      this.applyState({ state: "idle", source: "system" }, true);
+    } catch (error) {
+      this.spine?.destroy?.({ children: true, texture: false, baseTexture: false });
+      this.spine = null;
+      this.assetHandle.release();
+      this.assetHandle = null;
+      this.assetIdentity = "";
+      throw error;
     }
-
-    this.stableBounds = this.measureStableBounds(stateMachine.states);
-    const coreFitStates = modelCoreFitStates(this.config.spine);
-    this.fitBounds = this.measureStableBounds(coreFitStates)
-      || this.measureStableBounds(this.config.spine.fitStates || stateMachine.states);
-    this.applyState({ state: "idle", source: "system" }, true);
   }
 
-  loadSpineResource() {
-    return new Promise((resolve, reject) => {
-      const loader = new PIXI.Loader();
-      loader.add("companion", spineAssetUrl(this.config));
-      loader.onError.add((error) => reject(error));
-      loader.load((_loader, resources) => {
-        if (!resources.companion?.spineData) {
-          reject(new Error("Spine data was not found in the loaded asset."));
-          return;
-        }
-        resolve(resources.companion);
-      });
-    });
+  configureSpineInstance(spine, config = this.config) {
+    spine.autoUpdate = false;
+    spine.localDelayLimit = 0.1;
+    spine.stateData.defaultMix = Number(config.spine.mixDurationMs || 280) / 1000;
   }
 
-  async loadSpineResourceWithRetry() {
+  async loadSpineResourceWithRetry(config = this.config) {
     const attempts = 3;
     let lastError = null;
+    const identity = spineAssetUrl(config);
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      const handle = acquireSpineAsset(identity, { resourceName: "companion" });
       try {
-        return await this.loadSpineResource();
+        const resource = await handle.load();
+        return { resource, handle, identity };
       } catch (error) {
+        handle.release();
         lastError = error;
         if (attempt < attempts) {
           await new Promise((resolve) => window.setTimeout(resolve, attempt * 350));
@@ -274,12 +435,104 @@ export class SpinePlayer {
     throw lastError;
   }
 
+  async replaceConfig(nextConfig, state = this.currentStateInput) {
+    const replacementRevision = this.replacementRevision.begin();
+    if (!nextConfig?.spine?.assetDirConfigured) {
+      throw new Error("No Spine asset directory is configured.");
+    }
+    const nextIdentity = spineAssetUrl(nextConfig);
+    if (nextIdentity === this.assetIdentity && this.spine) {
+      const previousBoundsSignature = JSON.stringify({
+        fitStates: this.config.spine.fitStates,
+        coreFitStates: this.config.spine.coreFitStates,
+        boundsSamples: this.config.spine.boundsSamples
+      });
+      const nextBoundsSignature = JSON.stringify({
+        fitStates: nextConfig.spine.fitStates,
+        coreFitStates: nextConfig.spine.coreFitStates,
+        boundsSamples: nextConfig.spine.boundsSamples
+      });
+      this.config = nextConfig;
+      this.configureSpineInstance(this.spine, nextConfig);
+      this.frameRateMode = normalizeFrameRateMode(nextConfig.ui?.frameRateMode);
+      this.applyTickerMode();
+      if (previousBoundsSignature !== nextBoundsSignature) {
+        this.stableBounds = this.measureStableBounds(stateMachine.states);
+        this.fitBounds = this.measureStableBounds(modelCoreFitStates(nextConfig.spine))
+          || this.measureStableBounds(nextConfig.spine.fitStates || stateMachine.states);
+        this.applyState(state, true);
+      }
+      this.baseFitScale = null;
+      this.layout({ forceFitRecalc: true });
+      this.emitInteractiveBounds(true);
+      return true;
+    }
+
+    const loaded = await this.loadSpineResourceWithRetry(nextConfig);
+    if (!this.replacementRevision.isCurrent(replacementRevision)) {
+      loaded.handle.release();
+      return false;
+    }
+    const previous = {
+      config: this.config,
+      spine: this.spine,
+      handle: this.assetHandle,
+      identity: this.assetIdentity,
+      stableBounds: this.stableBounds,
+      fitBounds: this.fitBounds,
+      currentKey: this.currentKey,
+      currentMotionKey: this.currentMotionKey,
+      currentStateInput: this.currentStateInput
+    };
+    let replacement = null;
+    try {
+      replacement = new Spine(loaded.resource.spineData);
+      this.configureSpineInstance(replacement, nextConfig);
+      this.model.addChild(replacement);
+      this.config = nextConfig;
+      this.spine = replacement;
+      this.assetHandle = loaded.handle;
+      this.assetIdentity = loaded.identity;
+      this.currentKey = "";
+      this.currentMotionKey = "";
+      this.stableBounds = this.measureStableBounds(stateMachine.states);
+      this.fitBounds = this.measureStableBounds(modelCoreFitStates(nextConfig.spine))
+        || this.measureStableBounds(nextConfig.spine.fitStates || stateMachine.states);
+      this.baseFitScale = null;
+      this.applyState(state, true);
+      this.layout({ forceFitRecalc: true });
+      this.model.removeChild(previous.spine);
+      previous.spine?.destroy?.({ children: true, texture: false, baseTexture: false });
+      previous.handle?.release();
+      this.animationRecoveryHistory = [];
+      this.animationRecoveryExhausted = false;
+      this.emitInteractiveBounds(true);
+      return true;
+    } catch (error) {
+      if (replacement?.parent === this.model) this.model.removeChild(replacement);
+      replacement?.destroy?.({ children: true, texture: false, baseTexture: false });
+      loaded.handle.release();
+      this.config = previous.config;
+      this.spine = previous.spine;
+      this.assetHandle = previous.handle;
+      this.assetIdentity = previous.identity;
+      this.stableBounds = previous.stableBounds;
+      this.fitBounds = previous.fitBounds;
+      this.currentKey = previous.currentKey;
+      this.currentMotionKey = previous.currentMotionKey;
+      this.currentStateInput = previous.currentStateInput;
+      this.layout();
+      throw error;
+    }
+  }
+
   setUserScale(scale) {
     const nextScale = Number(scale);
     this.userScale = Number.isFinite(nextScale)
       ? Math.min(this.maxUserScale, Math.max(this.minUserScale, nextScale))
       : 1;
     this.layout();
+    this.emitInteractiveBounds(true);
   }
 
   adjustUserScale(delta) {
@@ -302,20 +555,27 @@ export class SpinePlayer {
     this.applyTickerMode();
   }
 
+  setFrameRateMode(mode) {
+    this.frameRateMode = normalizeFrameRateMode(mode);
+    this.applyTickerMode();
+  }
+
   setHitboxPadding(value) {
     this.hitboxPadding = Number.isFinite(Number(value))
       ? Math.min(48, Math.max(0, Number(value)))
       : 8;
+    this.emitInteractiveBounds(true);
   }
 
   setDragActive(active) {
     this.dragActive = Boolean(active);
     this.applyTickerMode();
+    if (!this.dragActive) this.emitInteractiveBounds(true);
   }
 
   applyTickerMode() {
     if (!this.app) return;
-    this.app.ticker.maxFPS = this.dragActive && this.dragMode !== "smooth" ? 42 : 0;
+    this.app.ticker.maxFPS = tickerMaxFps(this.frameRateMode, this.dragActive, this.dragMode);
   }
 
   setDirection(direction) {
@@ -325,6 +585,7 @@ export class SpinePlayer {
 
   applyState(state, force = false) {
     if (!this.spine) return;
+    this.currentStateInput = { ...state };
 
     let motion = animationForState(state, this.config);
     if (motion.state === "running") {
@@ -356,7 +617,11 @@ export class SpinePlayer {
     const key = `${motionKey}:${nextDirection}`;
 
     this.direction = nextDirection;
-    if (!force && key === this.currentKey) return;
+    if (!force && key === this.currentKey) {
+      const entry = this.spine.state.getCurrent(0);
+      if (!trackEntryNeedsReplay(entry, this.lastTrackProgressAt)) return;
+      force = true;
+    }
     if (!force && motionKey === this.currentMotionKey) {
       this.currentKey = key;
       this.layout();
@@ -402,6 +667,7 @@ export class SpinePlayer {
 
     this.applyStableAnchor();
     this.layout();
+    this.resetTrackProgressBaseline();
     return entry;
   }
 
@@ -426,6 +692,75 @@ export class SpinePlayer {
       onComplete?.();
     }, () => this.oneShotToken === token);
     return entry;
+  }
+
+  recoverStalledAnimation(now = Date.now()) {
+    this.animationRecoveryHistory = activeRecoveryHistory(this.animationRecoveryHistory, now);
+    if (this.animationRecoveryExhausted && this.animationRecoveryHistory.length < MAX_RECOVERIES_PER_WINDOW) {
+      this.animationRecoveryExhausted = false;
+    }
+    if (document.visibilityState !== "visible" || now < this.resumeGraceUntil || this.animationRecoveryExhausted) {
+      return false;
+    }
+    const entry = this.spine?.state?.getCurrent?.(0);
+    if (!entry?.loop || Number(entry.timeScale ?? 1) <= 0) return false;
+
+    const previousRecovery = this.animationRecoveryHistory.at(-1) || 0;
+    const progressedAfterRecovery = this.animationRecoveryStep > 0
+      && this.lastTrackProgressAt > this.animationRecoveryAt;
+    const action = animationRecoveryAction({
+      step: this.animationRecoveryStep,
+      stale: trackEntryNeedsReplay(entry, this.lastTrackProgressAt, now),
+      progressed: progressedAfterRecovery,
+      elapsedMs: now - this.animationRecoveryAt,
+      previousRecoveryAgeMs: previousRecovery ? now - previousRecovery : Infinity,
+      recentRecoveries: this.animationRecoveryHistory.length
+    });
+    if (action === "none") return false;
+    if (action === "rate-limited") {
+        this.animationRecoveryExhausted = true;
+        this.onHealthWarning?.({ reason: "animation-recovery-rate-limited" });
+        return false;
+    }
+    if (action === "replay") {
+      this.animationRecoveryHistory.push(now);
+      this.applyState(this.currentStateInput, true);
+      this.animationRecoveryStep = 1;
+      this.animationRecoveryAt = this.lastTrackProgressAt;
+      return true;
+    }
+    if (action === "rebuild") {
+      try {
+        this.rebuildSpineInstance("animation-track-stale");
+        this.animationRecoveryStep = 2;
+        this.animationRecoveryAt = this.lastTrackProgressAt;
+        return true;
+      } catch (error) {
+        this.requestGpuRecovery("animation-instance-rebuild-failed", true);
+        return false;
+      }
+    }
+    if (action === "recreate") {
+      this.requestGpuRecovery("animation-track-recovery-failed", true);
+    }
+    return false;
+  }
+
+  rebuildSpineInstance(reason = "renderer-rebuild") {
+    if (!this.spine?.spineData || !this.model) throw new Error("Spine data is unavailable for rebuild.");
+    const previous = this.spine;
+    const replacement = new Spine(previous.spineData);
+    this.configureSpineInstance(replacement);
+    this.model.addChild(replacement);
+    this.spine = replacement;
+    this.currentKey = "";
+    this.currentMotionKey = "";
+    this.applyStableAnchor();
+    this.applyState(this.currentStateInput, true);
+    this.model.removeChild(previous);
+    previous.destroy?.({ children: true, texture: false, baseTexture: false });
+    this.lastRecoveryReason = reason;
+    this.emitInteractiveBounds(true);
   }
 
   measureStableBounds(stateIds) {
@@ -583,20 +918,48 @@ export class SpinePlayer {
     return { ...this.anchor };
   }
 
+  getRuntimeBounds() {
+    if (!this.spine?.skeleton?.getBounds) return this.stableBounds;
+    try {
+      this.runtimeBoundsScratch.length = 0;
+      this.spine.skeleton.getBounds(
+        this.runtimeBoundsOffset,
+        this.runtimeBoundsSize,
+        this.runtimeBoundsScratch
+      );
+      const bounds = {
+        x: Number(this.runtimeBoundsOffset.x),
+        y: Number(this.runtimeBoundsOffset.y),
+        width: Number(this.runtimeBoundsSize.x),
+        height: Number(this.runtimeBoundsSize.y)
+      };
+      return Number.isFinite(bounds.width) && Number.isFinite(bounds.height)
+        && bounds.width > 1 && bounds.height > 1
+        ? bounds
+        : this.stableBounds;
+    } catch {
+      return this.stableBounds;
+    }
+  }
+
   getInteractiveBounds() {
     if (!this.model || !this.spine) return null;
-    const liveBounds = this.spine.getLocalBounds?.();
-    const sourceBounds = liveBounds && liveBounds.width > 1 && liveBounds.height > 1
-      ? liveBounds
-      : this.stableBounds;
+    const sourceBounds = this.getRuntimeBounds();
     if (!sourceBounds) return null;
-    const width = Math.max(1, sourceBounds.width * this.screenScale);
-    const height = Math.max(1, sourceBounds.height * this.screenScale);
+    const transformed = transformLocalBounds(sourceBounds, {
+      x: this.model.x,
+      y: this.model.y,
+      childX: this.spine.x,
+      childY: this.spine.y,
+      scaleX: this.model.scale.x,
+      scaleY: this.model.scale.y
+    });
+    if (!transformed) return null;
     return calculateInteractiveBounds({
-      width,
-      height,
-      modelX: this.model.x,
-      modelY: this.model.y,
+      width: transformed.width,
+      height: transformed.height,
+      left: transformed.left,
+      top: transformed.top,
       userScale: this.userScale,
       hitboxPadding: this.hitboxPadding
     });
@@ -613,6 +976,12 @@ export class SpinePlayer {
     const view = this.app?.view;
     const gl = this.app?.renderer?.gl;
     const contextLost = typeof gl?.isContextLost === "function" ? gl.isContextLost() : false;
+    const entry = this.spine?.state?.getCurrent?.(0) || null;
+    const trackStale = Boolean(entry?.loop)
+      && Number(entry?.timeScale ?? 1) > 0
+      && this.lastTrackProgressAt > 0
+      && Date.now() >= this.resumeGraceUntil
+      && Date.now() - this.lastTrackProgressAt > TRACK_STALE_MS;
     return {
       status: contextLost ? "context-lost" : "ok",
       canvasWidth: Number(view?.width || 0),
@@ -620,10 +989,19 @@ export class SpinePlayer {
       clientWidth: Number(view?.clientWidth || 0),
       clientHeight: Number(view?.clientHeight || 0),
       lastFrameAt: this.lastFrameAt,
+      tickerStarted: Boolean(this.app?.ticker?.started),
+      frameCounter: this.frameCounter,
+      animationName: String(entry?.animation?.name || ""),
+      trackTime: Number(entry?.trackTime ?? -1),
+      animationEnd: Number(entry?.animationEnd ?? entry?.animation?.duration ?? 0),
+      loop: Boolean(entry?.loop),
+      timeScale: Number(entry?.timeScale ?? 1),
       lastTrackProgressAt: this.lastTrackProgressAt,
-      trackStale: Boolean(this.spine?.state?.getCurrent?.(0))
-        && this.lastTrackProgressAt > 0
-        && Date.now() - this.lastTrackProgressAt > 7000,
+      trackStale,
+      animationRecoveryCount: this.animationRecoveryHistory.length,
+      animationRecoveryStep: this.animationRecoveryStep,
+      animationRecoveryExhausted: this.animationRecoveryExhausted,
+      lastRecoveryReason: this.lastRecoveryReason || "",
       contextLost,
       hasModel: Boolean(this.spine),
       screenScale: this.screenScale,
@@ -634,10 +1012,12 @@ export class SpinePlayer {
   }
 
   destroy() {
+    this.replacementRevision.invalidate();
     window.clearTimeout(this.returnTimer);
     window.clearTimeout(this.resizeTimer);
     window.clearTimeout(this.gpuRecoveryTimer);
     if (this.handleResize) window.removeEventListener("resize", this.handleResize);
+    if (this.handleVisibilityChange) document.removeEventListener("visibilitychange", this.handleVisibilityChange);
     if (this.handleWheel) this.stageElement.removeEventListener("wheel", this.handleWheel);
     if (this.app?.view && this.handleContextLost) {
       this.app.view.removeEventListener("webglcontextlost", this.handleContextLost, false);
@@ -646,6 +1026,17 @@ export class SpinePlayer {
       this.app.view.removeEventListener("webglcontextrestored", this.handleContextRestored, false);
     }
     if (this.app && this.frameTicker) this.app.ticker.remove(this.frameTicker);
-    if (this.app) this.app.destroy(true, { children: true, texture: false, baseTexture: false });
+    if (this.app) {
+      const loseContext = this.app.renderer?.gl?.getExtension?.("WEBGL_lose_context");
+      this.app.destroy(true, { children: true, texture: false, baseTexture: false });
+      this.assetHandle?.release();
+      this.assetHandle = null;
+      loseContext?.loseContext?.();
+    }
+    this.app = null;
+    this.assetHandle = null;
+    this.assetIdentity = "";
+    this.spine = null;
+    this.model = null;
   }
 }

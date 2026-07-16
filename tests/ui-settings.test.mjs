@@ -34,10 +34,12 @@ describe("ui-settings", () => {
   it("rejects unknown enum values", () => {
     const settings = normalizeUiSettings({
       bubbleBackground: "unknown",
-      dragMode: "fast"
+      dragMode: "fast",
+      frameRateMode: "144"
     });
     expect(settings.bubbleBackground).toBe("solid");
-    expect(settings.dragMode).toBe("compatible");
+    expect(settings.dragMode).toBe("smooth");
+    expect(settings.frameRateMode).toBe("display");
   });
 
   it("applies partial patches without resetting unrelated settings", () => {
@@ -46,6 +48,7 @@ describe("ui-settings", () => {
       bubbleVisible: true,
       bubbleBackground: "light",
       dragMode: "smooth",
+      frameRateMode: "60",
       hitboxPadding: 12,
       maxDevicePixelRatio: 2.5,
       updateAutoCheck: false,
@@ -57,6 +60,7 @@ describe("ui-settings", () => {
       bubbleVisible: false,
       bubbleBackground: "light",
       dragMode: "smooth",
+      frameRateMode: "60",
       hitboxPadding: 12,
       maxDevicePixelRatio: 2.5,
       updateAutoCheck: false,
@@ -95,5 +99,10 @@ describe("ui-settings", () => {
   it("normalizes the update channel", () => {
     expect(normalizeUiSettings({ updateChannel: "stable" }).updateChannel).toBe("stable");
     expect(normalizeUiSettings({ updateChannel: "nightly" }).updateChannel).toBe("auto");
+  });
+
+  it("keeps explicit compatible drag and frame-rate modes", () => {
+    expect(normalizeUiSettings({ dragMode: "compatible" }).dragMode).toBe("compatible");
+    expect(applyUiSettingsPatch(DEFAULT_UI_SETTINGS, { frameRateMode: "30" }).frameRateMode).toBe("30");
   });
 });

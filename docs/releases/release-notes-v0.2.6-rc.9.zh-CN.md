@@ -1,0 +1,35 @@
+# Spine Companion v0.2.6-rc.9
+
+[English](https://github.com/cb8010d6/spine-companion/blob/main/docs/releases/release-notes-v0.2.6-rc.9.md) | [简体中文](https://github.com/cb8010d6/spine-companion/blob/main/docs/releases/release-notes-v0.2.6-rc.9.zh-CN.md)
+
+本次候选版集中处理渲染稳定性、输入一致性和模型库下载安全。
+
+## 改进内容
+
+- 桌宠持续复用同一个 Pixi Application；新模型完整加载后才替换旧 Spine 实例。
+  共享资源句柄会在最后一个使用者退出后释放 Loader、Atlas、纹理和基础纹理。
+- Spine 动画只由一个 Pixi ticker 驱动，并在诊断中提供轨道健康信息。循环动作停滞时
+  依次尝试重播、重建 Spine 实例和重建 WebView，同时带有冷却与频率限制。
+- 将触控、触控笔和鼠标备用拖动路径从 WebView 逻辑像素统一转换为系统物理像素。
+  高 DPI 屏幕上的触控移动不再明显短于手指滑动距离。
+- 命中范围使用当前 Spine 姿态的运行时边界；进入时边界更紧，离开时带扩展和短暂
+  延迟。拖动期间暂停穿透切换，避免捕获丢失。
+- 增加“跟随显示器 / 60 FPS / 30 FPS”三个明确选项。默认仍跟随显示器刷新率，
+  不会自动降帧。
+- 模型库优先显示本地缓存，可聚合全部已启用来源；下载进度只更新对应模型卡片，
+  不再反复重建整个页面。
+- Catalog 和模型文件改为流式下载，限制分别为 16 MiB、单文件 64 MiB、单模型
+  256 MiB。下载使用独立临时目录、可取消提交、HTTPS 重定向校验、完整性检查和
+  启动清理。
+- 模型元数据与下载文件一同原子安装，避免动态立绘被短暂或永久回退识别为基建小人。
+- 修复系统语言自动识别、AI 连接状态灯和原生托盘文案；Manager 与 Quick Panel
+  仅在需要预览时加载 Spine 运行时。
+
+## 验证结果
+
+- 217 项 JavaScript 测试和 89 项 Rust 测试通过；项目检查、MCP Bridge 自检、
+  打包 MCP 烟雾测试和前端生产构建也已在本机通过。
+- 已审计当前 2,909 个 Ark 模型条目，没有合法文件或模型超过新的下载限制。
+- Windows Tauri NSIS 安装包继续作为主要发布文件。
+
+一小时高刷新率稳定性测试仍是人工发布门槛。Linux 和未签名 macOS 包继续作为实验版本。

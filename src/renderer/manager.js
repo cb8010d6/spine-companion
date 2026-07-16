@@ -12,6 +12,7 @@ import {
   PackageCheck,
   Settings,
   Sparkles,
+  X,
   createElement
 } from "lucide";
 import { initTauriBridge, isTauri } from "./tauri-bridge.js";
@@ -30,7 +31,6 @@ import {
 } from "./integration-ui.js";
 import { modelPreview } from "./model-preview.js";
 import { readCachedModelPreview, writeCachedModelPreview } from "./model-preview-cache.js";
-import { renderSpinePreview } from "./spine-preview.js";
 import { installManagerPreviewBridge } from "./manager-preview.js";
 import { applyThemePreference } from "./theme.js";
 import { integrationBrand } from "./integration-icons.js";
@@ -97,6 +97,8 @@ let reminders = [];
 let integrations = [];
 let avatarPacks = [];
 const remoteCatalogCache = new Map();
+const ALL_CATALOG_SOURCES = "all";
+export const MANAGER_FRAME_RATE_MODES = Object.freeze(["display", "60", "30"]);
 let updateStatus = null;
 let liveState = null;
 const downloads = {};
@@ -106,9 +108,30 @@ let selectedIntegrationId = "";
 let dashboardRenderRevision = 0;
 const navigationGuard = createNavigationGuard();
 let librarySession = null;
-let librarySelectedSource = "ark-models";
+let librarySelectedSource = ALL_CATALOG_SOURCES;
 let modalReturnFocus = null;
 let modalOnDismiss = null;
+let spinePreviewModulePromise = null;
+
+function loadSpinePreview() {
+  spinePreviewModulePromise ||= import("./spine-preview.js");
+  return spinePreviewModulePromise;
+}
+
+export function resolveLibraryCatalogSource(sources = [], selected = ALL_CATALOG_SOURCES) {
+  const enabledSources = enabledCatalogSources(sources);
+  if (!enabledSources.length) return "";
+  return selected === ALL_CATALOG_SOURCES
+    ? ALL_CATALOG_SOURCES
+    : resolveCatalogSourceId(enabledSources, selected);
+}
+
+export function catalogSourcesForSelection(sourceId, sources = []) {
+  const enabledSources = enabledCatalogSources(sources);
+  return sourceId === ALL_CATALOG_SOURCES
+    ? enabledSources
+    : enabledSources.filter((source) => source.id === sourceId);
+}
 
 function setStatus(text) {
   topbarStatus.textContent = text;
@@ -204,7 +227,7 @@ function animateLibraryCount(element, target) {
 
 function libraryLoadingView() {
   const enabledSources = enabledCatalogSources(config.models?.sources || []);
-  librarySelectedSource = resolveCatalogSourceId(enabledSources, librarySelectedSource);
+  librarySelectedSource = resolveLibraryCatalogSource(enabledSources, librarySelectedSource);
   const sourceFilter = h("select", {
     class: "select library-filter",
     "aria-label": t("manager.library.sourceFilterLabel"),
@@ -214,7 +237,10 @@ function libraryLoadingView() {
       renderView("library");
     }
   }, ...(enabledSources.length
-    ? enabledSources.map((source) => h("option", { value: source.id }, catalogSourceLabel(source)))
+    ? [
+        h("option", { value: ALL_CATALOG_SOURCES }, t("manager.library.allSources")),
+        ...enabledSources.map((source) => h("option", { value: source.id }, catalogSourceLabel(source)))
+      ]
     : [h("option", { value: "" }, t("manager.library.noEnabledSources"))]));
   sourceFilter.value = librarySelectedSource;
   const skeletonCards = Array.from({ length: 6 }, (_, index) => h("article", {
@@ -289,6 +315,7 @@ function previewNode(model, onPreviewReady = null) {
         const prepared = await window.companion.prepareModelPreview(entry);
         preview.spinePreviewUrl = prepared?.assetUrl || "";
       }
+      const { renderSpinePreview } = await loadSpinePreview();
       dataUrl = await renderSpinePreview(node, preview);
     } catch (error) {
       node.title = error?.message || String(error);
@@ -545,6 +572,12 @@ async function startDownload(id, catalogEntry = null) {
     setStatus(t("manager.status.installedModel", { name: result?.name || id }));
   } catch (error) {
     const message = error.message || t("manager.error.downloadFailed");
+    if (/cancel/i.test(message)) {
+      downloads[id] = { ...(downloads[id] || {}), status: "cancelled", error: "", current: 0 };
+      librarySession?.refreshModel(id);
+      setStatus(t("manager.status.downloadCancelled"));
+      return;
+    }
     downloads[id] = { ...(downloads[id] || {}), status: "failed", error: message, current: 0, total: downloads[id]?.total || 1 };
     librarySession?.refreshModel(id);
     setStatus(t("manager.status.downloadFailed", { id }));
@@ -559,12 +592,69 @@ async function startDownload(id, catalogEntry = null) {
   if (activeView === "downloads" || activeView === "installed") renderView(activeView);
 }
 
+function emptyRemoteCatalog() {
+  return { models: [], sources: [] };
+}
+
+export function mergeRemoteCatalogs(catalogs = []) {
+  const models = new Map();
+  const sources = [];
+  for (const catalog of catalogs) {
+    for (const entry of catalog?.models || []) {
+      const id = entry?.model?.id || entry?.id;
+      if (id && !models.has(id)) models.set(id, entry);
+    }
+    sources.push(...(catalog?.sources || []));
+  }
+  return { models: [...models.values()], sources };
+}
+
+function rendererCachedCatalog(sourceId, sources) {
+  if (sourceId !== ALL_CATALOG_SOURCES && remoteCatalogCache.has(sourceId)) {
+    return { catalog: remoteCatalogCache.get(sourceId), available: true };
+  }
+  if (sourceId !== ALL_CATALOG_SOURCES) {
+    return { catalog: emptyRemoteCatalog(), available: false };
+  }
+  const cached = catalogSourcesForSelection(sourceId, sources)
+    .filter((source) => remoteCatalogCache.has(source.id))
+    .map((source) => remoteCatalogCache.get(source.id));
+  return cached.length
+    ? { catalog: mergeRemoteCatalogs(cached), available: true }
+    : { catalog: emptyRemoteCatalog(), available: false };
+}
+
+function cacheRemoteCatalog(sourceId, sources, catalog) {
+  remoteCatalogCache.set(sourceId, catalog);
+  for (const source of catalogSourcesForSelection(sourceId, sources)) {
+    remoteCatalogCache.set(source.id, {
+      models: (catalog.models || []).filter((entry) => (entry.catalogSourceId || entry.model?.catalogSourceId) === source.id),
+      sources: (catalog.sources || []).filter((status) => status.sourceId === source.id)
+    });
+  }
+}
+
+async function getCachedRemoteCatalog(sourceId, sources) {
+  const rendererCache = rendererCachedCatalog(sourceId, sources);
+  if (rendererCache.available || !window.companion?.getCachedModelCatalogs) return rendererCache;
+  const selectedSources = catalogSourcesForSelection(sourceId, sources);
+  if (!selectedSources.length) return rendererCache;
+  try {
+    const cached = await window.companion.getCachedModelCatalogs(selectedSources);
+    const catalog = Array.isArray(cached) ? { models: cached, sources: [] } : (cached || emptyRemoteCatalog());
+    cacheRemoteCatalog(sourceId, sources, catalog);
+    return { catalog, available: true };
+  } catch {
+    return rendererCache;
+  }
+}
+
 async function refreshRemoteCatalog(sourceId, sources) {
-  const empty = { models: [], sources: [] };
+  const empty = emptyRemoteCatalog();
   if (!sourceId) return empty;
-  const cached = remoteCatalogCache.get(sourceId) || empty;
+  const cached = rendererCachedCatalog(sourceId, sources).catalog;
   if (!window.companion?.refreshModelCatalogs) return cached;
-  const selectedSources = sources.filter((source) => source.id === sourceId);
+  const selectedSources = catalogSourcesForSelection(sourceId, sources);
   if (!selectedSources.length) return empty;
   try {
     return await window.companion.refreshModelCatalogs(selectedSources);
@@ -581,20 +671,28 @@ async function refreshRemoteCatalog(sourceId, sources) {
   }
 }
 
-async function libraryView() {
+async function libraryView({ cachedOnly = false } = {}) {
   const enabledSources = enabledCatalogSources(config.models?.sources || []);
-  librarySelectedSource = resolveCatalogSourceId(enabledSources, librarySelectedSource);
+  librarySelectedSource = resolveLibraryCatalogSource(enabledSources, librarySelectedSource);
   const sourceValue = librarySelectedSource;
-  const remoteCatalog = await refreshRemoteCatalog(sourceValue, enabledSources);
+  const cachedResult = cachedOnly
+    ? await getCachedRemoteCatalog(sourceValue, enabledSources)
+    : null;
+  let remoteCatalog = cachedOnly
+    ? cachedResult.catalog
+    : await refreshRemoteCatalog(sourceValue, enabledSources);
   const staticCatalog = (config.models?.catalog || []).filter((model) => model.catalogVisible !== false).map((model) => ({
     ...model,
     sourceId: catalogModelSourceId(model),
     _catalogEntry: null
   }));
-  const remoteModels = normalizeCatalogEntries(remoteCatalog.models);
-  const catalog = sourceValue
-    ? [...remoteModels, ...staticCatalog.filter((item) => !remoteModels.some((remote) => remote.id === item.id))]
-    : [];
+  const buildCatalog = (nextRemoteCatalog) => {
+    const remoteModels = normalizeCatalogEntries(nextRemoteCatalog.models);
+    return sourceValue
+      ? [...remoteModels, ...staticCatalog.filter((item) => !remoteModels.some((remote) => remote.id === item.id))]
+      : [];
+  };
+  let catalog = buildCatalog(remoteCatalog);
   let installedIds = new Set(installedModels.map((model) => model.id));
   let activeId = activeInstalledId();
   let filterValue = "all";
@@ -630,10 +728,22 @@ async function libraryView() {
     }
   },
     ...(enabledSources.length
-      ? enabledSources.map((source) => h("option", { value: source.id }, catalogSourceLabel(source)))
+      ? [
+          h("option", { value: ALL_CATALOG_SOURCES }, t("manager.library.allSources")),
+          ...enabledSources.map((source) => h("option", { value: source.id }, catalogSourceLabel(source)))
+        ]
       : [h("option", { value: "" }, t("manager.library.noEnabledSources"))])
   );
   sourceFilter.value = sourceValue;
+  const sourceStrip = h("div", { class: "catalog-source-strip" });
+  const renderSourceStatuses = () => {
+    sourceStrip.replaceChildren(...(remoteCatalog.sources || []).map((status) => {
+      const source = enabledSources.find((item) => item.id === status.sourceId) || { id: status.sourceId, label: status.sourceId };
+      const warning = status.state === "failed" || status.state === "stale";
+      return h("span", { class: `badge ${warning ? "badge-warning" : ""}`, title: status.error || "" }, `${catalogSourceLabel(source)}: ${catalogSourceStateLabel(status.state)}`);
+    }));
+  };
+  renderSourceStatuses();
   const grid = h("div", { class: "grid-2 library-grid" });
   const pager = h("div", { class: "library-pager" });
   const cardControllers = new Map();
@@ -714,45 +824,59 @@ async function libraryView() {
       .slice((catalogPage - 1) * pageSize, catalogPage * pageSize)
       .map((model, index) => {
         const download = downloads[model.id];
-        const downloadBusy = download?.status === "pending" || download?.status === "downloading";
-        const installed = installedIds.has(model.id);
-        const active = activeId === model.id;
+        let downloadBusy = download?.status === "pending" || download?.status === "downloading" || download?.status === "cancelling";
+        let installed = installedIds.has(model.id);
+        let active = activeId === model.id;
         const actionLabel = installed
           ? (active ? t("manager.status.active") : t("manager.actions.setActive"))
-          : (downloadBusy ? t("manager.status.downloading") : t("manager.actions.download"));
-        const button = installed
-          ? h("button", {
-              class: "btn model-action",
-              type: "button",
-              disabled: active,
-              onClick: () => activateModel(model.id)
-            }, ...iconLabel(PackageCheck, actionLabel))
-          : h("button", {
-              class: "btn btn-primary model-action",
-              type: "button",
-              disabled: downloadBusy,
-              onClick: () => confirmDownload(model)
-            }, ...iconLabel(Download, actionLabel));
+          : (downloadBusy ? t("manager.actions.cancel") : t("manager.actions.download"));
+        const button = h("button", {
+          class: installed ? "btn model-action" : "btn btn-primary model-action",
+          type: "button",
+          disabled: installed && active,
+          onClick: async () => {
+            if (installed) {
+              if (!active) await activateModel(model.id, { incremental: true });
+              return;
+            }
+            if (!downloadBusy) {
+              confirmDownload(model);
+              return;
+            }
+            downloads[model.id] = { ...(downloads[model.id] || {}), status: "cancelling" };
+            cardControllers.get(model.id)?.update();
+            await window.companion?.cancelModelDownload?.(model.id);
+          }
+        }, ...iconLabel(installed ? PackageCheck : (downloadBusy ? X : Download), actionLabel));
         const progress = h("span", { class: "model-download-progress" },
           downloadBusy ? `${download?.current || 0}/${download?.total || 0} ${download?.file || ""}` : "");
-        if (!installed) {
-          cardControllers.set(model.id, {
-            update() {
-              const current = downloads[model.id] || {};
-              const busy = current.status === "pending" || current.status === "downloading";
-              const failed = current.status === "failed";
-              button.disabled = busy;
-              button.replaceChildren(...iconLabel(Download,
-                busy ? t("manager.status.downloading")
+        const installedMark = badge(t("manager.status.installed"), "badge-success");
+        const activeMark = badge(t("manager.status.active"), "badge-warning");
+        installedMark.hidden = !installed;
+        activeMark.hidden = !active;
+        cardControllers.set(model.id, {
+          update() {
+            const current = downloads[model.id] || {};
+            const busy = current.status === "pending" || current.status === "downloading" || current.status === "cancelling";
+            const failed = current.status === "failed";
+            installed = installedIds.has(model.id);
+            active = activeId === model.id;
+            downloadBusy = !installed && busy;
+            button.className = installed ? "btn model-action" : "btn btn-primary model-action";
+            button.disabled = installed && active;
+            button.replaceChildren(...iconLabel(installed ? PackageCheck : (busy ? X : Download),
+              installed ? (active ? t("manager.status.active") : t("manager.actions.setActive"))
+                : busy ? (current.status === "cancelling" ? t("manager.status.cancelling") : t("manager.actions.cancel"))
                   : failed ? t("manager.actions.retry")
                     : t("manager.actions.download")));
-              progress.textContent = busy
-                ? `${current.current || 0}/${current.total || 0} ${current.file || ""}`
-                : failed ? current.error || t("manager.error.downloadFailed") : "";
-              progress.classList.toggle("error-text", failed);
-            }
-          });
-        }
+            progress.textContent = !installed && busy
+              ? `${current.current || 0}/${current.total || 0} ${current.file || ""}${current.fileBytes ? ` · ${formatBytes(current.fileBytes)}${current.fileBytesTotal ? ` / ${formatBytes(current.fileBytesTotal)}` : ""}` : ""}`
+              : !installed && failed ? current.error || t("manager.error.downloadFailed") : "";
+            progress.classList.toggle("error-text", !installed && failed);
+            installedMark.hidden = !installed;
+            activeMark.hidden = !active;
+          }
+        });
         const sourceUrl = model.repositoryUrl || model.sourceUrl || "";
         const displayName = catalogDisplayName(model);
         return h("article", {
@@ -777,8 +901,8 @@ async function libraryView() {
             ),
             h("div", { class: "model-actions" },
               progress,
-              installed ? badge(t("manager.status.installed"), "badge-success") : null,
-              active ? badge(t("manager.status.active"), "badge-warning") : null,
+              installedMark,
+              activeMark,
               h("div", { style: { flex: "1" } }),
               sourceUrl ? h("button", { class: "btn model-action", type: "button", onClick: () => window.companion?.openExternal?.(sourceUrl) }, ...iconLabel(ExternalLink, t("manager.actions.openSource"))) : null,
               button
@@ -806,14 +930,22 @@ async function libraryView() {
         installedIds = new Set(installedModels.map((model) => model.id));
         activeId = activeInstalledId();
       }
+      if (installed && filterValue !== "all") renderCards(search.value, filterValue);
+      else for (const controller of cardControllers.values()) controller.update();
+      catalogCount.textContent = String(catalog.filter((model) => sourceValue === ALL_CATALOG_SOURCES || model.sourceId === sourceValue).length);
+      animateLibraryCount(installedCount, installedModels.length);
+      animateLibraryCount(activeCount, activeId ? 1 : 0);
+    },
+    applyRemoteCatalog(nextRemoteCatalog) {
+      remoteCatalog = nextRemoteCatalog || emptyRemoteCatalog();
+      catalog = buildCatalog(remoteCatalog);
+      renderSourceStatuses();
       renderCards(search.value, filterValue);
-      catalogCount.textContent = String(catalog.filter((model) => model.sourceId === sourceValue).length);
-      installedCount.textContent = String(installedModels.length);
-      activeCount.textContent = activeId ? "1" : "0";
+      animateLibraryCount(catalogCount, catalog.filter((model) => sourceValue === ALL_CATALOG_SOURCES || model.sourceId === sourceValue).length);
     }
   };
 
-  const catalogCountTarget = catalog.filter((model) => model.sourceId === sourceValue).length;
+  const catalogCountTarget = catalog.filter((model) => sourceValue === ALL_CATALOG_SOURCES || model.sourceId === sourceValue).length;
   const installedCountTarget = installedModels.length;
   const activeCountTarget = activeId ? 1 : 0;
   const catalogCount = h("strong", {}, "0");
@@ -834,11 +966,7 @@ async function libraryView() {
       h("div", {}, activeCount, h("span", {}, t("manager.library.activeCount")))
     ),
     h("div", { class: "library-toolbar" }, sourceFilter, search, filter, previewCurrentPageButton),
-    h("div", { class: "catalog-source-strip" }, ...(remoteCatalog.sources || []).map((status) => {
-      const source = enabledSources.find((item) => item.id === status.sourceId) || { id: status.sourceId, label: status.sourceId };
-      const warning = status.state === "failed" || status.state === "stale";
-      return h("span", { class: `badge ${warning ? "badge-warning" : ""}`, title: status.error || "" }, `${catalogSourceLabel(source)}: ${catalogSourceStateLabel(status.state)}`);
-    })),
+    sourceStrip,
     h("details", { class: "catalog-source-editor" }, h("summary", {}, t("manager.library.sources")),
       h("div", { class: "catalog-source-list" }, ...(config.models?.sources || []).map((source) => h("div", { class: "catalog-source-row" },
         h("span", {}, catalogSourceLabel(source)), h("small", { title: source.catalogUrl }, source.catalogUrl),
@@ -861,7 +989,7 @@ async function libraryView() {
     animateLibraryCount(installedCount, installedCountTarget);
     animateLibraryCount(activeCount, activeCountTarget);
   });
-  return { content, session, remoteCatalog, sourceId: sourceValue };
+  return { content, session, remoteCatalog, sourceId: sourceValue, hasCachedCatalog: cachedResult?.available === true };
 }
 
 function confirmDownload(model) {
@@ -886,11 +1014,16 @@ function confirmDownload(model) {
   else startDownload(request.id, request.catalogEntry);
 }
 
-async function activateModel(id) {
+async function activateModel(id, { incremental = false } = {}) {
   setStatus(t("manager.status.activating", { id }));
   await window.companion?.setActiveModel?.(id);
   await refreshConfig();
-  renderView(activeView);
+  if (incremental && activeView === "library") {
+    librarySession?.refresh({ installed: true });
+    setStatus(t("manager.status.active"));
+  } else {
+    renderView(activeView);
+  }
 }
 
 async function importLocalModel() {
@@ -1086,6 +1219,14 @@ function settingsView() {
         }, t("manager.hint.hardwareAcceleration")),
         h("details", { class: "settings-advanced" },
           h("summary", {}, t("manager.settings.advanced")),
+          field(t("manager.field.frameRateMode"), h("select", {
+            class: "select",
+            value: ui.frameRateMode || "display",
+            onChange: (event) => saveUi({ frameRateMode: event.target.value })
+          }, MANAGER_FRAME_RATE_MODES.map((value) => h("option", {
+            value,
+            selected: (ui.frameRateMode || "display") === value
+          }, t(`manager.option.frameRateMode.${value}`))))),
           check(t("manager.field.debugHitbox"), ui.debugHitbox === true, (checked) => saveUi({ debugHitbox: checked }))
         )
       ),
@@ -1572,7 +1713,8 @@ async function diagnosticsView() {
           })
         ) : null,
         diagnostics.gpu ? row(t("manager.diagnostics.gpu"), true, localizedDiagnosticMessage(diagnostics.gpu.message) || diagnostics.gpu.mode) : null,
-        diagnostics.gpu?.renderer ? row(t("manager.diagnostics.renderer"), diagnostics.gpu.renderer.status !== "context-lost", t("manager.diagnostics.rendererSummary", { status: localizedRendererState(diagnostics.gpu.renderer.status), count: diagnostics.gpu.renderer.recoveryCount || 0 })) : null,
+        diagnostics.gpu?.renderer ? row(t("manager.diagnostics.renderer"), rendererHealthCategory(diagnostics.gpu.renderer.status) === "healthy", t("manager.diagnostics.rendererSummary", { status: localizedRendererState(diagnostics.gpu.renderer.status), count: diagnostics.gpu.renderer.recoveryCount || 0 })) : null,
+        diagnostics.gpu?.renderer?.animationName ? h("p", { class: "model-meta" }, `${diagnostics.gpu.renderer.animationName} · ${Number(diagnostics.gpu.renderer.trackTime || 0).toFixed(1)}s`) : null,
         diagnostics.gpu?.webviewCacheDir ? h("p", { class: "model-meta", title: diagnostics.gpu.webviewCacheDir }, diagnostics.gpu.webviewCacheDir) : null,
         diagnostics.gpu?.tdrNote ? h("p", { class: "model-meta" }, localizedDiagnosticMessage(diagnostics.gpu.tdrNote)) : null,
         row(t("manager.diagnostics.runtime"), true, runtimeName()),
@@ -1862,14 +2004,20 @@ async function renderView(viewName) {
     return;
   }
   if (viewName === "library") render(libraryLoadingView(), viewContainer);
-  else viewContainer.replaceChildren(h("p", { class: "empty-text" }, t("manager.status.loading")));
+  else if (viewName !== "library") viewContainer.replaceChildren(h("p", { class: "empty-text" }, t("manager.status.loading")));
   setStatus(t("manager.status.viewing", { view: t(`manager.nav.${viewName}`) }));
   if (viewName === "library") {
-    const result = await libraryView();
+    const cachedResult = await libraryView({ cachedOnly: true });
     if (!navigationGuard.isCurrent(navigation, activeView)) return;
-    librarySession = result.session;
-    if (result.sourceId) remoteCatalogCache.set(result.sourceId, result.remoteCatalog);
-    render(result.content, viewContainer);
+    librarySession = cachedResult.session;
+    render(cachedResult.content, viewContainer);
+    const result = await refreshRemoteCatalog(
+      cachedResult.sourceId,
+      enabledCatalogSources(config.models?.sources || [])
+    );
+    if (!navigationGuard.isCurrent(navigation, activeView)) return;
+    if (cachedResult.sourceId) cacheRemoteCatalog(cachedResult.sourceId, config.models?.sources || [], result);
+    librarySession?.applyRemoteCatalog(result);
   }
   else if (viewName === "installed") render(installedView(), viewContainer);
   else if (viewName === "downloads") render(downloadsView(), viewContainer);
@@ -1947,7 +2095,9 @@ async function boot() {
   navTo("dashboard");
 }
 
-boot().catch((error) => {
-  setStatus(error.message);
-  render(h("section", { class: "card form-card", role: "alert" }, h("strong", {}, "Manager failed"), h("p", {}, error.message)), viewContainer);
-});
+if (document.getElementById("manager-app")) {
+  boot().catch((error) => {
+    setStatus(error.message);
+    render(h("section", { class: "card form-card", role: "alert" }, h("strong", {}, "Manager failed"), h("p", {}, error.message)), viewContainer);
+  });
+}

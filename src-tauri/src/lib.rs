@@ -13,10 +13,11 @@ use state::{
     delete_reminder, list_reminders, set_state, CompanionState, CreateReminderInput, Reminder,
     ReminderBroadcast, ReminderStore, SetStateInput, StateBroadcast, StateStore,
 };
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
     Arc, Mutex,
 };
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -26,8 +27,17 @@ use tauri::{
     AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
 use tauri_plugin_notification::NotificationExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::{Foundation::POINT, UI::WindowsAndMessaging::GetCursorPos};
+
+const MAX_MODEL_FILE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_MODEL_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
+const PARTIAL_DOWNLOAD_MARKER: &str = ".companion-partial-download";
+const DOWNLOAD_ACTIVE: u8 = 0;
+const DOWNLOAD_CANCELLED: u8 = 1;
+const DOWNLOAD_COMMITTING: u8 = 2;
+static NEXT_DOWNLOAD_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 struct AppData {
     store: StateStore,
@@ -48,6 +58,7 @@ struct AppData {
     renderer_health: Arc<Mutex<RendererHealth>>,
     ai_integration_lock: Arc<Mutex<()>>,
     model_trial_previous: Arc<Mutex<Option<CurrentModel>>>,
+    download_cancellations: Arc<Mutex<HashMap<String, Arc<AtomicU8>>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -56,6 +67,21 @@ struct DragState {
     start_y: f64,
     window_x: i32,
     window_y: i32,
+    scale_factor: f64,
+}
+
+fn physical_drag_delta(logical_delta: f64, scale_factor: f64) -> i32 {
+    if !logical_delta.is_finite() {
+        return 0;
+    }
+    let normalized_scale = if scale_factor.is_finite() {
+        scale_factor.clamp(0.5, 4.0)
+    } else {
+        1.0
+    };
+    (logical_delta * normalized_scale)
+        .round()
+        .clamp(i32::MIN as f64, i32::MAX as f64) as i32
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -66,6 +92,26 @@ struct RendererHealth {
     recovery_count: u64,
     last_recovery_at: u64,
     last_heartbeat_at: u64,
+    #[serde(default)]
+    ticker_started: bool,
+    #[serde(default)]
+    frame_counter: u64,
+    #[serde(default)]
+    animation_name: String,
+    #[serde(default)]
+    track_time: f64,
+    #[serde(default)]
+    animation_end: f64,
+    #[serde(default, rename = "loop")]
+    is_looping: bool,
+    #[serde(default = "default_time_scale")]
+    time_scale: f64,
+    #[serde(default)]
+    last_track_progress_at: u64,
+    #[serde(default)]
+    animation_recovery_count: u64,
+    #[serde(default)]
+    animation_recovery_exhausted: bool,
     #[serde(default)]
     status_changed_at: u64,
 }
@@ -78,6 +124,16 @@ impl Default for RendererHealth {
             recovery_count: 0,
             last_recovery_at: 0,
             last_heartbeat_at: 0,
+            ticker_started: false,
+            frame_counter: 0,
+            animation_name: String::new(),
+            track_time: -1.0,
+            animation_end: 0.0,
+            is_looping: false,
+            time_scale: 1.0,
+            last_track_progress_at: 0,
+            animation_recovery_count: 0,
+            animation_recovery_exhausted: false,
             status_changed_at: now_ms(),
         }
     }
@@ -92,6 +148,7 @@ struct UiSettings {
     bubble_background: String,
     bubble_hold_ms: u64,
     drag_mode: String,
+    frame_rate_mode: String,
     auto_reveal_on_mcp: bool,
     system_notifications: bool,
     update_auto_check: bool,
@@ -111,6 +168,7 @@ struct UiSettingsPatch {
     bubble_background: Option<String>,
     bubble_hold_ms: Option<u64>,
     drag_mode: Option<String>,
+    frame_rate_mode: Option<String>,
     auto_reveal_on_mcp: Option<bool>,
     system_notifications: Option<bool>,
     update_auto_check: Option<bool>,
@@ -178,32 +236,90 @@ fn cursor_inside_pointer_bounds(
     cursor_x >= left && cursor_x <= right && cursor_y >= top && cursor_y <= bottom
 }
 
+fn default_time_scale() -> f64 {
+    1.0
+}
+
+fn should_ignore_cursor(
+    enabled: bool,
+    dragging: bool,
+    currently_ignored: bool,
+    inside_enter_bounds: bool,
+    inside_exit_bounds: bool,
+    outside_for: Duration,
+) -> bool {
+    if !enabled || dragging {
+        return false;
+    }
+    let inside_active_bounds = if currently_ignored {
+        inside_enter_bounds
+    } else {
+        inside_exit_bounds
+    };
+    if inside_active_bounds {
+        return false;
+    }
+    currently_ignored || outside_for >= Duration::from_millis(80)
+}
+
 #[cfg(target_os = "windows")]
 fn start_pointer_passthrough_monitor(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut outside_since: Option<Instant> = None;
         let mut last_ignore_state: Option<bool> = None;
+        let mut last_proximity_state: Option<bool> = None;
         loop {
             tokio::time::sleep(Duration::from_millis(16)).await;
             let data = app.state::<AppData>();
             let enabled = data.passthrough_enabled.load(Ordering::Relaxed);
             let bounds = data.pointer_bounds.lock().ok().and_then(|value| *value);
+            let dragging = data
+                .drag_state
+                .lock()
+                .map(|state| state.is_some())
+                .unwrap_or(false);
             let Some(window) = app.get_webview_window("main") else {
                 continue;
             };
 
-            let cursor_inside = enabled
-                && bounds
-                    .as_ref()
-                    .map(|bounds| cursor_inside_pointer_bounds(&window, bounds, 18.0))
-                    .unwrap_or(false);
-            let ignore = if !enabled || cursor_inside {
-                outside_since = None;
-                false
+            let inside_enter = bounds
+                .as_ref()
+                .map(|bounds| cursor_inside_pointer_bounds(&window, bounds, 4.0))
+                .unwrap_or(false);
+            let inside_exit = bounds
+                .as_ref()
+                .map(|bounds| cursor_inside_pointer_bounds(&window, bounds, 10.0))
+                .unwrap_or(false);
+            let proximity = bounds
+                .as_ref()
+                .map(|bounds| cursor_inside_pointer_bounds(&window, bounds, 48.0))
+                .unwrap_or(false);
+            if last_proximity_state != Some(proximity) {
+                let _ = app.emit("companion:pointer-proximity", proximity);
+                last_proximity_state = Some(proximity);
+            }
+
+            let currently_ignored = last_ignore_state.unwrap_or(false);
+            let inside_active_bounds = if currently_ignored {
+                inside_enter
             } else {
-                let started = outside_since.get_or_insert_with(Instant::now);
-                last_ignore_state.unwrap_or(false) || started.elapsed() >= Duration::from_millis(80)
+                inside_exit
             };
+            if !enabled || dragging || inside_active_bounds {
+                outside_since = None;
+            } else {
+                outside_since.get_or_insert_with(Instant::now);
+            }
+            let ignore = should_ignore_cursor(
+                enabled,
+                dragging,
+                currently_ignored,
+                inside_enter,
+                inside_exit,
+                outside_since
+                    .map(|started| started.elapsed())
+                    .unwrap_or_default(),
+            );
 
             if last_ignore_state != Some(ignore) {
                 let _ = window.set_ignore_cursor_events(ignore);
@@ -271,7 +387,8 @@ fn fallback_config() -> serde_json::Value {
             "bubbleShadow": true,
             "bubbleBackground": "solid",
             "bubbleHoldMs": 8000,
-            "dragMode": "compatible",
+            "dragMode": "smooth",
+            "frameRateMode": "display",
             "autoRevealOnMcp": true,
             "systemNotifications": true,
             "updateAutoCheck": true,
@@ -479,7 +596,10 @@ fn ui_settings_from_config(config: &serde_json::Value) -> UiSettings {
         .unwrap_or("solid")
         .to_string();
     let drag_mode = string_at(config, &["ui", "dragMode"])
-        .unwrap_or("compatible")
+        .unwrap_or("smooth")
+        .to_string();
+    let frame_rate_mode = string_at(config, &["ui", "frameRateMode"])
+        .unwrap_or("display")
         .to_string();
     let gpu_mode = string_at(config, &["ui", "gpuMode"])
         .unwrap_or("hardware")
@@ -491,6 +611,7 @@ fn ui_settings_from_config(config: &serde_json::Value) -> UiSettings {
         bubble_background: normalize_bubble_background(&background),
         bubble_hold_ms: u64_at(config, &["ui", "bubbleHoldMs"], 8000),
         drag_mode: normalize_drag_mode(&drag_mode),
+        frame_rate_mode: normalize_frame_rate_mode(&frame_rate_mode),
         auto_reveal_on_mcp: bool_at(config, &["ui", "autoRevealOnMcp"], true),
         system_notifications: bool_at(config, &["ui", "systemNotifications"], true),
         update_auto_check: bool_at(config, &["ui", "updateAutoCheck"], true),
@@ -516,6 +637,13 @@ fn normalize_drag_mode(value: &str) -> String {
         "smooth".to_string()
     } else {
         "compatible".to_string()
+    }
+}
+
+fn normalize_frame_rate_mode(value: &str) -> String {
+    match value {
+        "60" | "30" => value.to_string(),
+        _ => "display".to_string(),
     }
 }
 
@@ -583,6 +711,9 @@ fn apply_ui_patch(settings: &mut UiSettings, patch: UiSettingsPatch) {
     }
     if let Some(value) = patch.drag_mode {
         settings.drag_mode = normalize_drag_mode(&value);
+    }
+    if let Some(value) = patch.frame_rate_mode {
+        settings.frame_rate_mode = normalize_frame_rate_mode(&value);
     }
     if let Some(value) = patch.auto_reveal_on_mcp {
         settings.auto_reveal_on_mcp = value;
@@ -985,6 +1116,91 @@ async fn install_model_value(
     input: ImportModelInput,
     model: serde_json::Value,
 ) -> Result<ImportModelResult, String> {
+    let cancellation = Arc::new(AtomicU8::new(DOWNLOAD_ACTIVE));
+    {
+        let mut downloads = data
+            .download_cancellations
+            .lock()
+            .map_err(|_| "Download cancellation lock is poisoned".to_string())?;
+        register_model_download(&mut downloads, &input.id, cancellation.clone())?;
+    }
+    let id = input.id.clone();
+    let result = install_model_value_inner(app, data, input, model, cancellation.clone()).await;
+    if let Ok(mut downloads) = data.download_cancellations.lock() {
+        if downloads
+            .get(&id)
+            .is_some_and(|current| Arc::ptr_eq(current, &cancellation))
+        {
+            downloads.remove(&id);
+        }
+    }
+    result
+}
+
+fn write_model_metadata(model_dir: &Path, model: &serde_json::Value) -> Result<(), String> {
+    let bytes = serde_json::to_vec_pretty(model).map_err(|error| error.to_string())?;
+    std::fs::write(model_dir.join(".companion-model.json"), bytes)
+        .map_err(|error| format!("Model metadata could not be saved: {error}"))
+}
+
+fn download_is_cancelled(cancellation: &AtomicU8) -> bool {
+    cancellation.load(Ordering::Acquire) == DOWNLOAD_CANCELLED
+}
+
+fn cancel_download_state(cancellation: &AtomicU8) -> bool {
+    cancellation
+        .compare_exchange(
+            DOWNLOAD_ACTIVE,
+            DOWNLOAD_CANCELLED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_ok()
+}
+
+fn register_model_download(
+    downloads: &mut HashMap<String, Arc<AtomicU8>>,
+    id: &str,
+    cancellation: Arc<AtomicU8>,
+) -> Result<(), String> {
+    if let Some(previous) = downloads.get(id) {
+        if !cancel_download_state(previous.as_ref()) {
+            return Err("This model installation is already finishing.".to_string());
+        }
+    }
+    downloads.insert(id.to_string(), cancellation);
+    Ok(())
+}
+
+fn begin_download_commit(cancellation: &AtomicU8) -> Result<(), String> {
+    cancellation
+        .compare_exchange(
+            DOWNLOAD_ACTIVE,
+            DOWNLOAD_COMMITTING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .map(|_| ())
+        .map_err(|_| "Download cancelled.".to_string())
+}
+
+fn model_download_temp_dir(models_root: &Path, id: &str, request_id: u64) -> PathBuf {
+    models_root.join(format!(
+        "{}.{}-{}.download",
+        id,
+        std::process::id(),
+        request_id
+    ))
+}
+
+async fn install_model_value_inner(
+    app: &tauri::AppHandle,
+    data: &AppData,
+    input: ImportModelInput,
+    model: serde_json::Value,
+    cancellation: Arc<AtomicU8>,
+) -> Result<ImportModelResult, String> {
+    validate_model_download_file_name(&input.id)?;
     let name = model
         .get("name")
         .and_then(|value| value.as_str())
@@ -999,27 +1215,56 @@ async fn install_model_value(
         .get("files")
         .and_then(|value| value.as_array())
         .ok_or_else(|| "Model catalog entry is missing files".to_string())?;
-    let model_dir = data.config_dir.join("models").join(&input.id);
-    let temp_model_dir = data
-        .config_dir
-        .join("models")
-        .join(format!("{}.download", &input.id));
+    let declared_total = files.iter().try_fold(0u64, |total, file| {
+        let size = file
+            .get("sizeBytes")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0);
+        if size > MAX_MODEL_FILE_BYTES {
+            return Err(format!(
+                "Model file declares {size} bytes, exceeding the 64 MiB limit."
+            ));
+        }
+        total
+            .checked_add(size)
+            .ok_or_else(|| "Declared model size overflowed.".to_string())
+    })?;
+    if declared_total > MAX_MODEL_TOTAL_BYTES {
+        return Err("Model declares more than the 256 MiB download limit.".to_string());
+    }
+    let models_root = data.config_dir.join("models");
+    let model_dir = models_root.join(&input.id);
+    let request_id = NEXT_DOWNLOAD_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
+    let temp_model_dir = model_download_temp_dir(&models_root, &input.id, request_id);
     remove_dir_if_exists(&temp_model_dir).await?;
     tokio::fs::create_dir_all(&temp_model_dir)
         .await
         .map_err(|error| error.to_string())?;
+    tokio::fs::write(temp_model_dir.join(PARTIAL_DOWNLOAD_MARKER), b"")
+        .await
+        .map_err(|error| error.to_string())?;
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
+        .redirect(safe_download_redirect_policy())
         .build()
         .map_err(|error| error.to_string())?;
 
     let total_files = files.len();
+    let mut model_bytes_written = 0u64;
     for (i, file) in files.iter().enumerate() {
         let file_name = file
             .get("name")
             .and_then(|value| value.as_str())
             .ok_or_else(|| "Model file is missing name".to_string())?;
+        validate_model_download_file_name(file_name)?;
         let urls = download_url_candidates(file)?;
+        let destination = temp_model_dir.join(file_name);
+        let remaining_model_bytes = MAX_MODEL_TOTAL_BYTES.saturating_sub(model_bytes_written);
+        if remaining_model_bytes == 0 {
+            let _ = remove_dir_if_exists_blocking(&temp_model_dir);
+            return Err("Model download exceeded the 256 MiB limit.".to_string());
+        }
+        let file_limit = MAX_MODEL_FILE_BYTES.min(remaining_model_bytes);
 
         let _ = app.emit(
             "companion:download-progress",
@@ -1032,11 +1277,14 @@ async fn install_model_value(
             }),
         );
 
-        let bytes = download_model_file(&client, file_name, &urls)
-            .await
-            .map_err(|error| {
-                let _ = remove_dir_if_exists_blocking(&temp_model_dir);
-                let message = format!("Failed to download {}", error);
+        let downloaded = download_model_file_to_path(
+            &client,
+            file_name,
+            &urls,
+            &destination,
+            file_limit,
+            Some(cancellation.as_ref()),
+            |file_bytes, declared_bytes| {
                 let _ = app.emit(
                     "companion:download-progress",
                     serde_json::json!({
@@ -1044,18 +1292,59 @@ async fn install_model_value(
                         "file": file_name,
                         "current": i + 1,
                         "total": total_files,
-                        "status": "failed",
-                        "error": message
+                        "status": "downloading",
+                        "fileBytes": file_bytes,
+                        "fileBytesTotal": declared_bytes,
+                        "modelBytes": model_bytes_written.saturating_add(file_bytes)
                     }),
                 );
-                message
-            })?;
+            },
+        )
+        .await
+        .map_err(|error| {
+            let _ = remove_dir_if_exists_blocking(&temp_model_dir);
+            let cancelled = error.contains("cancelled");
+            let status = if cancelled { "cancelled" } else { "failed" };
+            let message = if cancelled {
+                "Download cancelled.".to_string()
+            } else {
+                format!("Failed to download {}", error)
+            };
+            let _ = app.emit(
+                "companion:download-progress",
+                serde_json::json!({
+                    "id": input.id,
+                    "file": file_name,
+                    "current": i + 1,
+                    "total": total_files,
+                    "status": status,
+                    "error": message
+                }),
+            );
+            message
+        })?;
+        model_bytes_written = model_bytes_written
+            .checked_add(downloaded.bytes_written)
+            .ok_or_else(|| "Model download size overflowed.".to_string())?;
+        if model_bytes_written > MAX_MODEL_TOTAL_BYTES {
+            let _ = remove_dir_if_exists_blocking(&temp_model_dir);
+            return Err("Model download exceeded the 256 MiB limit.".to_string());
+        }
+        if let Some(expected_size) = file.get("sizeBytes").and_then(|value| value.as_u64()) {
+            if expected_size != downloaded.bytes_written {
+                let _ = remove_dir_if_exists_blocking(&temp_model_dir);
+                return Err(format!(
+                    "Size check failed for {file_name}: expected {expected_size}, got {}",
+                    downloaded.bytes_written
+                ));
+            }
+        }
         if let Some(expected) = file
             .get("sha256")
             .and_then(|value| value.as_str())
             .filter(|value| !value.is_empty())
         {
-            let actual = format!("{:x}", Sha256::digest(&bytes));
+            let actual = &downloaded.sha256;
             if !actual.eq_ignore_ascii_case(expected) {
                 let _ = remove_dir_if_exists_blocking(&temp_model_dir);
                 return Err(format!(
@@ -1063,17 +1352,13 @@ async fn install_model_value(
                 ));
             }
         } else if let Some(expected) = file.get("githubBlobSha").and_then(|value| value.as_str()) {
-            verify_git_blob_sha(&bytes, expected).map_err(|error| {
-                let _ = remove_dir_if_exists_blocking(&temp_model_dir);
-                format!("Integrity check failed for {file_name}: {error}")
-            })?;
+            verify_git_blob_sha_path(&destination, expected)
+                .await
+                .map_err(|error| {
+                    let _ = remove_dir_if_exists_blocking(&temp_model_dir);
+                    format!("Integrity check failed for {file_name}: {error}")
+                })?;
         }
-        tokio::fs::write(temp_model_dir.join(file_name), bytes)
-            .await
-            .map_err(|error| {
-                let _ = remove_dir_if_exists_blocking(&temp_model_dir);
-                error.to_string()
-            })?;
     }
     validate_spine_asset_dir(&temp_model_dir, &skel).map_err(|error| {
         let _ = remove_dir_if_exists_blocking(&temp_model_dir);
@@ -1088,6 +1373,14 @@ async fn install_model_value(
                 "error": error
             }),
         );
+        error
+    })?;
+    begin_download_commit(cancellation.as_ref()).map_err(|error| {
+        let _ = remove_dir_if_exists_blocking(&temp_model_dir);
+        error
+    })?;
+    write_model_metadata(&temp_model_dir, &model).map_err(|error| {
+        let _ = remove_dir_if_exists_blocking(&temp_model_dir);
         error
     })?;
     replace_model_dir(&temp_model_dir, &model_dir)
@@ -1106,6 +1399,7 @@ async fn install_model_value(
             );
             error
         })?;
+    let _ = tokio::fs::remove_file(model_dir.join(PARTIAL_DOWNLOAD_MARKER)).await;
     let canonical_model_dir = model_dir
         .canonicalize()
         .map_err(|error| error.to_string())?;
@@ -1241,7 +1535,7 @@ async fn import_catalog_model(
             serde_json::Value::String(entry.model.spine.min.0.clone()),
         );
     }
-    let result = install_model_value(
+    install_model_value(
         &app,
         &data,
         ImportModelInput {
@@ -1250,13 +1544,7 @@ async fn import_catalog_model(
         },
         value.clone(),
     )
-    .await?;
-    std::fs::write(
-        PathBuf::from(&result.asset_dir).join(".companion-model.json"),
-        serde_json::to_vec_pretty(&value).map_err(|error| error.to_string())?,
-    )
-    .map_err(|error| format!("Model installed but metadata could not be saved: {error}"))?;
-    Ok(result)
+    .await
 }
 
 #[tauri::command]
@@ -1290,8 +1578,12 @@ async fn prepare_model_preview(
         tokio::fs::create_dir_all(&temp_dir)
             .await
             .map_err(|error| error.to_string())?;
+        tokio::fs::write(temp_dir.join(PARTIAL_DOWNLOAD_MARKER), b"")
+            .await
+            .map_err(|error| error.to_string())?;
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
+            .redirect(safe_download_redirect_policy())
             .build()
             .map_err(|error| error.to_string())?;
         let value = serde_json::to_value(&entry.model).map_err(|error| error.to_string())?;
@@ -1299,37 +1591,76 @@ async fn prepare_model_preview(
             .get("files")
             .and_then(|files| files.as_array())
             .ok_or_else(|| "Model preview entry is missing files".to_string())?;
+        let declared_total = files.iter().try_fold(0u64, |total, file| {
+            let size = file
+                .get("sizeBytes")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0);
+            if size > MAX_MODEL_FILE_BYTES {
+                return Err("Preview file exceeds the 64 MiB limit.".to_string());
+            }
+            total
+                .checked_add(size)
+                .ok_or_else(|| "Preview size overflowed.".to_string())
+        })?;
+        if declared_total > MAX_MODEL_TOTAL_BYTES {
+            return Err("Preview model exceeds the 256 MiB limit.".to_string());
+        }
+        let mut model_bytes_written = 0u64;
         for file in files {
             let file_name = file
                 .get("name")
                 .and_then(|name| name.as_str())
                 .ok_or_else(|| "Model preview file is missing name".to_string())?;
-            let bytes = download_model_file(&client, file_name, &download_url_candidates(file)?)
-                .await
-                .map_err(|error| {
+            validate_model_download_file_name(file_name)?;
+            let destination = temp_dir.join(file_name);
+            let remaining = MAX_MODEL_TOTAL_BYTES.saturating_sub(model_bytes_written);
+            if remaining == 0 {
+                let _ = remove_dir_if_exists_blocking(&temp_dir);
+                return Err("Preview model exceeds the 256 MiB limit.".to_string());
+            }
+            let downloaded = download_model_file_to_path(
+                &client,
+                file_name,
+                &download_url_candidates(file)?,
+                &destination,
+                MAX_MODEL_FILE_BYTES.min(remaining),
+                None,
+                |_downloaded, _declared| {},
+            )
+            .await
+            .map_err(|error| {
+                let _ = remove_dir_if_exists_blocking(&temp_dir);
+                format!("Failed to prepare preview: {error}")
+            })?;
+            model_bytes_written = model_bytes_written
+                .checked_add(downloaded.bytes_written)
+                .ok_or_else(|| "Preview model size overflowed.".to_string())?;
+            if let Some(expected_size) = file.get("sizeBytes").and_then(|value| value.as_u64()) {
+                if expected_size != downloaded.bytes_written {
                     let _ = remove_dir_if_exists_blocking(&temp_dir);
-                    format!("Failed to prepare preview: {error}")
-                })?;
+                    return Err(format!("Preview size check failed for {file_name}"));
+                }
+            }
             if let Some(expected) = file
                 .get("sha256")
                 .and_then(|hash| hash.as_str())
                 .filter(|value| !value.is_empty())
             {
-                let actual = format!("{:x}", Sha256::digest(&bytes));
+                let actual = &downloaded.sha256;
                 if !actual.eq_ignore_ascii_case(expected) {
                     let _ = remove_dir_if_exists_blocking(&temp_dir);
                     return Err(format!("Preview integrity check failed for {file_name}"));
                 }
             } else if let Some(expected) = file.get("githubBlobSha").and_then(|hash| hash.as_str())
             {
-                verify_git_blob_sha(&bytes, expected).map_err(|error| {
-                    let _ = remove_dir_if_exists_blocking(&temp_dir);
-                    format!("Preview integrity check failed for {file_name}: {error}")
-                })?;
+                verify_git_blob_sha_path(&destination, expected)
+                    .await
+                    .map_err(|error| {
+                        let _ = remove_dir_if_exists_blocking(&temp_dir);
+                        format!("Preview integrity check failed for {file_name}: {error}")
+                    })?;
             }
-            tokio::fs::write(temp_dir.join(file_name), bytes)
-                .await
-                .map_err(|error| error.to_string())?;
         }
         validate_spine_asset_dir(&temp_dir, &skel).map_err(|error| {
             let _ = remove_dir_if_exists_blocking(&temp_dir);
@@ -1339,6 +1670,7 @@ async fn prepare_model_preview(
             .await
             .map_err(|error| error.to_string())?;
         replace_model_dir(&temp_dir, &preview_dir).await?;
+        let _ = tokio::fs::remove_file(preview_dir.join(PARTIAL_DOWNLOAD_MARKER)).await;
     }
     tokio::fs::write(&signature_path, &signature)
         .await
@@ -1382,6 +1714,17 @@ fn github_raw_to_jsdelivr_url(url: &str) -> Option<String> {
     ))
 }
 
+fn validate_model_download_file_name(file_name: &str) -> Result<(), String> {
+    let path = Path::new(file_name);
+    let mut components = path.components();
+    let single_normal = matches!(components.next(), Some(std::path::Component::Normal(_)))
+        && components.next().is_none();
+    if !single_normal || file_name.contains(['/', '\\']) || file_name.trim().is_empty() {
+        return Err(format!("Unsafe model file name: {file_name}"));
+    }
+    Ok(())
+}
+
 fn download_url_candidates(file: &serde_json::Value) -> Result<Vec<String>, String> {
     let primary = file
         .get("url")
@@ -1407,26 +1750,194 @@ fn download_url_candidates(file: &serde_json::Value) -> Result<Vec<String>, Stri
     Ok(deduped)
 }
 
-async fn download_model_file(
+struct DownloadedModelFile {
+    bytes_written: u64,
+    sha256: String,
+}
+
+fn validate_https_download_url(url: &str) -> Result<(), String> {
+    let parsed =
+        reqwest::Url::parse(url).map_err(|error| format!("Invalid download URL: {error}"))?;
+    if parsed.scheme() != "https" || parsed.host_str().is_none() {
+        return Err("Model downloads require HTTPS.".to_string());
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("Model download URLs must not contain credentials.".to_string());
+    }
+    let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
+    if host == "localhost"
+        || host.ends_with(".localhost")
+        || host.ends_with(".local")
+        || host
+            .trim_matches(['[', ']'])
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(is_private_or_local_ip)
+    {
+        return Err("Model download URLs cannot target a private or local host.".to_string());
+    }
+    Ok(())
+}
+
+fn is_private_or_local_ipv4(ip: std::net::Ipv4Addr) -> bool {
+    ip.is_private()
+        || ip.is_loopback()
+        || ip.is_link_local()
+        || ip.is_unspecified()
+        || ip.is_broadcast()
+        || ip.is_multicast()
+}
+
+fn is_private_or_local_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(ip) => is_private_or_local_ipv4(ip),
+        std::net::IpAddr::V6(ip) => {
+            if let Some(ipv4) = ip.to_ipv4() {
+                return is_private_or_local_ipv4(ipv4);
+            }
+            let first = ip.segments()[0];
+            ip.is_loopback()
+                || ip.is_unspecified()
+                || ip.is_multicast()
+                || first & 0xfe00 == 0xfc00
+                || first & 0xffc0 == 0xfe80
+        }
+    }
+}
+
+fn validate_download_redirect(
+    url: &str,
+    previous_count: usize,
+    original_host: Option<&str>,
+) -> Result<(), String> {
+    if previous_count >= 5 {
+        return Err("Download redirected too many times.".to_string());
+    }
+    validate_https_download_url(url)?;
+    let redirected = reqwest::Url::parse(url).map_err(|error| error.to_string())?;
+    let redirected_host = redirected.host_str().unwrap_or_default();
+    if original_host.is_some_and(|host| !host.eq_ignore_ascii_case(redirected_host)) {
+        return Err("Download redirects must stay on the original host.".to_string());
+    }
+    Ok(())
+}
+
+fn safe_download_redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        let original_host = attempt.previous().first().and_then(|url| url.host_str());
+        match validate_download_redirect(
+            attempt.url().as_str(),
+            attempt.previous().len(),
+            original_host,
+        ) {
+            Ok(()) => attempt.follow(),
+            Err(error) => attempt.error(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                error,
+            )),
+        }
+    })
+}
+
+fn checked_download_size(current: u64, chunk: usize, limit: u64) -> Result<u64, String> {
+    let next = current
+        .checked_add(chunk as u64)
+        .ok_or_else(|| "Model file size overflowed.".to_string())?;
+    if next > limit {
+        return Err(format!("download exceeded the {limit} byte limit"));
+    }
+    Ok(next)
+}
+
+async fn download_model_file_to_path<F>(
     client: &reqwest::Client,
     file_name: &str,
     urls: &[String],
-) -> Result<Vec<u8>, String> {
+    destination: &Path,
+    byte_limit: u64,
+    cancellation: Option<&AtomicU8>,
+    mut on_progress: F,
+) -> Result<DownloadedModelFile, String>
+where
+    F: FnMut(u64, Option<u64>),
+{
     let mut attempts = Vec::new();
     for url in urls {
+        if cancellation.is_some_and(download_is_cancelled) {
+            return Err("Download cancelled.".to_string());
+        }
+        if let Err(error) = validate_https_download_url(url) {
+            attempts.push(format!("{} ({})", url, error));
+            continue;
+        }
         for retry in 0..2 {
+            if cancellation.is_some_and(download_is_cancelled) {
+                return Err("Download cancelled.".to_string());
+            }
             match client.get(url).send().await {
-                Ok(response) => {
+                Ok(mut response) => {
                     let status = response.status();
                     if !status.is_success() {
                         attempts.push(format!("{} (HTTP {})", url, status.as_u16()));
                         if !status.is_server_error() {
                             break;
                         }
+                    } else if let Err(error) = validate_https_download_url(response.url().as_str())
+                    {
+                        attempts.push(format!("{} (redirect rejected: {})", url, error));
+                        break;
+                    } else if response
+                        .content_length()
+                        .is_some_and(|length| length > byte_limit)
+                    {
+                        attempts.push(format!(
+                            "{} (declared size exceeds {} bytes)",
+                            url, byte_limit
+                        ));
+                        break;
                     } else {
-                        match response.bytes().await {
-                            Ok(bytes) => return Ok(bytes.to_vec()),
-                            Err(error) => attempts.push(format!("{} ({})", url, error)),
+                        let declared = response.content_length();
+                        let mut output = match tokio::fs::File::create(destination).await {
+                            Ok(output) => output,
+                            Err(error) => {
+                                return Err(format!("Cannot create {file_name}: {error}"))
+                            }
+                        };
+                        let mut written = 0u64;
+                        let mut digest = Sha256::new();
+                        let stream_result: Result<(), String> = async {
+                            while let Some(chunk) =
+                                response.chunk().await.map_err(|error| error.to_string())?
+                            {
+                                if cancellation.is_some_and(download_is_cancelled) {
+                                    return Err("Download cancelled.".to_string());
+                                }
+                                written = checked_download_size(written, chunk.len(), byte_limit)?;
+                                output
+                                    .write_all(&chunk)
+                                    .await
+                                    .map_err(|error| error.to_string())?;
+                                digest.update(&chunk);
+                                on_progress(written, declared);
+                            }
+                            output.flush().await.map_err(|error| error.to_string())?;
+                            Ok(())
+                        }
+                        .await;
+                        drop(output);
+                        match stream_result {
+                            Ok(()) => {
+                                return Ok(DownloadedModelFile {
+                                    bytes_written: written,
+                                    sha256: format!("{:x}", digest.finalize()),
+                                });
+                            }
+                            Err(error) => {
+                                let _ = tokio::fs::remove_file(destination).await;
+                                if error.contains("cancelled") {
+                                    return Err("Download cancelled.".to_string());
+                                }
+                                attempts.push(format!("{} ({})", url, error));
+                            }
                         }
                     }
                 }
@@ -1440,6 +1951,36 @@ async fn download_model_file(
     Err(format!("{}; tried {}", file_name, attempts.join("; ")))
 }
 
+async fn verify_git_blob_sha_path(path: &Path, expected: &str) -> Result<(), String> {
+    let length = tokio::fs::metadata(path)
+        .await
+        .map_err(|error| error.to_string())?
+        .len();
+    let mut digest = Sha1::new();
+    digest.update(format!("blob {}\0", length).as_bytes());
+    let mut file = tokio::fs::File::open(path)
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut buffer = vec![0u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .await
+            .map_err(|error| error.to_string())?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    let actual = format!("{:x}", digest.finalize());
+    if actual.eq_ignore_ascii_case(expected) {
+        Ok(())
+    } else {
+        Err(format!("expected {expected}, got {actual}"))
+    }
+}
+
+#[cfg(test)]
 fn verify_git_blob_sha(bytes: &[u8], expected: &str) -> Result<(), String> {
     let mut digest = Sha1::new();
     digest.update(format!("blob {}\0", bytes.len()).as_bytes());
@@ -2624,6 +3165,53 @@ fn repack_avatar_pack(
 }
 
 #[tauri::command]
+fn get_cached_model_catalogs(
+    window: WebviewWindow,
+    data: State<'_, AppData>,
+    sources: Vec<catalog::CatalogSource>,
+) -> Result<Vec<catalog::CatalogModelEntry>, String> {
+    require_manager_window(&window)?;
+    let cache_path = data.config_dir.join("catalog-cache.json");
+    if !cache_path.exists() {
+        return Ok(Vec::new());
+    }
+    let metadata = std::fs::metadata(&cache_path).map_err(|error| error.to_string())?;
+    if metadata.len() > 16 * 1024 * 1024 {
+        return Err("Cached model catalog exceeds the 16 MiB safety limit.".to_string());
+    }
+    let bytes = std::fs::read(&cache_path).map_err(|error| error.to_string())?;
+    let cache = serde_json::from_slice::<catalog::CatalogCache>(&bytes)
+        .map_err(|error| format!("Cached model catalog is invalid: {error}"))?;
+    Ok(catalog::cached_enabled_models(&sources, &cache))
+}
+
+fn cleanup_stale_model_downloads(config_dir: &Path) -> u64 {
+    let mut removed = 0u64;
+    for root in [config_dir.join("models"), config_dir.join("preview-assets")] {
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let path = entry.path();
+            let is_download_dir =
+                name.ends_with(".download") || name.ends_with(".preview-download");
+            let is_marked_partial = path.join(PARTIAL_DOWNLOAD_MARKER).exists();
+            let has_committed_manifest = path.join(".companion-model.json").exists()
+                || path.join(".catalog-signature").exists();
+            if entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false)
+                && is_download_dir
+                && (is_marked_partial || !has_committed_manifest)
+                && std::fs::remove_dir_all(path).is_ok()
+            {
+                removed += 1;
+            }
+        }
+    }
+    removed
+}
+
+#[tauri::command]
 async fn refresh_model_catalogs(
     window: WebviewWindow,
     data: State<'_, AppData>,
@@ -2637,6 +3225,7 @@ async fn refresh_model_catalogs(
         .unwrap_or_default();
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
+        .redirect(safe_download_redirect_policy())
         .build()
         .map_err(|error| error.to_string())?;
     let result = catalog::refresh_catalogs(&client, &sources, &mut cache).await;
@@ -2936,11 +3525,13 @@ async fn start_drag(
     point: DragPoint,
 ) -> Result<(), String> {
     let position = window.outer_position().map_err(|e| e.to_string())?;
+    let scale_factor = window.scale_factor().unwrap_or(1.0);
     *data.drag_state.lock().unwrap() = Some(DragState {
         start_x: point.screen_x,
         start_y: point.screen_y,
         window_x: position.x,
         window_y: position.y,
+        scale_factor,
     });
     Ok(())
 }
@@ -2953,16 +3544,16 @@ async fn move_drag(
 ) -> Result<(), String> {
     let drag_state = data.drag_state.lock().unwrap().clone();
     if let Some(drag) = drag_state {
-        let dx = point
+        let logical_dx = point
             .total_x
             .or_else(|| Some(point.screen_x - drag.start_x))
-            .unwrap_or(point.screen_x - drag.start_x)
-            .round() as i32;
-        let dy = point
+            .unwrap_or(point.screen_x - drag.start_x);
+        let logical_dy = point
             .total_y
             .or_else(|| Some(point.screen_y - drag.start_y))
-            .unwrap_or(point.screen_y - drag.start_y)
-            .round() as i32;
+            .unwrap_or(point.screen_y - drag.start_y);
+        let dx = physical_drag_delta(logical_dx, drag.scale_factor);
+        let dy = physical_drag_delta(logical_dy, drag.scale_factor);
         window
             .set_position(tauri::PhysicalPosition::new(
                 drag.window_x + dx,
@@ -3154,7 +3745,7 @@ fn start_renderer_watchdog(app: AppHandle) {
 }
 
 fn renderer_heartbeat_stale(health: &RendererHealth, now: u64) -> bool {
-    if health.last_recovery_at > 0 && now.saturating_sub(health.last_recovery_at) <= 15_000 {
+    if health.last_recovery_at > 0 && now.saturating_sub(health.last_recovery_at) <= 30_000 {
         return false;
     }
     let transition_grace = match health.status.as_str() {
@@ -3427,7 +4018,31 @@ fn hide_panel_window(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn cancel_model_download(
+    window: WebviewWindow,
+    data: State<'_, AppData>,
+    id: String,
+) -> Result<bool, String> {
+    require_manager_window(&window)?;
+    let downloads = data
+        .download_cancellations
+        .lock()
+        .map_err(|_| "Download cancellation lock is poisoned".to_string())?;
+    let Some(cancellation) = downloads.get(&id) else {
+        return Ok(false);
+    };
+    Ok(cancel_download_state(cancellation.as_ref()))
+}
+
+#[tauri::command]
 fn quit_app(app: tauri::AppHandle) {
+    let data = app.state::<AppData>();
+    if let Ok(downloads) = data.download_cancellations.lock() {
+        for cancellation in downloads.values() {
+            cancellation.store(DOWNLOAD_CANCELLED, Ordering::Release);
+        }
+    }
+    cleanup_stale_model_downloads(&data.config_dir);
     app.exit(0);
 }
 
@@ -3495,10 +4110,11 @@ fn tray_uses_chinese(app: &AppHandle) -> bool {
                 .map(str::to_string)
         })
         .unwrap_or_else(|| "auto".to_string());
-    if configured.starts_with("zh") {
+    let normalized = configured.trim().to_ascii_lowercase();
+    if normalized.starts_with("zh") {
         return true;
     }
-    if configured != "auto" {
+    if !normalized.is_empty() && normalized != "auto" && normalized != "system" {
         return false;
     }
     sys_locale::get_locale()
@@ -3507,7 +4123,10 @@ fn tray_uses_chinese(app: &AppHandle) -> bool {
 }
 
 fn tray_label(app: &AppHandle, key: &str) -> &'static str {
-    let zh = tray_uses_chinese(app);
+    tray_text(tray_uses_chinese(app), key)
+}
+
+fn tray_text(zh: bool, key: &str) -> &'static str {
     match (zh, key) {
         (true, "show") => "显示桌宠",
         (true, "hide") => "隐藏桌宠",
@@ -3522,6 +4141,11 @@ fn tray_label(app: &AppHandle, key: &str) -> &'static str {
         (true, "config") => "打开配置目录",
         (true, "api") => "打开本地 API",
         (true, "state") => "调试状态",
+        (true, "state_idle") => "空闲",
+        (true, "state_working") => "工作中",
+        (true, "state_reviewing") => "检查中",
+        (true, "state_success") => "已完成",
+        (true, "state_failed") => "失败",
         (true, "quit") => "退出",
         (false, "show") => "Show Companion",
         (false, "hide") => "Hide Companion",
@@ -3536,6 +4160,11 @@ fn tray_label(app: &AppHandle, key: &str) -> &'static str {
         (false, "config") => "Open Config Folder",
         (false, "api") => "Open Local API",
         (false, "state") => "Debug State",
+        (false, "state_idle") => "Idle",
+        (false, "state_working") => "Working",
+        (false, "state_reviewing") => "Reviewing",
+        (false, "state_success") => "Success",
+        (false, "state_failed") => "Failed",
         (false, "quit") => "Quit",
         _ => "Spine Companion",
     }
@@ -3619,12 +4248,41 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         true,
         None::<&str>,
     )?;
-    let state_idle = MenuItem::with_id(app, "state_idle", "Idle", true, None::<&str>)?;
-    let state_working = MenuItem::with_id(app, "state_working", "Working", true, None::<&str>)?;
-    let state_reviewing =
-        MenuItem::with_id(app, "state_reviewing", "Reviewing", true, None::<&str>)?;
-    let state_success = MenuItem::with_id(app, "state_success", "Success", true, None::<&str>)?;
-    let state_failed = MenuItem::with_id(app, "state_failed", "Failed", true, None::<&str>)?;
+    let state_idle = MenuItem::with_id(
+        app,
+        "state_idle",
+        tray_label(app, "state_idle"),
+        true,
+        None::<&str>,
+    )?;
+    let state_working = MenuItem::with_id(
+        app,
+        "state_working",
+        tray_label(app, "state_working"),
+        true,
+        None::<&str>,
+    )?;
+    let state_reviewing = MenuItem::with_id(
+        app,
+        "state_reviewing",
+        tray_label(app, "state_reviewing"),
+        true,
+        None::<&str>,
+    )?;
+    let state_success = MenuItem::with_id(
+        app,
+        "state_success",
+        tray_label(app, "state_success"),
+        true,
+        None::<&str>,
+    )?;
+    let state_failed = MenuItem::with_id(
+        app,
+        "state_failed",
+        tray_label(app, "state_failed"),
+        true,
+        None::<&str>,
+    )?;
     let state_menu = Submenu::with_items(
         app,
         tray_label(app, "state"),
@@ -4024,6 +4682,7 @@ pub fn run() {
     }
 
     let runtime_config = load_runtime_config();
+    cleanup_stale_model_downloads(&runtime_config.config_dir);
     configure_webview_gpu_mode(&runtime_config.ui_settings);
     let (store, tx) = create_state_store(&runtime_config.initial_state);
     let reminders = create_reminder_store();
@@ -4075,6 +4734,7 @@ pub fn run() {
             renderer_health: Arc::new(Mutex::new(RendererHealth::default())),
             ai_integration_lock: Arc::new(Mutex::new(())),
             model_trial_previous: Arc::new(Mutex::new(None)),
+            download_cancellations: Arc::new(Mutex::new(HashMap::new())),
         })
         .setup(move |app| {
             start_pointer_passthrough_monitor(app.handle().clone());
@@ -4287,6 +4947,7 @@ pub fn run() {
             emit_scale_event,
             import_model,
             import_catalog_model,
+            cancel_model_download,
             prepare_model_preview,
             save_settings,
             get_diagnostics,
@@ -4322,6 +4983,7 @@ pub fn run() {
             duplicate_avatar_pack,
             delete_avatar_pack,
             repack_avatar_pack,
+            get_cached_model_catalogs,
             refresh_model_catalogs,
             search_model_catalog,
             validate_avatar_pack,
@@ -4446,6 +5108,68 @@ mod tests {
         assert!(renderer_heartbeat_stale(&health, 22_000));
     }
 
+    #[test]
+    fn pointer_passthrough_uses_tight_entry_and_delayed_exit() {
+        assert!(!should_ignore_cursor(
+            true,
+            false,
+            true,
+            true,
+            true,
+            Duration::ZERO
+        ));
+        assert!(!should_ignore_cursor(
+            true,
+            false,
+            false,
+            false,
+            false,
+            Duration::from_millis(79)
+        ));
+        assert!(should_ignore_cursor(
+            true,
+            false,
+            false,
+            false,
+            false,
+            Duration::from_millis(80)
+        ));
+        assert!(!should_ignore_cursor(
+            true,
+            true,
+            true,
+            false,
+            false,
+            Duration::from_secs(1)
+        ));
+    }
+
+    #[test]
+    fn drag_deltas_convert_css_pixels_to_physical_pixels() {
+        assert_eq!(physical_drag_delta(80.0, 1.0), 80);
+        assert_eq!(physical_drag_delta(80.0, 1.25), 100);
+        assert_eq!(physical_drag_delta(80.0, 1.5), 120);
+        assert_eq!(physical_drag_delta(-40.0, 2.0), -80);
+        assert_eq!(physical_drag_delta(f64::NAN, 1.5), 0);
+        assert_eq!(physical_drag_delta(80.0, f64::NAN), 80);
+    }
+
+    #[test]
+    fn frame_rate_modes_are_explicit_and_default_to_display() {
+        assert_eq!(normalize_frame_rate_mode("display"), "display");
+        assert_eq!(normalize_frame_rate_mode("60"), "60");
+        assert_eq!(normalize_frame_rate_mode("30"), "30");
+        assert_eq!(normalize_frame_rate_mode("165"), "display");
+        assert_eq!(normalize_drag_mode("compatible"), "compatible");
+    }
+
+    #[test]
+    fn tray_description_localizes_native_state_items() {
+        assert_eq!(tray_text(false, "state_reviewing"), "Reviewing");
+        assert_eq!(tray_text(true, "state_reviewing"), "检查中");
+        assert_eq!(tray_text(true, "restart"), "重启渲染器");
+    }
+
     #[tokio::test]
     async fn mcp_probe_response_has_a_deadline() {
         use tokio::io::AsyncBufReadExt;
@@ -4490,6 +5214,154 @@ mod tests {
             github_raw_to_jsdelivr_url(raw).as_deref(),
             Some("https://cdn.jsdelivr.net/gh/isHarryh/Ark-Models@main/models/1001_amiya2_sale%2316/build_char_1001_amiya2_sale%2316.skel")
         );
+    }
+
+    #[test]
+    fn model_download_limits_cover_chunked_responses_and_safe_paths() {
+        assert_eq!(checked_download_size(60, 4, 64).unwrap(), 64);
+        assert!(checked_download_size(60, 5, 64).is_err());
+        assert!(validate_https_download_url("https://example.com/model.skel").is_ok());
+        assert!(validate_https_download_url("http://example.com/model.skel").is_err());
+        assert!(validate_download_redirect(
+            "https://example.com/model.skel",
+            4,
+            Some("example.com")
+        )
+        .is_ok());
+        assert!(
+            validate_download_redirect("https://127.0.0.1/model.skel", 0, Some("127.0.0.1"))
+                .is_err()
+        );
+        assert!(validate_download_redirect(
+            "https://192.168.1.20/model.skel",
+            0,
+            Some("192.168.1.20")
+        )
+        .is_err());
+        assert!(validate_download_redirect(
+            "http://example.com/model.skel",
+            0,
+            Some("example.com")
+        )
+        .is_err());
+        assert!(validate_download_redirect(
+            "https://cdn.example.com/model.skel",
+            0,
+            Some("example.com")
+        )
+        .is_err());
+        assert!(validate_download_redirect(
+            "https://example.com/model.skel",
+            5,
+            Some("example.com")
+        )
+        .is_err());
+        assert!(validate_model_download_file_name("model.skel").is_ok());
+        assert!(validate_model_download_file_name("../model.skel").is_err());
+        assert!(validate_model_download_file_name("nested/model.skel").is_err());
+    }
+
+    #[test]
+    fn model_download_cancellation_and_commit_are_mutually_exclusive() {
+        let cancelled = AtomicU8::new(DOWNLOAD_ACTIVE);
+        assert!(cancel_download_state(&cancelled));
+        assert!(begin_download_commit(&cancelled).is_err());
+
+        let committing = AtomicU8::new(DOWNLOAD_ACTIVE);
+        begin_download_commit(&committing).unwrap();
+        assert!(!cancel_download_state(&committing));
+
+        let previous = Arc::new(AtomicU8::new(DOWNLOAD_COMMITTING));
+        let next = Arc::new(AtomicU8::new(DOWNLOAD_ACTIVE));
+        let mut downloads = HashMap::from([("amiya".to_string(), previous.clone())]);
+        assert!(register_model_download(&mut downloads, "amiya", next).is_err());
+        assert!(Arc::ptr_eq(downloads.get("amiya").unwrap(), &previous));
+    }
+
+    #[test]
+    fn concurrent_model_downloads_use_distinct_staging_directories() {
+        let root = Path::new("model-cache");
+        let first = model_download_temp_dir(root, "amiya", 1);
+        let second = model_download_temp_dir(root, "amiya", 2);
+        assert_ne!(first, second);
+        assert!(first.to_string_lossy().ends_with(".download"));
+        assert!(second.to_string_lossy().ends_with(".download"));
+    }
+
+    #[test]
+    fn stale_download_cleanup_only_removes_download_directories() {
+        let root = std::env::temp_dir().join(format!(
+            "spine-companion-download-cleanup-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let models = root.join("models");
+        let previews = root.join("preview-assets");
+        std::fs::create_dir_all(models.join("keep-model")).unwrap();
+        std::fs::create_dir_all(models.join("old.download")).unwrap();
+        std::fs::create_dir_all(previews.join("old.preview-download")).unwrap();
+        std::fs::create_dir_all(models.join("valid.download")).unwrap();
+        std::fs::write(models.join("valid.download/.companion-model.json"), b"{}").unwrap();
+        std::fs::create_dir_all(models.join("marked.download")).unwrap();
+        std::fs::write(models.join("marked.download/.companion-model.json"), b"{}").unwrap();
+        std::fs::write(
+            models.join("marked.download/.companion-partial-download"),
+            b"",
+        )
+        .unwrap();
+        std::fs::create_dir_all(previews.join("valid.preview-download")).unwrap();
+        std::fs::write(
+            previews.join("valid.preview-download/.catalog-signature"),
+            b"saved",
+        )
+        .unwrap();
+        std::fs::create_dir_all(previews.join("marked.preview-download")).unwrap();
+        std::fs::write(
+            previews.join("marked.preview-download/.catalog-signature"),
+            b"partial",
+        )
+        .unwrap();
+        std::fs::write(
+            previews.join("marked.preview-download/.companion-partial-download"),
+            b"",
+        )
+        .unwrap();
+        assert_eq!(cleanup_stale_model_downloads(&root), 4);
+        assert!(models.join("keep-model").exists());
+        assert!(!models.join("old.download").exists());
+        assert!(!previews.join("old.preview-download").exists());
+        assert!(models.join("valid.download").exists());
+        assert!(previews.join("valid.preview-download").exists());
+        assert!(!models.join("marked.download").exists());
+        assert!(!previews.join("marked.preview-download").exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn downloaded_model_metadata_is_written_before_directory_activation() {
+        let root = std::env::temp_dir().join(format!(
+            "spine-companion-model-metadata-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let model = serde_json::json!({
+            "id": "illustration-amiya",
+            "name": "Amiya Illustration",
+            "category": "illustration",
+            "skel": "amiya.skel"
+        });
+
+        write_model_metadata(&root, &model).unwrap();
+
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join(".companion-model.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            saved.get("category").and_then(|value| value.as_str()),
+            Some("illustration")
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

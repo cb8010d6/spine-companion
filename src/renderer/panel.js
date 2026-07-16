@@ -1,7 +1,6 @@
 import "./panel.css";
 import { initTauriBridge, isTauri } from "./tauri-bridge.js";
 import { modelPreview } from "./model-preview.js";
-import { renderSpinePreview } from "./spine-preview.js";
 import { createI18n, t } from "../shared/i18n.js";
 import { defaultMessageForState, sourceDisplayName } from "../shared/notification-policy.js";
 import { applyThemePreference } from "./theme.js";
@@ -11,7 +10,17 @@ let panelPinned = false;
 let currentDiagnostics = null;
 let unsubscribeReminders = null;
 let interactionUnlockTimer = 0;
+let spinePreviewModulePromise = null;
 const quickStates = ["idle", "working", "running", "reviewing", "success", "failed"];
+
+function loadSpinePreview() {
+  spinePreviewModulePromise ||= import("./spine-preview.js");
+  return spinePreviewModulePromise;
+}
+
+export function integrationConfigured(integrations = [], id) {
+  return integrations.some((integration) => integration?.id === id && integration.configured === true);
+}
 
 function stateLabel(id) {
   return t(`state.${id}`);
@@ -80,7 +89,9 @@ function renderPreview(previewEl, preview) {
   }
   previewEl.appendChild(fallback);
   if (!preview.imageUrl && preview.canRenderSpinePreview) {
-    window.requestAnimationFrame(() => {
+    window.requestAnimationFrame(async () => {
+      if (!previewEl.isConnected) return;
+      const { renderSpinePreview } = await loadSpinePreview();
       if (previewEl.isConnected) renderSpinePreview(previewEl, preview, { width: 74, height: 74 });
     });
   }
@@ -195,11 +206,15 @@ async function updateState() {
 
   // Diagnostics for AI
   if (window.companion?.getDiagnostics) {
-    const diag = await window.companion.getDiagnostics();
+    const [diag, listedIntegrations] = await Promise.all([
+      window.companion.getDiagnostics(),
+      Promise.resolve(window.companion?.listAiIntegrations?.() || []).catch(() => [])
+    ]);
     currentDiagnostics = diag;
-    document.querySelector(".codex-dot").classList.toggle("on", diag.mcpConfigured);
-    document.querySelector(".claude-dot").classList.toggle("on", Boolean((diag.mcpMatches || []).find((m) => m.tool === "Claude" && m.configured)));
-    document.querySelector(".cursor-dot").classList.toggle("on", Boolean((diag.mcpMatches || []).find((m) => m.tool === "Roo / Cline" && m.configured)));
+    const integrationStates = listedIntegrations.length ? listedIntegrations : (diag.mcpMatches || []);
+    document.querySelector(".codex-dot").classList.toggle("on", integrationConfigured(integrationStates, "codex"));
+    document.querySelector(".claude-dot").classList.toggle("on", integrationConfigured(integrationStates, "claude-desktop"));
+    document.querySelector(".cursor-dot").classList.toggle("on", integrationConfigured(integrationStates, "cursor"));
     document.querySelector(".local-dot").classList.toggle("on", diag.apiOk);
     updateBridgeSummary(diag);
   }
@@ -333,4 +348,4 @@ async function boot() {
   });
 }
 
-boot().catch(console.error);
+if (document.getElementById("panel-app")) boot().catch(console.error);

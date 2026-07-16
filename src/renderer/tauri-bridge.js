@@ -69,6 +69,7 @@ export async function initTauriBridge() {
     duplicateAvatarPack: (input) => _tauriInvoke("duplicate_avatar_pack", { input }),
     deleteAvatarPack: (path) => _tauriInvoke("delete_avatar_pack", { input: { path } }),
     repackAvatarPack: (path) => _tauriInvoke("repack_avatar_pack", { input: { path } }),
+    getCachedModelCatalogs: (sources) => _tauriInvoke("get_cached_model_catalogs", { sources }),
     refreshModelCatalogs: (sources) => _tauriInvoke("refresh_model_catalogs", { sources }),
     searchModelCatalog: (models, request) => _tauriInvoke("search_model_catalog", { models, request }),
     pickAvatarPackFolder: async () => {
@@ -94,6 +95,7 @@ export async function initTauriBridge() {
     installModel: (input) => _tauriInvoke("import_model", { input: { ...input, activate: false } }),
     importCatalogModel: (entry, activate = true) => _tauriInvoke("import_catalog_model", { entry, activate }),
     installCatalogModel: (entry) => _tauriInvoke("import_catalog_model", { entry, activate: false }),
+    cancelModelDownload: (id) => _tauriInvoke("cancel_model_download", { id }),
     prepareModelPreview: (entry) => _tauriInvoke("prepare_model_preview", { entry }),
     onState: (callback) => {
       // Listen for state updates from the Rust backend
@@ -114,6 +116,13 @@ export async function initTauriBridge() {
       let unlisten = null;
       _tauriListen("companion:scale", (event) => {
         callback(event.payload);
+      }).then((fn) => { unlisten = fn; });
+      return () => { if (unlisten) unlisten(); };
+    },
+    onPointerProximity: (callback) => {
+      let unlisten = null;
+      _tauriListen("companion:pointer-proximity", (event) => {
+        callback(Boolean(event.payload));
       }).then((fn) => { unlisten = fn; });
       return () => { if (unlisten) unlisten(); };
     },

@@ -17,7 +17,10 @@ export function rendererHealthFromDiagnostics(diagnostics = {}) {
   return {
     status: renderer.status || diagnostics?.gpu?.effective || diagnostics?.gpu?.mode || "unknown",
     reason: renderer.lastReason || "",
-    recoveryCount: Number(renderer.recoveryCount || 0)
+    recoveryCount: Number(renderer.recoveryCount || 0),
+    animationName: String(renderer.animationName || ""),
+    trackTime: Number(renderer.trackTime || 0),
+    animationRecoveryExhausted: renderer.animationRecoveryExhausted === true
   };
 }
 
@@ -26,7 +29,7 @@ export function rendererHealthCategory(status = "") {
     return "healthy";
   }
   if (status === "starting") return "starting";
-  if (["context-lost", "stale", "invalid-canvas"].includes(status)) return "attention";
+  if (["context-lost", "stale", "ticker-stopped", "invalid-canvas", "track-stale", "track-recovery-limited"].includes(status)) return "attention";
   return "unknown";
 }
 
