@@ -3571,17 +3571,29 @@ async fn end_drag(data: State<'_, AppData>) -> Result<(), String> {
 }
 
 #[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct WindowPosition {
     x: i32,
     y: i32,
+    work_area_top: i32,
+    height: u32,
 }
 
 #[tauri::command]
 fn get_window_position(window: tauri::Window) -> Result<WindowPosition, String> {
     let position = window.outer_position().map_err(|error| error.to_string())?;
+    let size = window.outer_size().map_err(|error| error.to_string())?;
+    let work_area_top = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .map(|monitor| monitor.work_area().position.y)
+        .unwrap_or(0);
     Ok(WindowPosition {
         x: position.x,
         y: position.y,
+        work_area_top,
+        height: size.height,
     })
 }
 
@@ -3640,6 +3652,7 @@ fn set_panel_interaction_lock(data: State<'_, AppData>, locked: bool) -> Result<
 }
 
 fn show_companion_window(win: &WebviewWindow) {
+    let _ = win.set_skip_taskbar(true);
     let _ = win.set_ignore_cursor_events(false);
     let _ = win.unminimize();
     let _ = win.show();
@@ -3648,6 +3661,7 @@ fn show_companion_window(win: &WebviewWindow) {
 }
 
 fn restore_companion_window_surface(win: &WebviewWindow) {
+    let _ = win.set_skip_taskbar(true);
     let _ = win.set_ignore_cursor_events(false);
     let _ = win.unminimize();
     let _ = win.show();
@@ -3662,11 +3676,14 @@ fn create_main_window(app: &AppHandle) -> Result<WebviewWindow, String> {
         .decorations(false)
         .transparent(true)
         .always_on_top(true)
-        .skip_taskbar(false)
+        .skip_taskbar(true)
         .visible(false)
         .shadow(false)
         .build()
         .map_err(|error| error.to_string())
+        .inspect(|win| {
+            let _ = win.set_skip_taskbar(true);
+        })
 }
 
 fn recreate_main_window(app: &AppHandle, reason: &str) -> Result<(), String> {
@@ -4737,6 +4754,9 @@ pub fn run() {
             download_cancellations: Arc::new(Mutex::new(HashMap::new())),
         })
         .setup(move |app| {
+            if let Some(main) = app.get_webview_window("main") {
+                let _ = main.set_skip_taskbar(true);
+            }
             start_pointer_passthrough_monitor(app.handle().clone());
             start_renderer_watchdog(app.handle().clone());
             if let Some(panel) = app.get_webview_window("panel") {

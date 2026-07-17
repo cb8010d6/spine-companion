@@ -13,8 +13,11 @@ describe("input gestures", () => {
     expect(pinchScaleDelta(100, 0)).toBe(-0.12);
   });
 
-  it("uses native window dragging only for mouse input", () => {
+  it("uses native window dragging for mouse input away from the monitor edge", () => {
     expect(shouldUseNativeWindowDrag("mouse")).toBe(true);
+    expect(shouldUseNativeWindowDrag("mouse", { y: 700, workAreaTop: 0, height: 460 })).toBe(true);
+    expect(shouldUseNativeWindowDrag("mouse", { y: 120, workAreaTop: 0, height: 460 })).toBe(false);
+    expect(shouldUseNativeWindowDrag("mouse", { y: -780, workAreaTop: -900, height: 460 })).toBe(false);
     expect(shouldUseNativeWindowDrag("touch")).toBe(false);
     expect(shouldUseNativeWindowDrag("pen")).toBe(false);
   });

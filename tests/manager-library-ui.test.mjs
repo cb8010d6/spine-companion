@@ -1,5 +1,7 @@
 // @vitest-environment happy-dom
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   MANAGER_FRAME_RATE_MODES,
@@ -15,6 +17,13 @@ const sources = [
 ];
 
 describe("manager all-enabled-sources library view", () => {
+  it("keeps hidden status badges out of the compact card layout", () => {
+    const styles = readFileSync(resolve(process.cwd(), "src/renderer/manager.css"), "utf8");
+    expect(styles).toMatch(/\.badge\[hidden\][^{]*\{\s*display:\s*none/);
+    expect(styles).toMatch(/\.library-grid\s*\{[\s\S]*?minmax\(300px, 1fr\)/);
+    expect(styles).toMatch(/\.installed-grid\s*\{[\s\S]*?minmax\(280px, 1fr\)/);
+  });
+
   it("exposes only the supported fixed frame-rate modes", () => {
     expect(MANAGER_FRAME_RATE_MODES).toEqual(["display", "60", "30"]);
   });

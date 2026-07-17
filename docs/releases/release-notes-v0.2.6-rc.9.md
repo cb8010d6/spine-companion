@@ -16,12 +16,18 @@ safer model-library pipeline.
 - Convert custom touch, pen, and mouse-fallback drag distances from WebView CSS
   pixels to native physical pixels. High-DPI touch movement now matches the
   user's gesture instead of moving the companion a shorter distance.
+- Near the top of a monitor work area, switch dragging to the physical-pixel
+  positioning path so the companion can keep moving upward. The main companion
+  window also stays out of the taskbar after startup, show, and renderer recovery.
 - Update pointer bounds from the current Spine runtime pose, use tighter entry
   and delayed exit margins, and suspend passthrough switching while dragging.
 - Add explicit display, 60 FPS, and 30 FPS modes. The default still follows the
   display refresh rate and never changes automatically.
 - Open the model library from local cache, aggregate all enabled sources, and
   update download progress on the affected card instead of rebuilding the page.
+- Tighten model-library and installed-model cards and their action areas. The
+  active model uses a clear status badge, while source, folder, and remove actions
+  use compact icon buttons across wide and narrow layouts.
 - Stream catalog and model downloads with 16 MiB catalog, 64 MiB file, and
   256 MiB model limits. Downloads use unique staging directories, cancellable
   commits, HTTPS redirect checks, integrity verification, and startup cleanup.
@@ -32,7 +38,7 @@ safer model-library pipeline.
 
 ## Validation
 
-- 217 JavaScript tests and 89 Rust tests passed. Project checks, MCP bridge
+- 219 JavaScript tests and 89 Rust tests passed. Project checks, MCP bridge
   checks, the packaged MCP smoke test, and the frontend production build also
   passed locally.
 - All 2,909 current Ark model entries were audited; no legitimate catalog file

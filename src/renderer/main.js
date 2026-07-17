@@ -70,6 +70,7 @@ let heldBubble = null;
 let bubbleHoldTimer = null;
 let completionToastTimer = null;
 let mousePassthrough = false;
+let knownWindowPosition = null;
 let pendingMousePassthroughEvent = null;
 let mousePassthroughFrame = 0;
 let runtimeConfig = null;
@@ -85,6 +86,17 @@ let hitboxDebug = null;
 const NATIVE_DRAG_STOP_IDLE_POLLS = 8;
 const NATIVE_DRAG_POLL_MS = 40;
 const NATIVE_DRAG_MAX_MS = 9000;
+
+async function refreshKnownWindowPosition() {
+  if (!window.companion?.getWindowPosition) return knownWindowPosition;
+  try {
+    const position = await window.companion.getWindowPosition();
+    if (Number.isFinite(Number(position?.x)) && Number.isFinite(Number(position?.y))) {
+      knownWindowPosition = position;
+    }
+  } catch {}
+  return knownWindowPosition;
+}
 
 function applyUiSettings(settings = {}) {
   currentUiSettings = { ...currentUiSettings, ...settings };
@@ -388,6 +400,7 @@ async function finishNativeDrag() {
     updateBubble(returnState);
   }
   refreshMousePassthroughSoon();
+  refreshKnownWindowPosition();
 }
 
 function startNativeDragPolling() {
@@ -400,6 +413,7 @@ function startNativeDragPolling() {
       const x = Number(position?.x);
       const y = Number(position?.y);
       if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+      knownWindowPosition = position;
       if (drag.lastWindowX === null || drag.lastWindowY === null) {
         drag.lastWindowX = x;
         drag.lastWindowY = y;
@@ -771,7 +785,8 @@ function wireDragging() {
       lastWindowX: null,
       lastWindowY: null,
       pointerId: event.pointerId,
-      pointerType: event.pointerType || "mouse"
+      pointerType: event.pointerType || "mouse",
+      startWindowPosition: knownWindowPosition
     };
     document.body.classList.add("is-dragging");
     player?.setDragActive(true);
@@ -812,7 +827,8 @@ function wireDragging() {
       drag.moved = true;
       progressBubble.hidden = true;
     }
-    if (drag.moved && window.companion?.nativeStartDrag && shouldUseNativeWindowDrag(drag.pointerType)) {
+    if (drag.moved && window.companion?.nativeStartDrag
+      && shouldUseNativeWindowDrag(drag.pointerType, drag.startWindowPosition)) {
       beginNativeDrag(event);
       return;
     }
@@ -873,6 +889,7 @@ function wireDragging() {
     drag = null;
     player?.setDragActive(false);
     document.body.classList.remove("is-dragging");
+    refreshKnownWindowPosition();
     try {
       if (shell.hasPointerCapture?.(event.pointerId)) shell.releasePointerCapture(event.pointerId);
     } catch {}
@@ -923,6 +940,7 @@ function applyMainLocale(config = {}) {
 async function boot() {
   // Install the desktop bridge when running inside Tauri.
   if (isTauri()) await initTauriBridge();
+  await refreshKnownWindowPosition();
   const config = await loadRuntimeConfig();
   applyMainLocale(config);
   runtimeConfig = config;

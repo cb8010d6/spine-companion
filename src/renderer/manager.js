@@ -3,15 +3,18 @@ import {
   Activity,
   Bot,
   Box,
+  Check,
   Download,
   ExternalLink,
   Eye,
+  FolderOpen,
   House,
   Library,
   Languages,
   PackageCheck,
   Settings,
   Sparkles,
+  Trash2,
   X,
   createElement
 } from "lucide";
@@ -366,6 +369,18 @@ function iconLabel(Icon, label) {
   icon.classList.add("btn-icon");
   icon.setAttribute("aria-hidden", "true");
   return [icon, h("span", {}, label)];
+}
+
+function iconAction(Icon, label, onClick, { danger = false, disabled = false } = {}) {
+  const [icon] = iconLabel(Icon, label);
+  return h("button", {
+    class: `btn model-icon-action${danger ? " danger" : ""}`,
+    type: "button",
+    title: label,
+    "aria-label": label,
+    disabled,
+    onClick
+  }, icon);
 }
 
 function catalogSourceLabel(source = {}) {
@@ -833,7 +848,7 @@ async function libraryView({ cachedOnly = false } = {}) {
         const button = h("button", {
           class: installed ? "btn model-action" : "btn btn-primary model-action",
           type: "button",
-          disabled: installed && active,
+          hidden: installed && active,
           onClick: async () => {
             if (installed) {
               if (!active) await activateModel(model.id, { incremental: true });
@@ -852,8 +867,9 @@ async function libraryView({ cachedOnly = false } = {}) {
           downloadBusy ? `${download?.current || 0}/${download?.total || 0} ${download?.file || ""}` : "");
         const installedMark = badge(t("manager.status.installed"), "badge-success");
         const activeMark = badge(t("manager.status.active"), "badge-warning");
-        installedMark.hidden = !installed;
+        installedMark.hidden = !installed || active;
         activeMark.hidden = !active;
+        const statusRow = h("div", { class: "model-statuses", hidden: !installed }, installedMark, activeMark);
         cardControllers.set(model.id, {
           update() {
             const current = downloads[model.id] || {};
@@ -863,7 +879,8 @@ async function libraryView({ cachedOnly = false } = {}) {
             active = activeId === model.id;
             downloadBusy = !installed && busy;
             button.className = installed ? "btn model-action" : "btn btn-primary model-action";
-            button.disabled = installed && active;
+            button.hidden = installed && active;
+            button.disabled = false;
             button.replaceChildren(...iconLabel(installed ? PackageCheck : (busy ? X : Download),
               installed ? (active ? t("manager.status.active") : t("manager.actions.setActive"))
                 : busy ? (current.status === "cancelling" ? t("manager.status.cancelling") : t("manager.actions.cancel"))
@@ -873,8 +890,9 @@ async function libraryView({ cachedOnly = false } = {}) {
               ? `${current.current || 0}/${current.total || 0} ${current.file || ""}${current.fileBytes ? ` · ${formatBytes(current.fileBytes)}${current.fileBytesTotal ? ` / ${formatBytes(current.fileBytesTotal)}` : ""}` : ""}`
               : !installed && failed ? current.error || t("manager.error.downloadFailed") : "";
             progress.classList.toggle("error-text", !installed && failed);
-            installedMark.hidden = !installed;
+            installedMark.hidden = !installed || active;
             activeMark.hidden = !active;
+            statusRow.hidden = !installed;
           }
         });
         const sourceUrl = model.repositoryUrl || model.sourceUrl || "";
@@ -885,7 +903,10 @@ async function libraryView({ cachedOnly = false } = {}) {
         },
           previewNode(model, (task) => currentPagePreviewTasks.push(task)),
           h("div", { class: "model-info" },
-            h("div", { class: "model-title", title: displayName }, displayName),
+            h("div", { class: "model-title-row" },
+              h("div", { class: "model-title", title: displayName }, displayName),
+              statusRow
+            ),
             h("div", { class: "model-id", title: model.id }, model.id),
             h("div", { class: "model-meta" }, t("manager.model.source", { source: model.source || t("manager.model.unknownSource") })),
             model.author ? h("div", { class: "model-meta" }, t("manager.library.author", { author: model.author })) : null,
@@ -901,10 +922,8 @@ async function libraryView({ cachedOnly = false } = {}) {
             ),
             h("div", { class: "model-actions" },
               progress,
-              installedMark,
-              activeMark,
               h("div", { style: { flex: "1" } }),
-              sourceUrl ? h("button", { class: "btn model-action", type: "button", onClick: () => window.companion?.openExternal?.(sourceUrl) }, ...iconLabel(ExternalLink, t("manager.actions.openSource"))) : null,
+              sourceUrl ? iconAction(ExternalLink, t("manager.actions.openSource"), () => window.companion?.openExternal?.(sourceUrl)) : null,
               button
             )
           )
@@ -1077,17 +1096,20 @@ function installedView() {
   const content = installedModels.length
     ? installedModels.map((model) => {
       const displayModel = mergedModel(model);
-      return h("article", { class: "model-card fade-in" },
+      const isActive = model.id === active;
+      return h("article", { class: "model-card installed-model-card fade-in" },
         previewNode(displayModel),
         h("div", { class: "model-info" },
-          h("div", { class: "model-title", title: displayModel.name || model.id }, displayModel.name || model.id),
+          h("div", { class: "model-title-row" },
+            h("div", { class: "model-title", title: displayModel.name || model.id }, displayModel.name || model.id),
+            isActive ? h("div", { class: "model-statuses" }, badge(t("manager.status.active"), "badge-warning")) : null
+          ),
           h("div", { class: "model-meta", title: model.dir }, model.dir),
           h("div", { class: "model-actions" },
-            model.id === active ? badge(t("manager.status.active"), "badge-warning") : null,
             h("div", { style: { flex: "1" } }),
-            h("button", { class: "btn", type: "button", onClick: () => window.companion?.openFolder?.(model.dir) }, t("manager.actions.openFolder")),
-            h("button", { class: "btn", type: "button", disabled: model.id === active, onClick: () => activateModel(model.id) }, t("manager.actions.setActive")),
-            h("button", { class: "btn btn-danger", type: "button", disabled: model.id === active, onClick: () => confirmRemove(model.id) }, t("manager.actions.remove"))
+            iconAction(FolderOpen, t("manager.actions.openFolder"), () => window.companion?.openFolder?.(model.dir)),
+            !isActive ? h("button", { class: "btn btn-primary model-action", type: "button", onClick: () => activateModel(model.id) }, ...iconLabel(Check, t("manager.actions.setActive"))) : null,
+            !isActive ? iconAction(Trash2, t("manager.actions.remove"), () => confirmRemove(model.id), { danger: true }) : null
           )
         )
       );
@@ -1095,7 +1117,7 @@ function installedView() {
     : [h("p", { class: "empty-text" }, t("manager.empty.noModels"))];
   return h("section", {},
     h("h2", { class: "view-title" }, t("manager.installed.title")),
-    h("div", { class: "grid-2" }, content)
+    h("div", { class: "grid-2 installed-grid" }, content)
   );
 }
 
