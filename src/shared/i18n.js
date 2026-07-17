@@ -69,7 +69,7 @@ const dictionaries = {
     "manager.settings.interactionHelp": "Adjust the small clickable margin around the visible model.",
     "manager.settings.compatibility": "Rendering Compatibility",
     "manager.settings.compatibilityHelp": "Adjust these only for high-DPI, WebView, or GPU compatibility problems.",
-    "manager.settings.advanced": "Advanced diagnostics",
+    "manager.settings.advanced": "Advanced rendering",
     "manager.settings.remindersHelp": "Review and remove reminders created locally or by an AI tool.",
     "manager.diagnostics.title": "Diagnostics",
     "manager.actions.download": "Download",
@@ -120,6 +120,8 @@ const dictionaries = {
     "manager.status.installed": "Installed",
     "manager.status.active": "Active",
     "manager.status.downloading": "Downloading...",
+    "manager.status.cancelling": "Cancelling...",
+    "manager.status.downloadCancelled": "Download cancelled.",
     "manager.status.loading": "Loading...",
     "manager.status.viewing": "Viewing {view}",
     "manager.status.loadedModel": "Loaded {name}",
@@ -192,6 +194,7 @@ const dictionaries = {
     "manager.field.hitboxPadding": "Mouse hitbox padding",
     "manager.field.debugHitbox": "Show hitbox overlay",
     "manager.field.hardwareAcceleration": "Hardware acceleration",
+    "manager.field.frameRateMode": "Animation frame rate",
     "manager.hint.hardwareAcceleration": "Turn off only if Windows/WebView2 shows black transparent windows or GPU reset errors. Requires restart.",
     "manager.field.bubbleShadow": "Bubble shadow",
     "manager.field.bubbleTheme": "Bubble Theme",
@@ -201,6 +204,9 @@ const dictionaries = {
     "manager.option.system": "Follow system",
     "manager.option.dark": "Dark",
     "manager.option.light": "Light",
+    "manager.option.frameRateMode.display": "Match display",
+    "manager.option.frameRateMode.60": "60 FPS",
+    "manager.option.frameRateMode.30": "30 FPS",
     "manager.option.updateChannel.auto": "Match installed version (recommended)",
     "manager.option.updateChannel.stable": "Stable releases only",
     "manager.option.updateChannel.prerelease": "Prerelease and stable",
@@ -385,7 +391,7 @@ const dictionaries = {
     "manager.avatar.duplicateRequired": "Enter both an ID and a name for the copy.",
     "manager.library.sourceName": "Source name",
     "manager.library.sourceFilterLabel": "Choose model source",
-    "manager.library.allSources": "All model sources",
+    "manager.library.allSources": "All enabled sources",
     "manager.library.noEnabledSources": "No enabled model sources",
     "manager.library.unknownSource": "Unknown source",
     "manager.library.officialSource.ark-models": "Operators",
@@ -544,7 +550,7 @@ const dictionaries = {
     "manager.settings.interactionHelp": "调整人物可见区域周围的小范围点击余量。",
     "manager.settings.compatibility": "渲染兼容性",
     "manager.settings.compatibilityHelp": "仅在高 DPI、WebView 或 GPU 兼容问题时调整这些选项。",
-    "manager.settings.advanced": "高级诊断",
+    "manager.settings.advanced": "高级渲染",
     "manager.settings.remindersHelp": "查看并删除本地或 AI 工具创建的提醒。",
     "manager.diagnostics.title": "诊断",
     "manager.actions.download": "下载",
@@ -595,6 +601,8 @@ const dictionaries = {
     "manager.status.installed": "已安装",
     "manager.status.active": "当前",
     "manager.status.downloading": "正在下载...",
+    "manager.status.cancelling": "正在取消...",
+    "manager.status.downloadCancelled": "下载已取消。",
     "manager.status.loading": "加载中...",
     "manager.status.viewing": "正在查看 {view}",
     "manager.status.loadedModel": "已加载 {name}",
@@ -667,6 +675,7 @@ const dictionaries = {
     "manager.field.hitboxPadding": "鼠标命中区域余量",
     "manager.field.debugHitbox": "显示命中框覆盖层",
     "manager.field.hardwareAcceleration": "硬件加速",
+    "manager.field.frameRateMode": "动画帧率",
     "manager.hint.hardwareAcceleration": "只有遇到 Windows/WebView2 黑色透明窗口或 GPU reset 错误时才建议关闭。需要重启生效。",
     "manager.field.bubbleShadow": "气泡阴影",
     "manager.field.bubbleTheme": "气泡主题",
@@ -676,6 +685,9 @@ const dictionaries = {
     "manager.option.system": "跟随系统",
     "manager.option.dark": "深色",
     "manager.option.light": "浅色",
+    "manager.option.frameRateMode.display": "跟随显示器",
+    "manager.option.frameRateMode.60": "60 FPS",
+    "manager.option.frameRateMode.30": "30 FPS",
     "manager.option.updateChannel.auto": "跟随当前版本（推荐）",
     "manager.option.updateChannel.stable": "仅正式版",
     "manager.option.updateChannel.prerelease": "预发布版和正式版",
@@ -860,7 +872,7 @@ const dictionaries = {
     "manager.avatar.duplicateRequired": "请填写副本 ID 和名称。",
     "manager.library.sourceName": "模型源名称",
     "manager.library.sourceFilterLabel": "选择模型源",
-    "manager.library.allSources": "全部模型源",
+    "manager.library.allSources": "全部已启用来源",
     "manager.library.noEnabledSources": "没有已启用的模型源",
     "manager.library.unknownSource": "未知来源",
     "manager.library.officialSource.ark-models": "基建小人",
@@ -955,7 +967,9 @@ let currentLocale = "en";
 
 export function detectLocale(config = {}, nav = globalThis.navigator) {
   const configured = config.locale || config.ui?.locale;
-  const raw = configured || nav?.language || "en";
+  const normalized = String(configured || "").trim();
+  const followsSystem = !normalized || ["auto", "system"].includes(normalized.toLowerCase());
+  const raw = followsSystem ? (nav?.languages?.[0] || nav?.language || "en") : normalized;
   return raw.toLowerCase().startsWith("zh") ? "zh-CN" : "en";
 }
 

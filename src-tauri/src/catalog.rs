@@ -5,7 +5,7 @@
 //! `refresh_catalogs` with its shared `reqwest::Client`.
 
 use chrono::Utc;
-use reqwest::{header, Client, Url};
+use reqwest::{header, Client, Response, Url};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path};
@@ -13,6 +13,7 @@ use std::path::{Component, Path};
 pub const CATALOG_SCHEMA_VERSION: u32 = 1;
 pub const DEFAULT_PAGE_SIZE: usize = 24;
 pub const MAX_PAGE_SIZE: usize = 100;
+const MAX_CATALOG_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -425,7 +426,53 @@ pub async fn refresh_catalogs(
         result.sources.push(source_result.status);
     }
 
-    result.models.sort_by(|left, right| {
+    sort_catalog_models(&mut result.models);
+    result
+}
+
+/// Return the cached models belonging to the currently enabled sources.
+///
+/// This performs no I/O and does not mutate the cache. Sources absent from the
+/// current configuration, disabled sources, and repeated source/model ids are
+/// ignored. Callers can therefore expose startup/offline catalog data without
+/// triggering a refresh.
+///
+/// `lib.rs` integration requires a manager-only Tauri command that accepts the
+/// current sources, deserializes `config_dir/catalog-cache.json` as
+/// `CatalogCache`, returns this function's result, and is registered in
+/// `tauri::generate_handler!`.
+#[allow(dead_code)]
+pub fn cached_enabled_models(
+    sources: &[CatalogSource],
+    cache: &CatalogCache,
+) -> Vec<CatalogModelEntry> {
+    let mut models = Vec::new();
+    let mut source_ids = BTreeSet::new();
+    let mut model_ids = BTreeSet::new();
+
+    for source in sources.iter().filter(|source| source.enabled) {
+        if !source_ids.insert(source.id.as_str()) {
+            continue;
+        }
+        let Some(entry) = cache.entries.get(&source.id) else {
+            continue;
+        };
+        for model in &entry.document.models {
+            if model_ids.insert(model.id.as_str()) {
+                models.push(CatalogModelEntry {
+                    catalog_source_id: source.id.clone(),
+                    model: model.clone(),
+                });
+            }
+        }
+    }
+
+    sort_catalog_models(&mut models);
+    models
+}
+
+fn sort_catalog_models(models: &mut [CatalogModelEntry]) {
+    models.sort_by(|left, right| {
         left.model
             .name
             .to_ascii_lowercase()
@@ -433,7 +480,6 @@ pub async fn refresh_catalogs(
             .then(left.model.id.cmp(&right.model.id))
             .then(left.catalog_source_id.cmp(&right.catalog_source_id))
     });
-    result
 }
 
 #[derive(Clone, Debug)]
@@ -468,6 +514,19 @@ async fn refresh_source(
         Ok(response) => response,
         Err(error) => return stale_or_failed(source, cached, error.to_string()),
     };
+    if response.url().as_str() != source.catalog_url {
+        let redirected = CatalogSource {
+            catalog_url: response.url().to_string(),
+            ..source.clone()
+        };
+        if let Err(error) = redirected.validate() {
+            return stale_or_failed(
+                source,
+                cached,
+                format!("Catalog redirect was rejected: {error}"),
+            );
+        }
+    }
     if response.status() == reqwest::StatusCode::NOT_MODIFIED {
         return match cached {
             Some(mut entry) => {
@@ -497,11 +556,11 @@ async fn refresh_source(
     }
 
     let metadata = cache_metadata(&response, &SourceCacheMetadata::default());
-    let body = match response.text().await {
+    let body = match read_catalog_response(response).await {
         Ok(body) => body,
-        Err(error) => return stale_or_failed(source, cached, error.to_string()),
+        Err(error) => return stale_or_failed(source, cached, error),
     };
-    let document = match serde_json::from_str::<CatalogDocument>(&body)
+    let document = match serde_json::from_slice::<CatalogDocument>(&body)
         .map_err(|error| error.to_string())
         .and_then(|document| document.validate().map(|_| document))
     {
@@ -512,6 +571,58 @@ async fn refresh_source(
     SourceRefresh {
         status: source_status(source, CatalogSourceState::Fresh, count, None),
         cache_entry: Some(CachedCatalog { metadata, document }),
+    }
+}
+
+async fn read_catalog_response(response: Response) -> Result<Vec<u8>, String> {
+    read_catalog_response_with_limit(response, MAX_CATALOG_RESPONSE_BYTES).await
+}
+
+async fn read_catalog_response_with_limit(
+    mut response: Response,
+    limit: usize,
+) -> Result<Vec<u8>, String> {
+    if let Some(content_length) = response.content_length() {
+        ensure_catalog_size_with_limit(content_length, limit)?;
+    }
+    let initial_capacity = response.content_length().unwrap_or(0) as usize;
+    let mut body = Vec::with_capacity(initial_capacity.min(limit));
+    while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
+        append_catalog_chunk_with_limit(&mut body, &chunk, limit)?;
+    }
+    Ok(body)
+}
+
+fn ensure_catalog_size_with_limit(size: u64, limit: usize) -> Result<(), String> {
+    if size > limit as u64 {
+        Err(catalog_size_error(limit))
+    } else {
+        Ok(())
+    }
+}
+
+fn append_catalog_chunk_with_limit(
+    body: &mut Vec<u8>,
+    chunk: &[u8],
+    limit: usize,
+) -> Result<(), String> {
+    let decoded_size = body
+        .len()
+        .checked_add(chunk.len())
+        .ok_or_else(|| catalog_size_error(limit))?;
+    ensure_catalog_size_with_limit(decoded_size as u64, limit)?;
+    body.extend_from_slice(chunk);
+    Ok(())
+}
+
+fn catalog_size_error(limit: usize) -> String {
+    if limit % (1024 * 1024) == 0 {
+        format!(
+            "Catalog response exceeds the {} MiB limit.",
+            limit / (1024 * 1024)
+        )
+    } else {
+        format!("Catalog response exceeds the {limit}-byte limit.")
     }
 }
 
@@ -762,6 +873,9 @@ fn parse_spine_version_components(value: &str) -> Result<(u32, u32, u32), String
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{body::Body, body::Bytes, routing::get, Router};
+    use futures::stream;
+    use std::convert::Infallible;
 
     const SHA: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
@@ -911,6 +1025,137 @@ mod tests {
         assert_eq!(result.total, 1);
         assert_eq!(result.total_pages, 1);
         assert_eq!(result.models[0].model.id, "gamma");
+    }
+
+    #[test]
+    fn enforces_catalog_response_size_at_the_declared_boundary() {
+        assert!(ensure_catalog_size_with_limit(
+            MAX_CATALOG_RESPONSE_BYTES as u64,
+            MAX_CATALOG_RESPONSE_BYTES
+        )
+        .is_ok());
+        let error = ensure_catalog_size_with_limit(
+            MAX_CATALOG_RESPONSE_BYTES as u64 + 1,
+            MAX_CATALOG_RESPONSE_BYTES,
+        )
+        .unwrap_err();
+        assert!(error.contains("16 MiB"));
+    }
+
+    #[test]
+    fn rejects_a_chunk_that_pushes_the_decoded_body_over_limit() {
+        let mut body = Vec::new();
+        append_catalog_chunk_with_limit(&mut body, b"abc", 5).unwrap();
+        append_catalog_chunk_with_limit(&mut body, b"de", 5).unwrap();
+        assert_eq!(body, b"abcde");
+
+        let error = append_catalog_chunk_with_limit(&mut body, b"f", 5).unwrap_err();
+        assert!(error.contains("5-byte"));
+        assert_eq!(body, b"abcde");
+    }
+
+    #[tokio::test]
+    async fn rejects_declared_and_chunked_oversize_responses() {
+        let app = Router::new()
+            .route("/declared", get(|| async { "abcdef" }))
+            .route(
+                "/chunked",
+                get(|| async {
+                    let chunks = stream::iter([
+                        Ok::<_, Infallible>(Bytes::from_static(b"abc")),
+                        Ok::<_, Infallible>(Bytes::from_static(b"def")),
+                    ]);
+                    Body::from_stream(chunks)
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let client = Client::new();
+        let response = client
+            .get(format!("http://{address}/declared"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.content_length(), Some(6));
+        let error = read_catalog_response_with_limit(response, 5)
+            .await
+            .unwrap_err();
+        assert!(error.contains("5-byte"));
+
+        let response = client
+            .get(format!("http://{address}/chunked"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.content_length(), None);
+        let error = read_catalog_response_with_limit(response, 5)
+            .await
+            .unwrap_err();
+        assert!(error.contains("5-byte"));
+        server.abort();
+    }
+
+    #[test]
+    fn reads_only_enabled_configured_catalogs_without_mutating_cache() {
+        let mut official = source(CatalogSourceKind::Official);
+        official.id = "official".to_string();
+        official.label = "Official".to_string();
+        let mut disabled = source(CatalogSourceKind::Official);
+        disabled.id = "disabled".to_string();
+        disabled.enabled = false;
+        let community = source(CatalogSourceKind::Official);
+
+        let cached = |models| CachedCatalog {
+            metadata: SourceCacheMetadata::default(),
+            document: CatalogDocument {
+                schema_version: CATALOG_SCHEMA_VERSION,
+                models,
+            },
+        };
+        let cache = CatalogCache {
+            entries: BTreeMap::from([
+                (
+                    official.id.clone(),
+                    cached(vec![
+                        model("shared", "Zulu", "3.8"),
+                        model("beta", "Beta", "3.8"),
+                    ]),
+                ),
+                (
+                    community.id.clone(),
+                    cached(vec![
+                        model("shared", "Duplicate", "3.8"),
+                        model("alpha", "Alpha", "3.8"),
+                    ]),
+                ),
+                (
+                    disabled.id.clone(),
+                    cached(vec![model("hidden", "Hidden", "3.8")]),
+                ),
+                (
+                    "unconfigured".to_string(),
+                    cached(vec![model("orphan", "Orphan", "3.8")]),
+                ),
+            ]),
+        };
+        let original_cache = cache.clone();
+        let models =
+            cached_enabled_models(&[official.clone(), disabled, community, official], &cache);
+
+        assert_eq!(
+            models
+                .iter()
+                .map(|entry| entry.model.id.as_str())
+                .collect::<Vec<_>>(),
+            ["alpha", "beta", "shared"]
+        );
+        assert_eq!(models[2].catalog_source_id, "official");
+        assert_eq!(models[2].model.name, "Zulu");
+        assert_eq!(cache, original_cache);
     }
 
     #[test]

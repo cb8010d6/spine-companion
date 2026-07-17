@@ -1,6 +1,6 @@
 [package]
 name = "spine-companion"
-version = "0.2.6-rc.8"
+version = "0.2.6-rc.9"
 description = "Open-source desktop companion shell for local Spine 3.8 models."
 authors = ["Spine Companion contributors"]
 edition = "2021"
@@ -29,7 +29,7 @@ chrono = { version = "0.4", features = ["serde"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 futures = "0.3"
 sys-locale = "0.3"
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Diagnostics_ToolHelp", "Win32_System_RemoteDesktop", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
 tauri-plugin-dialog = "2.7.1"
 
 [features]

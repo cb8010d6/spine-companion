@@ -61,7 +61,8 @@ let currentUiSettings = {
   bubbleShadow: true,
   bubbleBackground: "solid",
   bubbleHoldMs: 8000,
-  dragMode: "compatible",
+  dragMode: "smooth",
+  frameRateMode: "display",
   hitboxPadding: 8
 };
 let currentBubbleAnchor = { x: 20, y: 28, scale: 1, side: "left" };
@@ -69,6 +70,7 @@ let heldBubble = null;
 let bubbleHoldTimer = null;
 let completionToastTimer = null;
 let mousePassthrough = false;
+let knownWindowPosition = null;
 let pendingMousePassthroughEvent = null;
 let mousePassthroughFrame = 0;
 let runtimeConfig = null;
@@ -85,6 +87,17 @@ const NATIVE_DRAG_STOP_IDLE_POLLS = 8;
 const NATIVE_DRAG_POLL_MS = 40;
 const NATIVE_DRAG_MAX_MS = 9000;
 
+async function refreshKnownWindowPosition() {
+  if (!window.companion?.getWindowPosition) return knownWindowPosition;
+  try {
+    const position = await window.companion.getWindowPosition();
+    if (Number.isFinite(Number(position?.x)) && Number.isFinite(Number(position?.y))) {
+      knownWindowPosition = position;
+    }
+  } catch {}
+  return knownWindowPosition;
+}
+
 function applyUiSettings(settings = {}) {
   currentUiSettings = { ...currentUiSettings, ...settings };
   if (runtimeConfig) {
@@ -97,7 +110,8 @@ function applyUiSettings(settings = {}) {
   document.body.dataset.bubbleBackground = currentUiSettings.bubbleBackground || "solid";
   applyThemePreference(currentUiSettings.theme || "system");
   player?.setHudVisible(currentUiSettings.hudVisible !== false);
-  player?.setDragMode(currentUiSettings.dragMode || "compatible");
+  player?.setDragMode(currentUiSettings.dragMode || "smooth");
+  player?.setFrameRateMode(currentUiSettings.frameRateMode || "display");
   player?.setHitboxPadding(currentUiSettings.hitboxPadding);
   syncSettingsPanel();
   updateBubble(currentState);
@@ -110,7 +124,7 @@ function syncSettingsPanel() {
   settingBubble.checked = currentUiSettings.bubbleVisible !== false;
   settingShadow.checked = currentUiSettings.bubbleShadow !== false;
   settingBubbleBackground.value = currentUiSettings.bubbleBackground || "solid";
-  settingDragMode.value = currentUiSettings.dragMode || "compatible";
+  settingDragMode.value = currentUiSettings.dragMode || "smooth";
 }
 
 async function updateUiSettings(patch) {
@@ -205,9 +219,7 @@ function elementContainsPoint(element, x, y) {
 function setMousePassthrough(enabled, force = false) {
   if (!window.companion?.setMousePassthrough || (!force && mousePassthrough === enabled)) return;
   mousePassthrough = enabled;
-  const pointerBounds = enabled
-    ? player?.getPointerRecoveryBounds?.() || player?.getInteractiveBounds?.()
-    : player?.getInteractiveBounds?.();
+  const pointerBounds = player?.getInteractiveBounds?.();
   window.companion.setMousePassthrough(enabled, pointerBounds);
 }
 
@@ -388,6 +400,7 @@ async function finishNativeDrag() {
     updateBubble(returnState);
   }
   refreshMousePassthroughSoon();
+  refreshKnownWindowPosition();
 }
 
 function startNativeDragPolling() {
@@ -400,6 +413,7 @@ function startNativeDragPolling() {
       const x = Number(position?.x);
       const y = Number(position?.y);
       if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+      knownWindowPosition = position;
       if (drag.lastWindowX === null || drag.lastWindowY === null) {
         drag.lastWindowX = x;
         drag.lastWindowY = y;
@@ -567,12 +581,12 @@ async function recoverGpuRenderer(event = {}) {
   });
   try {
     await new Promise((resolve) => window.setTimeout(resolve, 120));
-    await loadPlayer(runtimeConfig);
     const reason = event?.reason || "renderer-rebuild";
     if (event?.recreateWindow) {
       await window.companion?.restartRenderer?.({ reason });
       return;
     }
+    await loadPlayer(runtimeConfig);
     await window.companion?.recoverGpuWindow?.({ reason });
     player?.applyState(currentState, true);
     updateHud(currentState);
@@ -622,13 +636,15 @@ function startRendererHealthProbe() {
       return;
     }
     const stale = health.lastFrameAt > 0 && now - health.lastFrameAt > 3500;
+    const tickerStopped = health.tickerStarted === false;
     const invalidCanvas = health.canvasWidth <= 0 || health.canvasHeight <= 0 || health.clientWidth <= 0 || health.clientHeight <= 0;
-    const status = health.contextLost ? "context-lost" : stale ? "stale" : invalidCanvas ? "invalid-canvas" : health.trackStale ? "track-stale" : "ok";
+    const status = health.contextLost ? "context-lost" : stale ? "stale" : tickerStopped ? "ticker-stopped" : invalidCanvas ? "invalid-canvas" : health.trackStale ? "track-stale" : health.animationRecoveryExhausted ? "track-recovery-limited" : "ok";
     window.companion?.updateRendererHealth?.(rendererHealthPayload(status, status)).catch?.(() => {});
-    if ((health.contextLost || stale || invalidCanvas || health.trackStale) && !gpuRecoveryInFlight) {
+    if (health.trackStale) player?.recoverStalledAnimation?.(now);
+    if ((health.contextLost || stale || tickerStopped || invalidCanvas) && !gpuRecoveryInFlight) {
       recoverGpuRenderer({
         reason: `health-${status}`,
-        recreateWindow: stale || invalidCanvas
+        recreateWindow: stale || tickerStopped || invalidCanvas
       });
     }
   }, 1500);
@@ -637,13 +653,25 @@ function startRendererHealthProbe() {
 async function loadPlayer(config) {
   player?.destroy();
   stage.replaceChildren();
-  player = new SpinePlayer(stage, config);
-  player.onGpuContextLost = (event) => {
+  const nextPlayer = new SpinePlayer(stage, config);
+  nextPlayer.onGpuContextLost = (event) => {
     document.body.classList.add("gpu-recovering");
     console.warn("[spine-companion] WebGL context lost", event);
   };
-  player.onGpuRecoveryRequested = recoverGpuRenderer;
-  await player.init();
+  nextPlayer.onGpuRecoveryRequested = recoverGpuRenderer;
+  nextPlayer.onHealthWarning = (event) => {
+    window.companion?.updateRendererHealth?.(
+      rendererHealthPayload("track-recovery-limited", event?.reason || "animation-recovery-rate-limited")
+    ).catch?.(() => {});
+  };
+  try {
+    await nextPlayer.init();
+  } catch (error) {
+    nextPlayer.destroy();
+    player = null;
+    throw error;
+  }
+  player = nextPlayer;
   player.onAutoReturn = (state) => provider.setState({ state, source: "renderer" });
   player.onAnchorChange = (anchor) => {
     applyBubbleAnchor(anchor);
@@ -654,11 +682,12 @@ async function loadPlayer(config) {
     updateHitboxDebug();
   };
   player.setHudVisible(currentUiSettings.hudVisible !== false);
-  player.setDragMode(currentUiSettings.dragMode || "compatible");
+  player.setDragMode(currentUiSettings.dragMode || "smooth");
+  player.setFrameRateMode(currentUiSettings.frameRateMode || "display");
   player.setHitboxPadding(currentUiSettings.hitboxPadding);
   applyBubbleAnchor(player.getAnchor());
   player.applyState(currentState, true);
-  window.companion?.updatePointerBounds?.(player.getPointerRecoveryBounds?.()).catch?.(() => {});
+  window.companion?.updatePointerBounds?.(player.getInteractiveBounds?.()).catch?.(() => {});
   updateHitboxDebug();
   emptyState.hidden = true;
   onboardingDismissedForSession = true;
@@ -684,12 +713,29 @@ function showProviderError(error, context = {}) {
 
 async function hotReloadPlayer(nextConfig, statusText = "") {
   try {
-    await loadPlayer(nextConfig);
+    if (player) {
+      await player.replaceConfig(nextConfig, currentState);
+      player.setHudVisible(currentUiSettings.hudVisible !== false);
+      player.setDragMode(currentUiSettings.dragMode || "smooth");
+      player.setFrameRateMode(currentUiSettings.frameRateMode || "display");
+      player.setHitboxPadding(currentUiSettings.hitboxPadding);
+      window.companion?.updatePointerBounds?.(player.getInteractiveBounds?.()).catch?.(() => {});
+    } else {
+      await loadPlayer(nextConfig);
+    }
     if (statusText && modelStatus) modelStatus.textContent = statusText;
   } catch (error) {
+    if (player?.spine) {
+      runtimeConfig = player.config;
+      if (modelStatus) modelStatus.textContent = `Model switch failed; kept the previous model. ${error.message || error}`;
+      console.warn("[spine-companion] model switch failed; previous model retained", error);
+      refreshMousePassthroughSoon();
+      return false;
+    }
     showEmptyState(error, nextConfig);
     showErrorBoundary(error, nextConfig);
     if (modelStatus) modelStatus.textContent = error.message;
+    return false;
   }
 }
 
@@ -721,6 +767,7 @@ function wireDragging() {
       return;
     }
     const returnState = { ...currentState };
+    setMousePassthrough(false);
     drag = {
       moved: false,
       x: event.screenX,
@@ -738,7 +785,8 @@ function wireDragging() {
       lastWindowX: null,
       lastWindowY: null,
       pointerId: event.pointerId,
-      pointerType: event.pointerType || "mouse"
+      pointerType: event.pointerType || "mouse",
+      startWindowPosition: knownWindowPosition
     };
     document.body.classList.add("is-dragging");
     player?.setDragActive(true);
@@ -779,7 +827,8 @@ function wireDragging() {
       drag.moved = true;
       progressBubble.hidden = true;
     }
-    if (drag.moved && window.companion?.nativeStartDrag && shouldUseNativeWindowDrag(drag.pointerType)) {
+    if (drag.moved && window.companion?.nativeStartDrag
+      && shouldUseNativeWindowDrag(drag.pointerType, drag.startWindowPosition)) {
       beginNativeDrag(event);
       return;
     }
@@ -840,6 +889,7 @@ function wireDragging() {
     drag = null;
     player?.setDragActive(false);
     document.body.classList.remove("is-dragging");
+    refreshKnownWindowPosition();
     try {
       if (shell.hasPointerCapture?.(event.pointerId)) shell.releasePointerCapture(event.pointerId);
     } catch {}
@@ -847,6 +897,7 @@ function wireDragging() {
       if (provider) {
         await provider.setState(returnState);
       }
+      refreshMousePassthroughSoon();
       return;
     }
     if (cancelled) {
@@ -889,6 +940,7 @@ function applyMainLocale(config = {}) {
 async function boot() {
   // Install the desktop bridge when running inside Tauri.
   if (isTauri()) await initTauriBridge();
+  await refreshKnownWindowPosition();
   const config = await loadRuntimeConfig();
   applyMainLocale(config);
   runtimeConfig = config;
@@ -931,6 +983,7 @@ async function boot() {
     player?.adjustUserScale(Number(payload?.delta || 0));
     refreshMousePassthroughSoon();
   });
+  window.companion?.onPointerProximity?.((near) => player?.setPointerProximity?.(near));
 
   window.companion?.onModelImported?.((result) => {
     if (modelStatus) modelStatus.textContent = `Imported from ${result.assetDir}.`;

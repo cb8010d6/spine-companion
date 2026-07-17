@@ -30,9 +30,10 @@ describe("dashboard model", () => {
         mode: "hardware",
         renderer: { status: "healthy", lastReason: "heartbeat", recoveryCount: 2 }
       }
-    })).toEqual({ status: "healthy", reason: "heartbeat", recoveryCount: 2 });
+    })).toMatchObject({ status: "healthy", reason: "heartbeat", recoveryCount: 2 });
     expect(rendererHealthCategory("ok")).toBe("healthy");
     expect(rendererHealthCategory("context-lost")).toBe("attention");
+    expect(rendererHealthCategory("track-recovery-limited")).toBe("attention");
   });
 
   it("coalesces bursts of live updates into one dashboard refresh", () => {

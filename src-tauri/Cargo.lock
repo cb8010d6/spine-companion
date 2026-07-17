@@ -3628,7 +3628,7 @@ dependencies = [
 
 [[package]]
 name = "spine-companion"
-version = "0.2.6-rc.8"
+version = "0.2.6-rc.9"
 dependencies = [
  "axum",
  "chrono",

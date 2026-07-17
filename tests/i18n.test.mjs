@@ -20,6 +20,17 @@ describe("i18n", () => {
     expect(detectLocale({ ui: { locale: "zh-CN" } }, { language: "en-US" })).toBe("zh-CN");
   });
 
+  it.each(["auto", "system", ""])("uses navigator.languages for the %j locale setting", (locale) => {
+    expect(detectLocale(
+      { ui: { locale } },
+      { languages: ["zh-Hans-CN", "en-US"], language: "en-US" }
+    )).toBe("zh-CN");
+  });
+
+  it("falls back to navigator.language when navigator.languages is empty", () => {
+    expect(detectLocale({ ui: { locale: "auto" } }, { languages: [], language: "zh-TW" })).toBe("zh-CN");
+  });
+
   it("translates keys and falls back to English", () => {
     createI18n({ ui: { locale: "zh-CN" } }, { language: "en-US" });
     expect(t("manager.library.title")).toBe("模型库");
@@ -34,5 +45,13 @@ describe("i18n", () => {
     expect(t("panel.reminders.none")).toBe("No reminders");
     expect(t("panel.pin.pinned")).toBe("Pinned");
     expect(t("state.reviewing")).toBe("Reviewing");
+    expect(t("manager.field.frameRateMode")).toBe("Animation frame rate");
+    expect(t("manager.option.frameRateMode.display")).toBe("Match display");
+  });
+
+  it("localizes aggregate sources and frame-rate settings in Chinese", () => {
+    setLocale("zh-CN");
+    expect(t("manager.library.allSources")).toBe("全部已启用来源");
+    expect(t("manager.field.frameRateMode")).toBe("动画帧率");
   });
 });

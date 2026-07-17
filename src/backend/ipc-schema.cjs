@@ -39,6 +39,7 @@ const uiSettingsSchema = z.object({
   bubbleBackground: z.enum(["solid", "soft", "clear", "light"]).optional(),
   bubbleHoldMs: z.number().min(1500).max(60000).optional(),
   dragMode: z.enum(["compatible", "smooth"]).optional(),
+  frameRateMode: z.enum(["display", "60", "30"]).optional(),
   autoRevealOnMcp: z.boolean().optional(),
   systemNotifications: z.boolean().optional(),
   updateAutoCheck: z.boolean().optional(),

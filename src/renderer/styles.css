@@ -76,10 +76,6 @@ canvas {
   will-change: transform;
 }
 
-.is-dragging.dragging-compatible canvas {
-  filter: saturate(1.01);
-}
-
 .gpu-recovering canvas {
   visibility: hidden;
 }
@@ -126,6 +122,10 @@ canvas {
   transform: scale(var(--bubble-scale, 1));
   transform-origin: left bottom;
   animation: bubble-in 160ms ease-out;
+}
+
+body[data-bubble-background="solid"] .progress-bubble {
+  backdrop-filter: none;
 }
 
 body[data-bubble-background="soft"] .progress-bubble {
