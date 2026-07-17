@@ -13,6 +13,10 @@ safer model-library pipeline.
 - Drive Spine animation from one Pixi ticker, expose track health diagnostics,
   and recover stalled looping tracks through replay, instance rebuild, and
   finally WebView reconstruction with cooldown and rate limiting.
+- On Windows, the native watchdog now checks the current session's DWM process
+  at a low frequency. If an AMD driver failure restarts desktop composition while
+  WebGL still appears healthy, the companion WebView is rebuilt instead of
+  leaving a black transparent surface on screen.
 - Convert custom touch, pen, and mouse-fallback drag distances from WebView CSS
   pixels to native physical pixels. High-DPI touch movement now matches the
   user's gesture instead of moving the companion a shorter distance.
@@ -38,7 +42,7 @@ safer model-library pipeline.
 
 ## Validation
 
-- 219 JavaScript tests and 89 Rust tests passed. Project checks, MCP bridge
+- 219 JavaScript tests and 91 Rust tests passed. Project checks, MCP bridge
   checks, the packaged MCP smoke test, and the frontend production build also
   passed locally.
 - All 2,909 current Ark model entries were audited; no legitimate catalog file

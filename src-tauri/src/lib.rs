@@ -29,7 +29,18 @@ use tauri::{
 use tauri_plugin_notification::NotificationExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 #[cfg(target_os = "windows")]
-use windows_sys::Win32::{Foundation::POINT, UI::WindowsAndMessaging::GetCursorPos};
+use windows_sys::Win32::{
+    Foundation::{CloseHandle, INVALID_HANDLE_VALUE, POINT},
+    System::{
+        Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+            TH32CS_SNAPPROCESS,
+        },
+        RemoteDesktop::ProcessIdToSessionId,
+        Threading::GetCurrentProcessId,
+    },
+    UI::WindowsAndMessaging::GetCursorPos,
+};
 
 const MAX_MODEL_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_MODEL_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
@@ -3579,6 +3590,51 @@ struct WindowPosition {
     height: u32,
 }
 
+fn dwm_process_changed(previous: Option<u32>, current: Option<u32>) -> bool {
+    matches!((previous, current), (Some(previous), Some(current)) if previous != current)
+}
+
+#[cfg(target_os = "windows")]
+fn current_session_dwm_process_id() -> Option<u32> {
+    let mut current_session = 0u32;
+    if unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut current_session) } == 0 {
+        return None;
+    }
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return None;
+    }
+
+    let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
+    entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+    let mut result = None;
+    let mut fallback = None;
+    let mut has_entry = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
+    while has_entry {
+        let name_end = entry
+            .szExeFile
+            .iter()
+            .position(|character| *character == 0)
+            .unwrap_or(entry.szExeFile.len());
+        let process_name = String::from_utf16_lossy(&entry.szExeFile[..name_end]);
+        if process_name.eq_ignore_ascii_case("dwm.exe") {
+            fallback.get_or_insert(entry.th32ProcessID);
+            let mut process_session = 0u32;
+            if unsafe { ProcessIdToSessionId(entry.th32ProcessID, &mut process_session) } != 0
+                && process_session == current_session
+            {
+                result = Some(entry.th32ProcessID);
+                break;
+            }
+        }
+        has_entry = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
+    }
+    unsafe {
+        CloseHandle(snapshot);
+    }
+    result.or(fallback)
+}
+
 #[tauri::command]
 fn get_window_position(window: tauri::Window) -> Result<WindowPosition, String> {
     let position = window.outer_position().map_err(|error| error.to_string())?;
@@ -3722,11 +3778,33 @@ fn start_renderer_watchdog(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut visible_since: Option<Instant> = None;
         let mut last_probe = Instant::now();
+        #[cfg(target_os = "windows")]
+        let mut last_dwm_process_id = current_session_dwm_process_id();
+        #[cfg(target_os = "windows")]
+        let mut dwm_probe_tick = 0u8;
         loop {
             tokio::time::sleep(Duration::from_secs(2)).await;
             let probe_at = Instant::now();
             let resumed_after_sleep = probe_at.duration_since(last_probe) > Duration::from_secs(6);
             last_probe = probe_at;
+            #[cfg(target_os = "windows")]
+            {
+                dwm_probe_tick = dwm_probe_tick.wrapping_add(1);
+                if dwm_probe_tick % 2 == 0 {
+                    let current_dwm_process_id = current_session_dwm_process_id();
+                    if dwm_process_changed(last_dwm_process_id, current_dwm_process_id) {
+                        last_dwm_process_id = current_dwm_process_id;
+                        tokio::time::sleep(Duration::from_millis(800)).await;
+                        let _ = recreate_main_window(&app, "native-dwm-process-restarted");
+                        visible_since = Some(Instant::now());
+                        last_probe = Instant::now();
+                        continue;
+                    }
+                    if current_dwm_process_id.is_some() {
+                        last_dwm_process_id = current_dwm_process_id;
+                    }
+                }
+            }
             let Some(window) = app.get_webview_window("main") else {
                 visible_since = None;
                 continue;
@@ -5126,6 +5204,21 @@ mod tests {
         health.status_changed_at = 1_000;
         assert!(!renderer_heartbeat_stale(&health, 20_000));
         assert!(renderer_heartbeat_stale(&health, 22_000));
+    }
+
+    #[test]
+    fn renderer_watchdog_only_treats_confirmed_dwm_pid_changes_as_restarts() {
+        assert!(!dwm_process_changed(None, None));
+        assert!(!dwm_process_changed(None, Some(100)));
+        assert!(!dwm_process_changed(Some(100), None));
+        assert!(!dwm_process_changed(Some(100), Some(100)));
+        assert!(dwm_process_changed(Some(100), Some(101)));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn renderer_watchdog_finds_the_current_session_dwm_process() {
+        assert!(current_session_dwm_process_id().is_some());
     }
 
     #[test]
