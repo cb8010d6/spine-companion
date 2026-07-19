@@ -83,9 +83,21 @@ let lastRendererRecoveryAt = 0;
 let rendererHealthGraceUntil = 0;
 let lastRendererProbeAt = 0;
 let hitboxDebug = null;
+let presentationSaveTimer = 0;
 const NATIVE_DRAG_STOP_IDLE_POLLS = 8;
 const NATIVE_DRAG_POLL_MS = 40;
 const NATIVE_DRAG_MAX_MS = 9000;
+
+function persistActivePresentation(presentation) {
+  const modelId = String(runtimeConfig?.spine?.modelId || "");
+  if (!modelId || !window.companion?.saveModelPresentation) return;
+  window.clearTimeout(presentationSaveTimer);
+  presentationSaveTimer = window.setTimeout(() => {
+    window.companion.saveModelPresentation({ modelId, ...presentation }).catch((error) => {
+      console.warn("[spine-companion] model presentation could not be saved", error);
+    });
+  }, 280);
+}
 
 async function refreshKnownWindowPosition() {
   if (!window.companion?.getWindowPosition) return knownWindowPosition;
@@ -219,8 +231,8 @@ function elementContainsPoint(element, x, y) {
 function setMousePassthrough(enabled, force = false) {
   if (!window.companion?.setMousePassthrough || (!force && mousePassthrough === enabled)) return;
   mousePassthrough = enabled;
-  const pointerBounds = player?.getInteractiveBounds?.();
-  window.companion.setMousePassthrough(enabled, pointerBounds);
+  const pointerRegions = player?.getInteractiveRegions?.() || [];
+  window.companion.setMousePassthrough(enabled, pointerRegions);
 }
 
 function ensureHitboxDebug() {
@@ -235,13 +247,17 @@ function ensureHitboxDebug() {
 function updateHitboxDebug() {
   const box = ensureHitboxDebug();
   const enabled = currentUiSettings.hudVisible !== false && runtimeConfig?.ui?.debugHitbox === true;
-  const bounds = player?.getInteractiveBounds?.();
-  box.hidden = !enabled || !bounds;
+  const regions = player?.getInteractiveRegions?.() || [];
+  box.hidden = !enabled || !regions.length;
   if (box.hidden) return;
-  box.style.left = `${Math.round(bounds.left)}px`;
-  box.style.top = `${Math.round(bounds.top)}px`;
-  box.style.width = `${Math.max(1, Math.round(bounds.right - bounds.left))}px`;
-  box.style.height = `${Math.max(1, Math.round(bounds.bottom - bounds.top))}px`;
+  box.replaceChildren(...regions.map((bounds) => {
+    const region = document.createElement("span");
+    region.style.left = `${Math.round(bounds.left)}px`;
+    region.style.top = `${Math.round(bounds.top)}px`;
+    region.style.width = `${Math.max(1, Math.round(bounds.right - bounds.left))}px`;
+    region.style.height = `${Math.max(1, Math.round(bounds.bottom - bounds.top))}px`;
+    return region;
+  }));
 }
 
 function refreshMousePassthroughSoon() {
@@ -672,13 +688,14 @@ async function loadPlayer(config) {
     throw error;
   }
   player = nextPlayer;
+  player.onPresentationChange = persistActivePresentation;
   player.onAutoReturn = (state) => provider.setState({ state, source: "renderer" });
   player.onAnchorChange = (anchor) => {
     applyBubbleAnchor(anchor);
     updateBubble(currentState);
   };
-  player.onInteractiveBoundsChange = (bounds) => {
-    window.companion?.updatePointerBounds?.(bounds).catch?.(() => {});
+  player.onInteractiveBoundsChange = (regions) => {
+    window.companion?.updatePointerBounds?.(regions || []).catch?.(() => {});
     updateHitboxDebug();
   };
   player.setHudVisible(currentUiSettings.hudVisible !== false);
@@ -687,7 +704,7 @@ async function loadPlayer(config) {
   player.setHitboxPadding(currentUiSettings.hitboxPadding);
   applyBubbleAnchor(player.getAnchor());
   player.applyState(currentState, true);
-  window.companion?.updatePointerBounds?.(player.getInteractiveBounds?.()).catch?.(() => {});
+  window.companion?.updatePointerBounds?.(player.getInteractiveRegions?.() || []).catch?.(() => {});
   updateHitboxDebug();
   emptyState.hidden = true;
   onboardingDismissedForSession = true;
@@ -719,7 +736,7 @@ async function hotReloadPlayer(nextConfig, statusText = "") {
       player.setDragMode(currentUiSettings.dragMode || "smooth");
       player.setFrameRateMode(currentUiSettings.frameRateMode || "display");
       player.setHitboxPadding(currentUiSettings.hitboxPadding);
-      window.companion?.updatePointerBounds?.(player.getInteractiveBounds?.()).catch?.(() => {});
+      window.companion?.updatePointerBounds?.(player.getInteractiveRegions?.() || []).catch?.(() => {});
     } else {
       await loadPlayer(nextConfig);
     }
@@ -981,6 +998,12 @@ async function boot() {
       return;
     }
     player?.adjustUserScale(Number(payload?.delta || 0));
+    refreshMousePassthroughSoon();
+  });
+  window.companion?.onModelPresentation?.((payload) => {
+    if (!payload?.active || payload.modelId !== runtimeConfig?.spine?.modelId) return;
+    runtimeConfig.spine = { ...runtimeConfig.spine, ...(payload.presentation || {}) };
+    player?.setPresentation?.(payload.presentation || {}, false);
     refreshMousePassthroughSoon();
   });
   window.companion?.onPointerProximity?.((near) => player?.setPointerProximity?.(near));

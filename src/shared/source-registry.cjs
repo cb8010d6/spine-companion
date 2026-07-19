@@ -9,6 +9,7 @@ const KNOWN_SOURCES = [
   { id: "antigravity", label: "Antigravity", patterns: [/^antigravity(?:-|$)/i] },
   { id: "opencode", label: "OpenCode", patterns: [/^opencode(?:-|$)/i, /^open-code(?:-|$)/i] },
   { id: "mimocode", label: "MiMoCode", patterns: [/^mimocode(?:-|$)/i, /^mimo(?:-|$)/i] },
+  { id: "kimi", label: "Kimi", patterns: [/^kimi(?:-|$)/i, /^moonshot(?:-|$)/i] },
   { id: "windsurf", label: "Windsurf", patterns: [/^windsurf(?:-|$)/i] },
   { id: "continue", label: "Continue", patterns: [/^continue(?:-|$)/i] },
   { id: "zed", label: "Zed", patterns: [/^zed(?:-|$)/i] },

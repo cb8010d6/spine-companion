@@ -21,6 +21,7 @@ pub struct IntegrationEnv {
     pub appdata: PathBuf,
     pub local_appdata: PathBuf,
     pub config_home: PathBuf,
+    pub kimi_share_dir: PathBuf,
 }
 
 impl IntegrationEnv {
@@ -44,11 +45,15 @@ impl IntegrationEnv {
                     home.join(".config")
                 }
             });
+        let kimi_share_dir = std::env::var("KIMI_SHARE_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| home.join(".kimi"));
         Some(Self {
             home,
             appdata,
             local_appdata,
             config_home,
+            kimi_share_dir,
         })
     }
 }
@@ -406,6 +411,20 @@ fn definitions(env: &IntegrationEnv) -> Vec<IntegrationDefinition> {
             note: "Best-effort support. MiMoCode MCP config is not publicly documented.",
         },
         IntegrationDefinition {
+            id: "kimi-code",
+            name: "Kimi Code CLI",
+            source: "kimi-mcp",
+            source_label: "Kimi",
+            format: IntegrationFormat::McpServersJson,
+            config_paths: vec![env.kimi_share_dir.join("mcp.json")],
+            app_probes: vec![
+                env.kimi_share_dir.clone(),
+                env.home.join(".local").join("bin").join("kimi"),
+                env.home.join(".local").join("bin").join("kimi.exe"),
+            ],
+            note: "Writes the official Kimi Code CLI MCP config. Project AGENTS.md guidance remains copy-only because Kimi loads instructions per workspace.",
+        },
+        IntegrationDefinition {
             id: "custom",
             name: "Custom MCP Client",
             source: "ai-mcp",
@@ -586,13 +605,15 @@ fn generate_agent_instructions_with_env(
         );
     }
     let integration = integration_from_def(env, &def);
-    let target = instructions_path_for_def(env, &def)
-        .ok_or_else(|| "No instruction target is defined for this tool".to_string())?;
+    let target = instructions_path_for_def(env, &def);
     let body = instruction_body(&def);
     Ok(AgentInstructions {
         integration,
-        target_path: target.to_string_lossy().to_string(),
-        exists: target.exists(),
+        target_path: target
+            .as_ref()
+            .map(|path| path.to_string_lossy().to_string())
+            .unwrap_or_default(),
+        exists: target.as_ref().map(|path| path.exists()).unwrap_or(false),
         title: instruction_title(&def),
         body,
     })
@@ -1798,6 +1819,7 @@ mod tests {
             appdata: root.join("appdata"),
             local_appdata: root.join("localappdata"),
             config_home: root.join("config"),
+            kimi_share_dir: root.join("home").join(".kimi"),
         }
     }
 
@@ -1846,6 +1868,46 @@ mod tests {
         let first = render_config_text(&def, "", &exe, "http://127.0.0.1:17388").unwrap();
         let second = render_config_text(&def, &first, &exe, "http://127.0.0.1:17388").unwrap();
         assert_eq!(second.matches("[mcp_servers.spine_companion]").count(), 1);
+    }
+
+    #[test]
+    fn kimi_uses_official_mcp_path_and_source_metadata() {
+        let root = temp_root("kimi");
+        let env = fixture_env(&root);
+        fs::create_dir_all(&env.kimi_share_dir).unwrap();
+        let def = definitions(&env)
+            .into_iter()
+            .find(|item| item.id == "kimi-code")
+            .unwrap();
+        assert_eq!(
+            selected_config_path(&def),
+            Some(env.kimi_share_dir.join("mcp.json"))
+        );
+
+        let exe = PathBuf::from("C:/Program Files/Spine Companion/spine-companion.exe");
+        let rendered = render_config_text(&def, "{}", &exe, "http://127.0.0.1:17388").unwrap();
+        let value: Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(
+            value["mcpServers"]["spine_companion"]["env"]["COMPANION_SOURCE"],
+            "kimi-mcp"
+        );
+        assert_eq!(
+            value["mcpServers"]["spine_companion"]["env"]["COMPANION_SOURCE_LABEL"],
+            "Kimi"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn kimi_instructions_are_copy_only_for_project_agents_md() {
+        let root = temp_root("kimi-instructions");
+        let env = fixture_env(&root);
+        let result = generate_agent_instructions_with_env(&env, "kimi-code").unwrap();
+        assert!(result.target_path.is_empty());
+        assert!(!result.exists);
+        assert!(result.body.contains("kimi-mcp"));
+        assert!(install_agent_instructions_with_env(&env, "kimi-code").is_err());
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

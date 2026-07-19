@@ -2,7 +2,7 @@ import * as PIXI from "pixi.js";
 import { Spine } from "pixi-spine";
 import { animationForState, stateMachine } from "./state.js";
 import { spineAssetUrl } from "../shared/asset-url.js";
-import { calculateInteractiveBounds, expandBounds, transformLocalBounds } from "./hitbox.js";
+import { calculateInteractiveBounds, compactPointerRegions, expandBounds, normalizePointerRegions, transformLocalBounds, unionPointerRegions } from "./hitbox.js";
 import { acquireSpineAsset } from "./spine-asset-handle.js";
 
 const ACTIVE_BOUNDS_STATES = new Set(["working", "running", "reviewing", "success", "reminder", "failed"]);
@@ -43,8 +43,11 @@ export function modelCoreFitStates(spineConfig = {}) {
 }
 
 export function modelViewportProfile(spineConfig = {}) {
-  const illustration = spineConfig.modelCategory === "illustration"
-    || spineConfig.compatibilityProfile === "idle-only";
+  const fitMode = String(spineConfig.fitMode || "legacy");
+  const illustration = fitMode === "character" || (fitMode === "legacy" && (
+    spineConfig.modelCategory === "illustration"
+    || spineConfig.compatibilityProfile === "idle-only"
+  ));
   const configuredPadding = Math.max(1, Number(spineConfig.framePadding || 1.12));
   const configuredFill = Math.max(0.45, Math.min(0.9, Number(spineConfig.maxViewportFill || 0.72)));
   return illustration
@@ -166,6 +169,8 @@ export class SpinePlayer {
     this.pointerNear = false;
     this.minUserScale = 0.35;
     this.maxUserScale = 1.55;
+    this.minPresentationScale = 0.2;
+    this.maxPresentationScale = 2.5;
     this.baseFitScale = null;
     this.lastLayoutSize = { width: 0, height: 0 };
     this.resizeTimer = null;
@@ -234,7 +239,7 @@ export class SpinePlayer {
     };
     this.handleWheel = (event) => {
       event.preventDefault();
-      this.adjustUserScale(event.deltaY > 0 ? -0.05 : 0.05);
+      this.adjustPresentationScale(event.deltaY > 0 ? -0.05 : 0.05);
     };
     this.handleVisibilityChange = () => {
       this.resetDeltaOnNextTick = true;
@@ -322,13 +327,14 @@ export class SpinePlayer {
   }
 
   emitInteractiveBounds(force = false) {
-    const bounds = this.getInteractiveBounds();
-    const previous = this.lastEmittedBounds;
-    const changed = force || !bounds || !previous
-      || ["left", "right", "top", "bottom"].some((key) => Math.abs(bounds[key] - previous[key]) >= 1);
+    const regions = this.getInteractiveRegions();
+    const previous = this.lastEmittedRegions || [];
+    const changed = force || regions.length !== previous.length
+      || regions.some((bounds, index) => ["left", "right", "top", "bottom"]
+        .some((key) => Math.abs(bounds[key] - previous[index]?.[key]) >= 1));
     if (!changed) return;
-    this.lastEmittedBounds = bounds ? { ...bounds } : null;
-    this.onInteractiveBoundsChange?.(this.lastEmittedBounds);
+    this.lastEmittedRegions = regions.map((bounds) => ({ ...bounds }));
+    this.onInteractiveBoundsChange?.(this.lastEmittedRegions);
   }
 
   setPointerProximity(near) {
@@ -453,6 +459,7 @@ export class SpinePlayer {
         boundsSamples: nextConfig.spine.boundsSamples
       });
       this.config = nextConfig;
+      this.userScale = 1;
       this.configureSpineInstance(this.spine, nextConfig);
       this.frameRateMode = normalizeFrameRateMode(nextConfig.ui?.frameRateMode);
       this.applyTickerMode();
@@ -527,22 +534,55 @@ export class SpinePlayer {
   }
 
   setUserScale(scale) {
-    const nextScale = Number(scale);
-    this.userScale = Number.isFinite(nextScale)
-      ? Math.min(this.maxUserScale, Math.max(this.minUserScale, nextScale))
+    this.setPresentationScale(scale);
+  }
+
+  setPresentation(presentation = {}, notify = false) {
+    if (!this.config.spine) this.config.spine = {};
+    const scale = Number(presentation.scale ?? this.config.spine.scale ?? 1);
+    const offsetX = Number(presentation.offsetX ?? this.config.spine.offsetX ?? 0);
+    const offsetY = Number(presentation.offsetY ?? this.config.spine.offsetY ?? 0);
+    this.config.spine.scale = Number.isFinite(scale)
+      ? Math.min(this.maxPresentationScale, Math.max(this.minPresentationScale, scale))
       : 1;
+    this.config.spine.offsetX = Number.isFinite(offsetX) ? offsetX : 0;
+    this.config.spine.offsetY = Number.isFinite(offsetY) ? offsetY : 0;
+    this.config.spine.fitMode = ["legacy", "character", "full"].includes(presentation.fitMode)
+      ? presentation.fitMode
+      : String(this.config.spine.fitMode || "legacy");
+    this.userScale = 1;
+    this.baseFitScale = null;
     this.layout();
     this.emitInteractiveBounds(true);
+    if (notify) this.onPresentationChange?.(this.getPresentation());
+  }
+
+  getPresentation() {
+    return {
+      scale: Number(this.config.spine?.scale || 1),
+      offsetX: Number(this.config.spine?.offsetX || 0),
+      offsetY: Number(this.config.spine?.offsetY || 0),
+      fitMode: String(this.config.spine?.fitMode || "legacy")
+    };
+  }
+
+  setPresentationScale(scale, notify = true) {
+    this.setPresentation({ ...this.getPresentation(), scale }, notify);
+  }
+
+  adjustPresentationScale(delta) {
+    const nextDelta = Number(delta);
+    if (!Number.isFinite(nextDelta)) return;
+    this.setPresentationScale(Number(this.config.spine?.scale || 1) + nextDelta);
   }
 
   adjustUserScale(delta) {
-    const nextDelta = Number(delta);
-    if (!Number.isFinite(nextDelta)) return;
-    this.setUserScale(this.userScale + nextDelta);
+    this.adjustPresentationScale(delta);
   }
 
   resetUserScale() {
-    this.setUserScale(1);
+    const defaultScale = Number(this.config.spine?.presentationDefaults?.scale || 0.86);
+    this.setPresentationScale(defaultScale);
   }
 
   setHudVisible(visible) {
@@ -871,11 +911,13 @@ export class SpinePlayer {
     if (!this.spine || !(this.fitBounds || this.stableBounds)) return;
     const bounds = this.fitBounds || this.stableBounds;
     const side = this.direction === "left" ? 1 : -1;
-    const smallModel = this.userScale < 0.82;
-    const tinyModel = this.userScale < 0.68;
+    const defaultScale = Math.max(0.01, Number(this.config.spine?.presentationDefaults?.scale || 0.86));
+    const presentationRatio = Number(this.config.spine?.scale || 1) / defaultScale;
+    const smallModel = presentationRatio < 0.82;
+    const tinyModel = presentationRatio < 0.68;
     const horizontalFactor = tinyModel ? 1.05 : smallModel ? 0.78 : 0.38;
     const verticalFactor = tinyModel ? 0.78 : smallModel ? 0.84 : 0.8;
-    const anchorScale = Math.max(0.62, Math.min(1.08, 0.56 + this.userScale * 0.38));
+    const anchorScale = Math.max(0.62, Math.min(1.08, 0.56 + presentationRatio * 0.38));
     const x = this.model.x + side * bounds.width * this.screenScale * horizontalFactor;
     const modelTop = this.model.y - bounds.height * this.screenScale;
     const modelWidth = bounds.width * this.screenScale;
@@ -965,8 +1007,30 @@ export class SpinePlayer {
     });
   }
 
+  getInteractiveRegions() {
+    if (!this.spine) return [];
+    const slotBounds = [];
+    for (const slotContainer of this.spine.children || []) {
+      if (!slotContainer?.visible || !slotContainer?.renderable || Number(slotContainer.worldAlpha ?? 1) <= 0.01) continue;
+      try {
+        const bounds = slotContainer.getBounds?.(true);
+        if (bounds && Number(bounds.width) > 1 && Number(bounds.height) > 1) {
+          slotBounds.push({
+            left: Number(bounds.left ?? bounds.x),
+            right: Number(bounds.right ?? (bounds.x + bounds.width)),
+            top: Number(bounds.top ?? bounds.y),
+            bottom: Number(bounds.bottom ?? (bounds.y + bounds.height))
+          });
+        }
+      } catch {}
+    }
+    const padding = Math.max(2, Math.min(8, Number(this.hitboxPadding || 0) * 0.5));
+    const regions = compactPointerRegions(slotBounds, { maxRegions: 16, padding });
+    return regions.length ? regions : normalizePointerRegions(this.getInteractiveBounds());
+  }
+
   getPointerRecoveryBounds() {
-    const bounds = this.getInteractiveBounds();
+    const bounds = unionPointerRegions(this.getInteractiveRegions()) || this.getInteractiveBounds();
     if (!bounds) return null;
     const recoveryPadding = Math.max(10, Math.min(24, 12 + this.hitboxPadding * 0.5));
     return expandBounds(bounds, recoveryPadding);

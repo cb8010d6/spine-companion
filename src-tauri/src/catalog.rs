@@ -471,6 +471,57 @@ pub fn cached_enabled_models(
     models
 }
 
+/// Resolve one model from the validated cache of one configured, enabled source.
+///
+/// Unlike [`cached_enabled_models`], this is intentionally strict because the
+/// returned URLs and digests may be used for preview or installation. Invalid
+/// source configuration, duplicate source ids, and invalid cached documents are
+/// therefore reported instead of being skipped.
+pub fn resolve_cached_model_entry(
+    sources: &[CatalogSource],
+    cache: &CatalogCache,
+    source_id: &str,
+    model_id: &str,
+) -> Result<CatalogModelEntry, String> {
+    validate_identifier(source_id, "Catalog source id")?;
+    validate_identifier(model_id, "Model id")?;
+
+    let mut matching_sources = sources.iter().filter(|source| source.id == source_id);
+    let source = matching_sources
+        .next()
+        .ok_or_else(|| format!("Catalog source is not configured: {source_id}"))?;
+    if matching_sources.next().is_some() {
+        return Err(format!(
+            "Catalog source id is configured more than once and is ambiguous: {source_id}"
+        ));
+    }
+    if !source.enabled {
+        return Err(format!("Catalog source is disabled: {source_id}"));
+    }
+    source
+        .validate()
+        .map_err(|error| format!("Invalid catalog source {source_id}: {error}"))?;
+
+    let cached = cache.entries.get(source_id).ok_or_else(|| {
+        format!("No validated cached catalog is available for source: {source_id}")
+    })?;
+    cached
+        .document
+        .validate()
+        .map_err(|error| format!("Invalid cached catalog for source {source_id}: {error}"))?;
+
+    let model = cached
+        .document
+        .models
+        .iter()
+        .find(|model| model.id == model_id)
+        .ok_or_else(|| format!("Catalog model {model_id} was not found in source: {source_id}"))?;
+    Ok(CatalogModelEntry {
+        catalog_source_id: source_id.to_string(),
+        model: model.clone(),
+    })
+}
+
 fn sort_catalog_models(models: &mut [CatalogModelEntry]) {
     models.sort_by(|left, right| {
         left.model
@@ -696,6 +747,8 @@ pub struct CatalogSearchRequest {
     pub runtime_spine_version: Option<SpineVersion>,
     #[serde(default)]
     pub include_incompatible: bool,
+    #[serde(default)]
+    pub installation_filter: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -1020,6 +1073,7 @@ mod tests {
                 page_size: 1,
                 runtime_spine_version: Some(SpineVersion::parse("3.8.99").unwrap()),
                 include_incompatible: false,
+                installation_filter: String::new(),
             },
         );
         assert_eq!(result.total, 1);
@@ -1156,6 +1210,140 @@ mod tests {
         assert_eq!(models[2].catalog_source_id, "official");
         assert_eq!(models[2].model.name, "Zulu");
         assert_eq!(cache, original_cache);
+    }
+
+    #[test]
+    fn resolves_an_exact_validated_cached_model() {
+        let source = source(CatalogSourceKind::Official);
+        let expected = model("alpha", "Alpha", "3.8");
+        let cache = CatalogCache {
+            entries: BTreeMap::from([(
+                source.id.clone(),
+                CachedCatalog {
+                    metadata: SourceCacheMetadata::default(),
+                    document: CatalogDocument {
+                        schema_version: CATALOG_SCHEMA_VERSION,
+                        models: vec![expected.clone(), model("beta", "Beta", "3.8")],
+                    },
+                },
+            )]),
+        };
+
+        let resolved =
+            resolve_cached_model_entry(&[source.clone()], &cache, &source.id, "alpha").unwrap();
+
+        assert_eq!(resolved.catalog_source_id, source.id);
+        assert_eq!(resolved.model, expected);
+    }
+
+    #[test]
+    fn rejects_missing_disabled_and_ambiguous_sources() {
+        let enabled = source(CatalogSourceKind::Official);
+        let mut disabled = enabled.clone();
+        disabled.id = "disabled".to_string();
+        disabled.enabled = false;
+        let cache = CatalogCache::default();
+
+        let missing =
+            resolve_cached_model_entry(&[enabled.clone()], &cache, "missing", "alpha").unwrap_err();
+        assert!(missing.contains("not configured"));
+
+        let disabled_error =
+            resolve_cached_model_entry(&[disabled], &cache, "disabled", "alpha").unwrap_err();
+        assert!(disabled_error.contains("disabled"));
+
+        let ambiguous =
+            resolve_cached_model_entry(&[enabled.clone(), enabled], &cache, "community", "alpha")
+                .unwrap_err();
+        assert!(ambiguous.contains("ambiguous"));
+    }
+
+    #[test]
+    fn rejects_invalid_source_and_missing_cache_or_model() {
+        let valid = source(CatalogSourceKind::Official);
+        let mut invalid = valid.clone();
+        invalid.catalog_url = "http://catalog.example.test/models.json".to_string();
+        let invalid_error =
+            resolve_cached_model_entry(&[invalid], &CatalogCache::default(), "community", "alpha")
+                .unwrap_err();
+        assert!(invalid_error.contains("Invalid catalog source"));
+
+        let missing_cache = resolve_cached_model_entry(
+            &[valid.clone()],
+            &CatalogCache::default(),
+            "community",
+            "alpha",
+        )
+        .unwrap_err();
+        assert!(missing_cache.contains("No validated cached catalog"));
+
+        let cache = CatalogCache {
+            entries: BTreeMap::from([(
+                valid.id.clone(),
+                CachedCatalog {
+                    metadata: SourceCacheMetadata::default(),
+                    document: CatalogDocument {
+                        schema_version: CATALOG_SCHEMA_VERSION,
+                        models: vec![model("beta", "Beta", "3.8")],
+                    },
+                },
+            )]),
+        };
+        let missing_model =
+            resolve_cached_model_entry(&[valid], &cache, "community", "alpha").unwrap_err();
+        assert!(missing_model.contains("was not found"));
+    }
+
+    #[test]
+    fn rejects_invalid_cached_documents_and_models() {
+        let source = source(CatalogSourceKind::Official);
+        let cached = |document| CatalogCache {
+            entries: BTreeMap::from([(
+                source.id.clone(),
+                CachedCatalog {
+                    metadata: SourceCacheMetadata::default(),
+                    document,
+                },
+            )]),
+        };
+
+        let invalid_schema = cached(CatalogDocument {
+            schema_version: CATALOG_SCHEMA_VERSION + 1,
+            models: vec![model("alpha", "Alpha", "3.8")],
+        });
+        let schema_error =
+            resolve_cached_model_entry(&[source.clone()], &invalid_schema, "community", "alpha")
+                .unwrap_err();
+        assert!(schema_error.contains("Invalid cached catalog"));
+        assert!(schema_error.contains("schema version"));
+
+        let mut invalid_model = model("alpha", "Alpha", "3.8");
+        invalid_model.files[0].sha256.clear();
+        let invalid_model_cache = cached(CatalogDocument {
+            schema_version: CATALOG_SCHEMA_VERSION,
+            models: vec![invalid_model],
+        });
+        let model_error = resolve_cached_model_entry(
+            &[source.clone()],
+            &invalid_model_cache,
+            "community",
+            "alpha",
+        )
+        .unwrap_err();
+        assert!(model_error.contains("Invalid cached catalog"));
+        assert!(model_error.contains("SHA-256"));
+
+        let duplicate_models = cached(CatalogDocument {
+            schema_version: CATALOG_SCHEMA_VERSION,
+            models: vec![
+                model("alpha", "Alpha", "3.8"),
+                model("alpha", "Duplicate Alpha", "3.8"),
+            ],
+        });
+        let duplicate_error =
+            resolve_cached_model_entry(&[source], &duplicate_models, "community", "alpha")
+                .unwrap_err();
+        assert!(duplicate_error.contains("duplicate model id"));
     }
 
     #[test]

@@ -35,6 +35,7 @@ export async function initTauriBridge() {
     deleteReminder: (id) => _tauriInvoke("delete_reminder_cmd", { id }),
     setUiSettings: (settings) => _tauriInvoke("set_ui_settings", { input: settings }),
     saveSettings: (patch) => _tauriInvoke("save_settings", { input: { patch } }),
+    saveModelPresentation: (input) => _tauriInvoke("save_model_presentation", { input }),
     getDiagnostics: () => _tauriInvoke("get_diagnostics"),
     exportLogs: () => _tauriInvoke("export_logs"),
     exportDiagnostics: () => _tauriInvoke("export_diagnostics_report"),
@@ -69,9 +70,9 @@ export async function initTauriBridge() {
     duplicateAvatarPack: (input) => _tauriInvoke("duplicate_avatar_pack", { input }),
     deleteAvatarPack: (path) => _tauriInvoke("delete_avatar_pack", { input: { path } }),
     repackAvatarPack: (path) => _tauriInvoke("repack_avatar_pack", { input: { path } }),
-    getCachedModelCatalogs: (sources) => _tauriInvoke("get_cached_model_catalogs", { sources }),
-    refreshModelCatalogs: (sources) => _tauriInvoke("refresh_model_catalogs", { sources }),
-    searchModelCatalog: (models, request) => _tauriInvoke("search_model_catalog", { models, request }),
+    getCachedModelCatalogs: () => _tauriInvoke("get_cached_model_catalogs"),
+    refreshModelCatalogs: () => _tauriInvoke("refresh_model_catalogs"),
+    searchModelCatalog: (request) => _tauriInvoke("search_model_catalog", { request }),
     pickAvatarPackFolder: async () => {
       const { open } = await import("@tauri-apps/plugin-dialog");
       return open({ directory: true, multiple: false, title: "Select avatar pack folder" });
@@ -93,10 +94,10 @@ export async function initTauriBridge() {
     emitScale: (payload) => _tauriInvoke("emit_scale_event", { input: payload }),
     importModel: (input) => _tauriInvoke("import_model", { input }),
     installModel: (input) => _tauriInvoke("import_model", { input: { ...input, activate: false } }),
-    importCatalogModel: (entry, activate = true) => _tauriInvoke("import_catalog_model", { entry, activate }),
-    installCatalogModel: (entry) => _tauriInvoke("import_catalog_model", { entry, activate: false }),
+    importCatalogModel: (sourceId, modelId, activate = true) => _tauriInvoke("import_catalog_model", { sourceId, modelId, activate }),
+    installCatalogModel: (sourceId, modelId) => _tauriInvoke("import_catalog_model", { sourceId, modelId, activate: false }),
     cancelModelDownload: (id) => _tauriInvoke("cancel_model_download", { id }),
-    prepareModelPreview: (entry) => _tauriInvoke("prepare_model_preview", { entry }),
+    prepareModelPreview: (sourceId, modelId) => _tauriInvoke("prepare_model_preview", { sourceId, modelId }),
     onState: (callback) => {
       // Listen for state updates from the Rust backend
       let unlisten = null;
@@ -115,6 +116,13 @@ export async function initTauriBridge() {
     onScale: (callback) => {
       let unlisten = null;
       _tauriListen("companion:scale", (event) => {
+        callback(event.payload);
+      }).then((fn) => { unlisten = fn; });
+      return () => { if (unlisten) unlisten(); };
+    },
+    onModelPresentation: (callback) => {
+      let unlisten = null;
+      _tauriListen("companion:model-presentation", (event) => {
         callback(event.payload);
       }).then((fn) => { unlisten = fn; });
       return () => { if (unlisten) unlisten(); };

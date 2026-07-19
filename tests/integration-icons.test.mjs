@@ -14,6 +14,7 @@ describe("integration brand icons", () => {
     expect(integrationBrand("roo-code")?.key).toBe("roo");
     expect(integrationBrand("cline")?.key).toBe("cline");
     expect(integrationBrand("mimo-code")?.key).toBe("mimocode");
+    expect(integrationBrand("kimi-code")?.key).toBe("kimi");
     expect(integrationBrand("custom")?.key).toBe("custom");
   });
 
@@ -25,7 +26,7 @@ describe("integration brand icons", () => {
       expect(brand?.path).toBeTruthy();
     }
 
-    for (const id of ["codex", "vs-code", "gemini", "gemini-antigravity", "opencode"]) {
+    for (const id of ["codex", "vs-code", "gemini", "gemini-antigravity", "opencode", "kimi-code"]) {
       expect(integrationBrand(id)?.image).toMatch(/assets\/integrations\/.+\.png$/);
     }
   });

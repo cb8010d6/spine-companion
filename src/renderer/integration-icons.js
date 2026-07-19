@@ -11,7 +11,8 @@ const LOCAL_IMAGES = Object.freeze({
   opencode: new URL("./assets/integrations/opencode.png", import.meta.url).href,
   roo: new URL("./assets/integrations/roo-code.svg", import.meta.url).href,
   cline: new URL("./assets/integrations/cline.svg", import.meta.url).href,
-  mimocode: new URL("./assets/integrations/mimocode.svg", import.meta.url).href
+  mimocode: new URL("./assets/integrations/mimocode.svg", import.meta.url).href,
+  kimi: new URL("./assets/integrations/kimi.png", import.meta.url).href
 });
 
 const ICONS = Object.freeze({
@@ -65,6 +66,11 @@ const ICONS = Object.freeze({
     image: LOCAL_IMAGES.mimocode,
     path: GENERIC_INTEGRATION_PATH
   },
+  kimi: {
+    color: "#111111",
+    image: LOCAL_IMAGES.kimi,
+    path: GENERIC_INTEGRATION_PATH
+  },
   custom: {
     color: "#64748b",
     image: null,
@@ -97,6 +103,10 @@ const TOOL_ICONS = Object.freeze({
   mimocode: "mimocode",
   "mimo-code": "mimocode",
   "xiaomi-mimo": "mimocode",
+  kimi: "kimi",
+  "kimi-code": "kimi",
+  "kimi-cli": "kimi",
+  moonshot: "kimi",
   custom: "custom"
 });
 

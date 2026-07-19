@@ -3,6 +3,7 @@ const previewIntegrations = [
   { id: "vscode", name: "VS Code / Copilot", source: "vscode-mcp", sourceLabel: "VS Code", configFormat: "mcpServersJson", installed: true, configFound: true, configured: true, instructionsFound: true, needsRestart: true, restoreAvailable: true, lastBackupPath: "User/mcp.json.bak-preview", status: "Configured", note: "GitHub Copilot agent mode", configPath: "User/mcp.json", instructionsPath: ".github/copilot-instructions.md" },
   { id: "opencode", name: "OpenCode", source: "opencode-mcp", sourceLabel: "OpenCode", configFormat: "openCodeJson", installed: true, configFound: true, configured: true, instructionsFound: true, needsRestart: false, lastTestOk: false, lastTestError: "The MCP process exited before initialization completed.", status: "Configured", note: "OpenCode terminal agent", configPath: "~/.config/opencode/opencode.json" },
   { id: "mimocode", name: "MiMoCode", source: "mimocode-mcp", sourceLabel: "MiMoCode", configFormat: "commandArrayJson", installed: false, configFound: false, configured: false, instructionsFound: false, status: "Not detected", note: "Manual fallback is available" },
+  { id: "kimi-code", name: "Kimi Code CLI", source: "kimi-mcp", sourceLabel: "Kimi", configFormat: "mcpServersJson", installed: true, configFound: true, configured: false, instructionsFound: false, instructionsPath: "", status: "Config found", note: "Official ~/.kimi/mcp.json integration" },
   { id: "custom", name: "Custom MCP Client", source: "ai-mcp", sourceLabel: "AI", configFormat: "templateOnly", installed: false, configFound: false, configured: false, instructionsFound: false, status: "Template only", note: "For future and unsupported MCP clients" }
 ];
 
@@ -26,6 +27,11 @@ export function installManagerPreviewBridge() {
     spine: {}
   };
   let previewInstalledModels = [{ id: "sample-local-avatar", name: "Sample Local Avatar", source: "Local preview", skel: "sample.skel" }];
+  const previewCatalogEntries = [
+    { catalogSourceId: "ark-models", model: { id: "ark-models-002-amiya", name: "Amiya", category: "operator", compatibilityProfile: "companion", source: "Ark-Models", author: "isHarryh/Ark-Models contributors", license: "NOASSERTION", licenseNote: "Third-party source; review before download.", repositoryUrl: "https://github.com/isHarryh/Ark-Models", skel: "model.skel", files: [], spine: { min: "3.8.99", max: "3.8.99" } } },
+    { catalogSourceId: "ark-illustrations", model: { id: "ark-illustrations-amiya", name: "Amiya Dynamic Illustration", category: "illustration", compatibilityProfile: "idle-only", source: "Ark-Models", author: "isHarryh/Ark-Models contributors", license: "NOASSERTION", licenseNote: "Third-party source; review before download.", repositoryUrl: "https://github.com/isHarryh/Ark-Models", skel: "model.skel", files: [], spine: { min: "3.8.99", max: "3.8.99" } } },
+    { catalogSourceId: "ark-enemies", model: { id: "ark-enemies-gopro", name: "Gopro", category: "enemy", compatibilityProfile: "experimental", source: "Ark-Models", author: "isHarryh/Ark-Models contributors", license: "NOASSERTION", licenseNote: "Third-party source; review before download.", repositoryUrl: "https://github.com/isHarryh/Ark-Models", skel: "model.skel", files: [], spine: { min: "3.8.99", max: "3.8.99" } } }
+  ];
   const installPreviewModel = (entry, activated = false) => {
     const model = entry?.model || entry || {};
     const result = {
@@ -49,6 +55,11 @@ export function installManagerPreviewBridge() {
       previewConfig.models = { ...previewConfig.models, ...(patch.models || {}) };
       return previewConfig;
     },
+    saveModelPresentation: async (input) => {
+      previewConfig.models.presentations = { ...(previewConfig.models.presentations || {}), [input.modelId]: { ...input, modelId: undefined } };
+      previewConfig.spine = { ...previewConfig.spine, ...input };
+      return { modelId: input.modelId, presentation: input, active: true };
+    },
     getInstalledModels: async () => previewInstalledModels.map((model) => ({ ...model })),
     listReminders: async () => [],
     checkUpdates: async () => ({ currentVersion: "preview", updateAvailable: false, channel: previewConfig.ui?.updateChannel === "stable" ? "stable" : "prerelease" }),
@@ -64,19 +75,21 @@ export function installManagerPreviewBridge() {
     duplicateAvatarPack: async (input) => ({ path: `${input.destinationParent}/${input.id}`, id: input.id, duplicated: true }),
     deleteAvatarPack: async () => ({ deleted: true }),
     repackAvatarPack: async (path) => ({ path, repacked: true }),
-    refreshModelCatalogs: async (sources = []) => {
-      const source = sources[0]?.id || "ark-models";
-      const variants = {
-        "ark-models": { id: "ark-models-002-amiya", name: "Amiya", category: "operator", compatibilityProfile: "companion" },
-        "ark-illustrations": { id: "ark-illustrations-amiya", name: "Amiya Dynamic Illustration", category: "illustration", compatibilityProfile: "idle-only" },
-        "ark-enemies": { id: "ark-enemies-gopro", name: "Gopro", category: "enemy", compatibilityProfile: "experimental" }
-      };
-      return { models: [{ catalogSourceId: source, ...variants[source], source: "Ark-Models", author: "isHarryh/Ark-Models contributors", license: "NOASSERTION", licenseNote: "Third-party source; review before download.", repositoryUrl: "https://github.com/isHarryh/Ark-Models", skel: "model.skel", files: [], spine: { min: "3.8.99", max: "3.8.99" } }], sources: [{ sourceId: source, state: "stale", modelCount: 1, error: "Preview mode" }] };
+    getCachedModelCatalogs: async () => ({ models: [], sources: [] }),
+    refreshModelCatalogs: async () => ({ models: [], sources: previewConfig.models.sources.map((source) => ({ sourceId: source.id, state: "stale", modelCount: 1, error: "Preview mode" })) }),
+    searchModelCatalog: async (request = {}) => {
+      const sourceIds = new Set(request.sourceIds || []);
+      const query = String(request.query || "").toLowerCase();
+      const installed = new Set(previewInstalledModels.map((model) => model.id));
+      const matches = previewCatalogEntries.filter((entry) => (!sourceIds.size || sourceIds.has(entry.catalogSourceId))
+        && (!query || `${entry.model.name} ${entry.model.id}`.toLowerCase().includes(query))
+        && (request.installationFilter === "installed" ? installed.has(entry.model.id) : request.installationFilter === "available" ? !installed.has(entry.model.id) : true));
+      return { models: matches, page: 1, pageSize: request.pageSize || 24, total: matches.length, totalPages: matches.length ? 1 : 0 };
     },
     installModel: async (input) => installPreviewModel(input, false),
-    importCatalogModel: async (entry, activate = true) => installPreviewModel(entry, activate),
-    installCatalogModel: async (entry) => installPreviewModel(entry, false),
-    prepareModelPreview: async (entry) => ({ id: entry.id, skel: entry.skel, assetUrl: "", cached: false }),
+    importCatalogModel: async (sourceId, modelId, activate = true) => installPreviewModel(previewCatalogEntries.find((entry) => entry.catalogSourceId === sourceId && entry.model.id === modelId), activate),
+    installCatalogModel: async (sourceId, modelId) => installPreviewModel(previewCatalogEntries.find((entry) => entry.catalogSourceId === sourceId && entry.model.id === modelId), false),
+    prepareModelPreview: async (sourceId, modelId) => ({ id: modelId, skel: "model.skel", assetUrl: "", cached: false, sourceId }),
     getCurrentModel: async () => ({ id: "sample-local-avatar", name: "Sample Local Avatar" }),
     setActiveModel: async (id) => ({ id }),
     beginModelTrial: async (id) => ({ id }),

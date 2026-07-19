@@ -14,8 +14,15 @@ their MCP config after confirmation. The manager creates a timestamped backup
 before writing and marks the tool as **Needs restart** after configuration.
 
 The first supported set is Codex, Claude Desktop, Cursor / VS Code, Roo / Cline,
-Gemini / Antigravity, OpenCode, and MiMoCode. MiMoCode support is best-effort
+Gemini / Antigravity, OpenCode, MiMoCode, and Kimi Code CLI. MiMoCode support is best-effort
 because its MCP config format is not publicly documented.
+
+Kimi support targets Moonshot AI's official **Kimi Code CLI**. Manager writes
+the documented `~/.kimi/mcp.json` file (or `KIMI_SHARE_DIR/mcp.json` when that
+environment variable is available) using `kimi-mcp` / `Kimi` source metadata.
+Kimi loads `AGENTS.md` per project, so Manager provides copyable agent guidance
+instead of writing a misleading global instruction file. Restart Kimi or open a
+new shell session after configuring MCP.
 
 ## Manual MCP Shape
 
