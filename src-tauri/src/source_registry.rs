@@ -19,6 +19,7 @@ const KNOWN_SOURCES: &[(&str, &str, &[&str])] = &[
     ("antigravity", "Antigravity", &["antigravity"]),
     ("opencode", "OpenCode", &["opencode", "open-code"]),
     ("mimocode", "MiMoCode", &["mimocode", "mimo"]),
+    ("kimi", "Kimi", &["kimi", "moonshot"]),
     ("windsurf", "Windsurf", &["windsurf"]),
     ("continue", "Continue", &["continue"]),
     ("zed", "Zed", &["zed"]),
@@ -164,9 +165,11 @@ mod tests {
     fn recognizes_known_and_future_ai_sources() {
         assert!(is_ai_source("mimocode-mcp"));
         assert!(is_ai_source("opencode-mcp"));
+        assert!(is_ai_source("kimi-mcp"));
         assert!(is_ai_source("my-new-agent-mcp"));
         assert!(!is_ai_source("tray"));
         assert_eq!(source_display_name("mimocode-mcp", None), "MiMoCode");
+        assert_eq!(source_display_name("kimi-mcp", None), "Kimi");
         assert_eq!(
             source_display_name("my-new-agent-mcp", None),
             "My New Agent"
@@ -178,5 +181,9 @@ mod tests {
         let info = source_from_client_name("OpenCode").unwrap();
         assert_eq!(info.source, "opencode-mcp");
         assert_eq!(info.label, "OpenCode");
+
+        let kimi = source_from_client_name("Kimi Code CLI").unwrap();
+        assert_eq!(kimi.source, "kimi-mcp");
+        assert_eq!(kimi.label, "Kimi");
     }
 }

@@ -12,6 +12,7 @@ describe("source registry", () => {
   it("recognizes known AI tools and future MCP agents", () => {
     expect(isAiSource("mimocode-mcp")).toBe(true);
     expect(isAiSource("opencode-mcp")).toBe(true);
+    expect(isAiSource("kimi-mcp")).toBe(true);
     expect(isAiSource("vscode-mcp")).toBe(true);
     expect(isAiSource("my-new-agent-mcp")).toBe(true);
     expect(isAiSource("tray")).toBe(false);
@@ -20,12 +21,14 @@ describe("source registry", () => {
   it("returns human-readable labels", () => {
     expect(sourceDisplayName("mimocode-mcp")).toBe("MiMoCode");
     expect(sourceDisplayName("opencode-mcp")).toBe("OpenCode");
+    expect(sourceDisplayName("kimi-mcp")).toBe("Kimi");
     expect(sourceDisplayName("my-new-agent-mcp")).toBe("My New Agent");
     expect(sourceDisplayName("anything", "Custom Label")).toBe("Custom Label");
   });
 
   it("derives source from MCP clientInfo", () => {
     expect(sourceFromClientInfo({ name: "OpenCode" })).toBe("opencode-mcp");
+    expect(sourceFromClientInfo({ name: "Kimi Code CLI" })).toBe("kimi-mcp");
     expect(sourceFromClientInfo({ name: "My New Agent" })).toBe("my-new-agent-mcp");
   });
 

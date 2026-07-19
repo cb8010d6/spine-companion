@@ -70,6 +70,14 @@ describe("Spine player transitions", () => {
       viewportFill: 0.88,
       scaleBoost: 1.15
     });
+    expect(modelViewportProfile({ modelCategory: "illustration", fitMode: "full", maxViewportFill: 0.72 })).toMatchObject({
+      viewportFill: 0.72,
+      scaleBoost: 1
+    });
+    expect(modelViewportProfile({ modelCategory: "operator", fitMode: "character", maxViewportFill: 0.72 })).toMatchObject({
+      viewportFill: 0.88,
+      scaleBoost: 1.15
+    });
   });
 
   it("returns from a one-shot only when its active track entry completes", () => {

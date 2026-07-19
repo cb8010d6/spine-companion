@@ -38,6 +38,12 @@ describe("AI integration presentation model", () => {
     expect(integrationCompletion(custom).state).toBe("custom");
   });
 
+  it("supports copy-only project instructions without blocking Kimi MCP testing", () => {
+    const kimi = { ...base, configured: true, instructionsPath: "", instructionsFound: false };
+    expect(integrationPrimaryAction(kimi)).toBe("test");
+    expect(integrationCompletion(kimi, { ok: true })).toEqual({ completed: 3, total: 3, state: "ready" });
+  });
+
   it("does not select an unrelated integration when a filter is empty", () => {
     expect(selectFilteredIntegration([], "codex")).toBeNull();
     expect(selectFilteredIntegration([{ id: "vscode" }], "codex")).toEqual({ id: "vscode" });

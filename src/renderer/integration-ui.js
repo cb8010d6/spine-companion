@@ -14,13 +14,17 @@ export function integrationCompletion(item, testResult = null) {
   if (item?.configFormat === "templateOnly") return { completed: 0, total: 0, state: "custom" };
   const detected = item?.installed || item?.configFound || item?.configured;
   const configured = item?.configured === true;
-  const instructed = item?.instructionsFound === true;
+  const hasManagedInstructions = item?.instructionsPath !== "";
+  const instructed = !hasManagedInstructions || item?.instructionsFound === true;
   const tested = item?.needsRestart !== true && integrationTestResult(item, testResult)?.ok === true;
-  const completed = [detected, configured, instructed, tested].filter(Boolean).length;
+  const steps = hasManagedInstructions
+    ? [detected, configured, instructed, tested]
+    : [detected, configured, tested];
+  const completed = steps.filter(Boolean).length;
   return {
     completed,
-    total: 4,
-    state: completed === 4 ? "ready" : detected ? "setup" : "undetected"
+    total: steps.length,
+    state: completed === steps.length ? "ready" : detected ? "setup" : "undetected"
   };
 }
 
@@ -40,7 +44,7 @@ export function integrationPrimaryAction(item, testResult = null) {
   const detected = item?.installed || item?.configFound || item?.configured;
   if (!detected) return "manual";
   if (!item.configured) return "configure";
-  if (!item.instructionsFound) return "instructions";
+  if (item.instructionsPath !== "" && !item.instructionsFound) return "instructions";
   if (item.needsRestart) return "restart";
   return integrationTestResult(item, testResult)?.ok ? "retest" : "test";
 }

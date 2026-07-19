@@ -314,8 +314,9 @@ function previewNode(model, onPreviewReady = null) {
     try {
       if (!preview.spinePreviewUrl && preview.canPrepareRemotePreview) {
         if (!window.companion?.prepareModelPreview) throw new Error(t("manager.model.previewUnavailable"));
-        const entry = model._catalogEntry || { ...model, catalogSourceId: model.catalogSourceId || model.sourceId || "catalog" };
-        const prepared = await window.companion.prepareModelPreview(entry);
+        const sourceId = model.catalogSourceId || model.sourceId;
+        if (!sourceId) throw new Error(t("manager.model.previewUnavailable"));
+        const prepared = await window.companion.prepareModelPreview(sourceId, model.id);
         preview.spinePreviewUrl = prepared?.assetUrl || "";
       }
       const { renderSpinePreview } = await loadSpinePreview();
@@ -575,7 +576,9 @@ async function startDownload(id, catalogEntry = null) {
       ? window.companion?.installCatalogModel
       : window.companion?.installModel;
     if (!installer) throw new Error(t("manager.error.installUnavailable"));
-    const result = await installer(catalogEntry || { id });
+    const result = catalogEntry
+      ? await installer(catalogEntry.catalogSourceId || catalogEntry.sourceId, id)
+      : await installer({ id });
     downloads[id] = { ...(downloads[id] || {}), status: "succeeded", current: downloads[id]?.total || 1, total: downloads[id]?.total || 1, file: t("manager.download.done") };
     await refreshConfig();
     installedModels = upsertInstalledModel(
@@ -655,7 +658,7 @@ async function getCachedRemoteCatalog(sourceId, sources) {
   const selectedSources = catalogSourcesForSelection(sourceId, sources);
   if (!selectedSources.length) return rendererCache;
   try {
-    const cached = await window.companion.getCachedModelCatalogs(selectedSources);
+    const cached = await window.companion.getCachedModelCatalogs();
     const catalog = Array.isArray(cached) ? { models: cached, sources: [] } : (cached || emptyRemoteCatalog());
     cacheRemoteCatalog(sourceId, sources, catalog);
     return { catalog, available: true };
@@ -672,7 +675,7 @@ async function refreshRemoteCatalog(sourceId, sources) {
   const selectedSources = catalogSourcesForSelection(sourceId, sources);
   if (!selectedSources.length) return empty;
   try {
-    return await window.companion.refreshModelCatalogs(selectedSources);
+    return await window.companion.refreshModelCatalogs();
   } catch (error) {
     return {
       models: cached.models || [],
@@ -696,29 +699,25 @@ async function libraryView({ cachedOnly = false } = {}) {
   let remoteCatalog = cachedOnly
     ? cachedResult.catalog
     : await refreshRemoteCatalog(sourceValue, enabledSources);
-  const staticCatalog = (config.models?.catalog || []).filter((model) => model.catalogVisible !== false).map((model) => ({
-    ...model,
-    sourceId: catalogModelSourceId(model),
-    _catalogEntry: null
-  }));
-  const buildCatalog = (nextRemoteCatalog) => {
-    const remoteModels = normalizeCatalogEntries(nextRemoteCatalog.models);
-    return sourceValue
-      ? [...remoteModels, ...staticCatalog.filter((item) => !remoteModels.some((remote) => remote.id === item.id))]
-      : [];
-  };
-  let catalog = buildCatalog(remoteCatalog);
+  let catalog = [];
+  let catalogTotal = 0;
+  let catalogSearchRevision = 0;
   let installedIds = new Set(installedModels.map((model) => model.id));
   let activeId = activeInstalledId();
   let filterValue = "all";
   let catalogPage = 1;
+  let catalogSearchTimer = 0;
   const pageSize = LIBRARY_PAGE_SIZE;
   const search = h("input", {
     class: "input",
     type: "search",
     placeholder: t("manager.search.placeholder"),
     "aria-label": t("manager.search.placeholder"),
-    onInput: () => { catalogPage = 1; renderCards(search.value, filterValue); }
+    onInput: () => {
+      catalogPage = 1;
+      window.clearTimeout(catalogSearchTimer);
+      catalogSearchTimer = window.setTimeout(() => renderCards(search.value, filterValue), 160);
+    }
   });
   const filter = h("select", {
     class: "select library-filter",
@@ -823,20 +822,35 @@ async function libraryView({ cachedOnly = false } = {}) {
     await renderView("library");
   };
 
-  function renderCards(query = "", selectedFilter = "all") {
+  async function renderCards(query = "", selectedFilter = "all") {
+    const revision = ++catalogSearchRevision;
     const shouldRevealCards = revealCards;
     revealCards = false;
     cardControllers.clear();
-    const normalized = query.trim().toLowerCase();
-    const filtered = catalog
-      .filter((model) => !normalized || `${catalogDisplayName(model)} ${model.id} ${model.source}`.toLowerCase().includes(normalized))
-      .filter((model) => sourceValue === "all" || model.sourceId === sourceValue || !model.sourceId)
-      .filter((model) => selectedFilter === "all" || (selectedFilter === "installed" ? installedIds.has(model.id) : !installedIds.has(model.id)));
-    const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
-    catalogPage = Math.min(catalogPage, pageCount);
+    let searchResult;
+    try {
+      searchResult = await window.companion?.searchModelCatalog?.({
+        query,
+        sourceIds: sourceValue === ALL_CATALOG_SOURCES ? [] : [sourceValue],
+        page: catalogPage,
+        pageSize,
+        runtimeSpineVersion: "3.8.99",
+        includeIncompatible: true,
+        installationFilter: selectedFilter
+      });
+    } catch (error) {
+      if (revision !== catalogSearchRevision) return;
+      searchResult = { models: [], page: 1, total: 0, totalPages: 0 };
+      setStatus(error?.message || String(error));
+    }
+    if (revision !== catalogSearchRevision || activeView !== "library") return;
+    catalog = normalizeCatalogEntries(searchResult?.models || []);
+    catalogTotal = Number(searchResult?.total || 0);
+    const filtered = catalog;
+    const pageCount = Math.max(1, Number(searchResult?.totalPages || 0));
+    catalogPage = Math.min(Math.max(1, Number(searchResult?.page || catalogPage)), pageCount);
     currentPagePreviewTasks = [];
     const cards = filtered
-      .slice((catalogPage - 1) * pageSize, catalogPage * pageSize)
       .map((model, index) => {
         const download = downloads[model.id];
         let downloadBusy = download?.status === "pending" || download?.status === "downloading" || download?.status === "cancelling";
@@ -935,7 +949,7 @@ async function libraryView({ cachedOnly = false } = {}) {
     )]));
     pager.replaceChildren(
       h("button", { class: "btn", type: "button", disabled: catalogPage <= 1, onClick: () => { catalogPage -= 1; revealCards = true; renderCards(query, selectedFilter); } }, t("manager.library.previousPage")),
-      h("span", {}, t("manager.library.page", { page: catalogPage, pages: pageCount, count: filtered.length })),
+      h("span", {}, t("manager.library.page", { page: catalogPage, pages: pageCount, count: catalogTotal })),
       h("button", { class: "btn", type: "button", disabled: catalogPage >= pageCount, onClick: () => { catalogPage += 1; revealCards = true; renderCards(query, selectedFilter); } }, t("manager.library.nextPage"))
     );
   }
@@ -951,26 +965,25 @@ async function libraryView({ cachedOnly = false } = {}) {
       }
       if (installed && filterValue !== "all") renderCards(search.value, filterValue);
       else for (const controller of cardControllers.values()) controller.update();
-      catalogCount.textContent = String(catalog.filter((model) => sourceValue === ALL_CATALOG_SOURCES || model.sourceId === sourceValue).length);
+      catalogCount.textContent = String(catalogTotal);
       animateLibraryCount(installedCount, installedModels.length);
       animateLibraryCount(activeCount, activeId ? 1 : 0);
     },
-    applyRemoteCatalog(nextRemoteCatalog) {
+    async applyRemoteCatalog(nextRemoteCatalog) {
       remoteCatalog = nextRemoteCatalog || emptyRemoteCatalog();
-      catalog = buildCatalog(remoteCatalog);
       renderSourceStatuses();
-      renderCards(search.value, filterValue);
-      animateLibraryCount(catalogCount, catalog.filter((model) => sourceValue === ALL_CATALOG_SOURCES || model.sourceId === sourceValue).length);
+      await renderCards(search.value, filterValue);
+      animateLibraryCount(catalogCount, catalogTotal);
     }
   };
 
-  const catalogCountTarget = catalog.filter((model) => sourceValue === ALL_CATALOG_SOURCES || model.sourceId === sourceValue).length;
   const installedCountTarget = installedModels.length;
   const activeCountTarget = activeId ? 1 : 0;
   const catalogCount = h("strong", {}, "0");
   const installedCount = h("strong", {}, "0");
   const activeCount = h("strong", {}, "0");
-  renderCards();
+  await renderCards();
+  const catalogCountTarget = catalogTotal;
   const content = h("section", {},
     h("div", { class: "view-header" },
       h("div", {},
@@ -1155,22 +1168,35 @@ function settingsView() {
   const spine = config.spine || {};
   const numeric = (id) => Number(document.getElementById(id).value || 0);
   const saveSpine = async () => {
-    await window.companion?.saveSettings?.({
-      spine: {
-        scale: numeric("set-scale-number"),
-        offsetX: numeric("set-offset-x-number"),
-        offsetY: numeric("set-offset-y-number")
-      }
-    });
+    const presentation = {
+      scale: numeric("set-scale-number"),
+      offsetX: numeric("set-offset-x-number"),
+      offsetY: numeric("set-offset-y-number"),
+      fitMode: document.getElementById("set-fit-mode")?.value || "legacy"
+    };
+    if (spine.modelId && window.companion?.saveModelPresentation) {
+      await window.companion.saveModelPresentation({ modelId: spine.modelId, ...presentation });
+    } else {
+      await window.companion?.saveSettings?.({ spine: presentation });
+    }
     config = await window.companion?.getConfig?.() || config;
     setStatus(t("manager.status.settingsSaved"));
     showToast(t("manager.status.settingsSaved"));
   };
   const resetExperience = async () => {
     await window.companion?.saveSettings?.({
-      spine: { scale: 0.86, offsetX: 0, offsetY: -18 },
+      spine: { scale: 0.86, offsetX: 0, offsetY: -18, fitMode: "legacy" },
       ui: { maxDevicePixelRatio: 2, hitboxPadding: 8, gpuMode: "hardware", debugHitbox: false }
     });
+    if (spine.modelId && window.companion?.saveModelPresentation) {
+      await window.companion.saveModelPresentation({
+        modelId: spine.modelId,
+        scale: 0.86,
+        offsetX: 0,
+        offsetY: -18,
+        fitMode: "legacy"
+      });
+    }
     await refreshConfig();
     showToast(t("manager.status.settingsSaved"));
     renderView("settings");
@@ -1200,6 +1226,12 @@ function settingsView() {
         rangeNumber(t("manager.field.scale"), "set-scale", Number(spine.scale || 1), 0.2, 2.5, 0.01, saveSpine),
         rangeNumber(t("manager.field.offsetX"), "set-offset-x", Number(spine.offsetX || 0), -240, 240, 1, saveSpine),
         rangeNumber(t("manager.field.offsetY"), "set-offset-y", Number(spine.offsetY || 0), -240, 240, 1, saveSpine),
+        field(t("manager.field.fitMode"), h("select", { class: "select", id: "set-fit-mode" },
+          ["legacy", "character", "full"].map((value) => h("option", {
+            value,
+            selected: (spine.fitMode || "legacy") === value
+          }, t(`manager.option.fitMode.${value}`)))
+        )),
         check(t("manager.field.bubbleShadow"), ui.bubbleShadow !== false, (checked) => saveUi({ bubbleShadow: checked })),
         field(t("manager.field.bubbleTheme"), h("select", { class: "select", value: ui.bubbleBackground || "solid", onChange: (e) => saveUi({ bubbleBackground: e.target.value }) },
           ["solid", "soft", "clear", "light"].map((value) => h("option", { value, selected: (ui.bubbleBackground || "solid") === value }, t(`manager.option.bubble.${value}`)))
@@ -1662,7 +1694,9 @@ async function integrationsView() {
         selected.configFormat !== "templateOnly" ? h("div", { class: "setup-checklist" },
           statusStep(t("manager.integrations.step.detected"), selected.installed || selected.configFound || selected.configured, selected.installed ? t("manager.integrations.installed") : t("manager.integrations.notDetected")),
           statusStep(t("manager.integrations.step.config"), selected.configured, selected.configured ? t("manager.integrations.configured") : t("manager.integrations.step.configHelp")),
-          statusStep(t("manager.integrations.step.instructions"), selected.instructionsFound, selected.instructionsFound ? t("manager.integrations.instructionsFound") : t("manager.integrations.step.instructionsHelp")),
+          selected.instructionsPath
+            ? statusStep(t("manager.integrations.step.instructions"), selected.instructionsFound, selected.instructionsFound ? t("manager.integrations.instructionsFound") : t("manager.integrations.step.instructionsHelp"))
+            : null,
           statusStep(t("manager.integrations.step.test"), testResult?.ok === true, selected.needsRestart
             ? t("manager.integrations.step.restartHelp", { name: selected.name })
             : testResult?.ok
@@ -1678,7 +1712,7 @@ async function integrationsView() {
         ) : null,
         selected.configPath ? h("p", { class: "integration-path", title: selected.configPath }, `${t("manager.integrations.config")}: ${selected.configPath}`) : null,
         h("div", { class: "integration-primary-actions" }, primaryAction(),
-          selected.configFormat !== "templateOnly" && selected.configured && !selected.instructionsFound
+          selected.configFormat !== "templateOnly" && selected.configured && selected.instructionsPath && !selected.instructionsFound
             ? h("button", { class: "btn", type: "button", onClick: () => showAgentInstructions(selected.id) }, t("manager.actions.previewInstructions"))
             : null
         ),
@@ -2039,7 +2073,7 @@ async function renderView(viewName) {
     );
     if (!navigationGuard.isCurrent(navigation, activeView)) return;
     if (cachedResult.sourceId) cacheRemoteCatalog(cachedResult.sourceId, config.models?.sources || [], result);
-    librarySession?.applyRemoteCatalog(result);
+    await librarySession?.applyRemoteCatalog(result);
   }
   else if (viewName === "installed") render(installedView(), viewContainer);
   else if (viewName === "downloads") render(downloadsView(), viewContainer);

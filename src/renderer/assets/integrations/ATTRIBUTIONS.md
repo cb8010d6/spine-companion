@@ -18,6 +18,7 @@ images.
 | `antigravity.png` | Antigravity executable icon installed on the test system; product site: https://antigravity.google/ | Google product mark; use remains subject to Google's brand terms. |
 | `anthropic.svg` | https://github.com/simple-icons/simple-icons/blob/develop/icons/anthropic.svg | Simple Icons CC0-1.0 data; Anthropic trademarks remain subject to their owner. |
 | `mimocode.svg` | https://github.com/simple-icons/simple-icons/blob/develop/icons/xiaomi.svg | Simple Icons CC0-1.0 data; Xiaomi trademarks remain subject to their owner. |
+| `kimi.png` | https://github.com/MoonshotAI/kimi-cli/blob/main/web/public/logo.png | Official Kimi Code CLI repository asset; Moonshot AI product marks remain subject to their owner. |
 
 These marks identify integrations only. Product names and logos remain
 trademarks of their respective owners and do not imply endorsement.

@@ -13,8 +13,14 @@ MCP 配置。写入前会创建带时间戳的备份；配置成功后会标记�
 需要重启对应 AI 工具。
 
 第一版支持 Codex、Claude Desktop、Cursor / VS Code、Roo / Cline、
-Gemini / Antigravity、OpenCode、MiMoCode。MiMoCode 缺少公开 MCP 配置文档，
+Gemini / Antigravity、OpenCode、MiMoCode、Kimi Code CLI。MiMoCode 缺少公开 MCP 配置文档，
 因此属于 best-effort 支持；如果格式变化，优先使用页面里的复制模板。
+
+Kimi 接入指 Moonshot AI 官方的 **Kimi Code CLI**。Manager 会写入官方文档规定的
+`~/.kimi/mcp.json`；如果应用进程可读取 `KIMI_SHARE_DIR`，则使用该目录下的
+`mcp.json`。来源标识为 `kimi-mcp` / `Kimi`。Kimi 按项目加载 `AGENTS.md`，
+因此 Manager 只提供可复制的 Agent 指令，不会写入一个实际不生效的全局指令文件。
+配置 MCP 后需要重启 Kimi 或新建一个 Shell 会话。
 
 ## 手动 MCP 配置
 

@@ -113,6 +113,9 @@ If the tray icon appears but the window does not:
 - Tap the character to play its interaction animation.
 - Drag with one finger or a pen to move the companion window.
 - Pinch with two fingers over the character to change its scale.
+- Scale, offsets, and framing are saved per model. Use **Manager > Settings >
+  Model framing** to keep the previous automatic layout, focus the character,
+  or show the full dynamic artwork.
 - Touch-friendly Manager controls use larger targets on coarse-pointer devices.
 - Windows keeps native dynamic pointer bounds. On Linux and macOS, the current
   compatibility mode keeps the companion interactive instead of enabling full

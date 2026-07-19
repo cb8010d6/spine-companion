@@ -63,10 +63,11 @@ struct AppData {
     history: Arc<Mutex<Vec<CompanionState>>>,
     drag_state: Arc<Mutex<Option<DragState>>>,
     passthrough_enabled: Arc<AtomicBool>,
-    pointer_bounds: Arc<Mutex<Option<PointerBounds>>>,
+    pointer_regions: Arc<Mutex<Vec<PointerBounds>>>,
     panel_pinned: Arc<AtomicBool>,
     panel_interaction_locked: Arc<AtomicBool>,
     renderer_health: Arc<Mutex<RendererHealth>>,
+    catalog_cache: Arc<Mutex<catalog::CatalogCache>>,
     ai_integration_lock: Arc<Mutex<()>>,
     model_trial_previous: Arc<Mutex<Option<CurrentModel>>>,
     download_cancellations: Arc<Mutex<HashMap<String, Arc<AtomicU8>>>>,
@@ -215,6 +216,33 @@ struct PointerBounds {
     bottom: f64,
 }
 
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(untagged)]
+enum PointerBoundsInput {
+    Single(PointerBounds),
+    Multiple(Vec<PointerBounds>),
+}
+
+fn normalize_pointer_regions(input: Option<PointerBoundsInput>) -> Vec<PointerBounds> {
+    let candidates = match input {
+        Some(PointerBoundsInput::Single(bounds)) => vec![bounds],
+        Some(PointerBoundsInput::Multiple(bounds)) => bounds,
+        None => Vec::new(),
+    };
+    candidates
+        .into_iter()
+        .filter(|bounds| {
+            bounds.left.is_finite()
+                && bounds.right.is_finite()
+                && bounds.top.is_finite()
+                && bounds.bottom.is_finite()
+                && bounds.right > bounds.left
+                && bounds.bottom > bounds.top
+        })
+        .take(16)
+        .collect()
+}
+
 #[cfg(target_os = "windows")]
 fn cursor_position_physical() -> Option<(f64, f64)> {
     let mut point = POINT { x: 0, y: 0 };
@@ -227,9 +255,9 @@ fn cursor_position_physical() -> Option<(f64, f64)> {
 }
 
 #[cfg(target_os = "windows")]
-fn cursor_inside_pointer_bounds(
+fn cursor_inside_pointer_regions(
     window: &WebviewWindow,
-    bounds: &PointerBounds,
+    regions: &[PointerBounds],
     logical_padding: f64,
 ) -> bool {
     let Some((cursor_x, cursor_y)) = cursor_position_physical() else {
@@ -240,11 +268,13 @@ fn cursor_inside_pointer_bounds(
     };
     let scale_factor = window.scale_factor().unwrap_or(1.0).clamp(0.5, 4.0);
     let padding = logical_padding * scale_factor;
-    let left = position.x as f64 + bounds.left * scale_factor - padding;
-    let right = position.x as f64 + bounds.right * scale_factor + padding;
-    let top = position.y as f64 + bounds.top * scale_factor - padding;
-    let bottom = position.y as f64 + bounds.bottom * scale_factor + padding;
-    cursor_x >= left && cursor_x <= right && cursor_y >= top && cursor_y <= bottom
+    regions.iter().any(|bounds| {
+        let left = position.x as f64 + bounds.left * scale_factor - padding;
+        let right = position.x as f64 + bounds.right * scale_factor + padding;
+        let top = position.y as f64 + bounds.top * scale_factor - padding;
+        let bottom = position.y as f64 + bounds.bottom * scale_factor + padding;
+        cursor_x >= left && cursor_x <= right && cursor_y >= top && cursor_y <= bottom
+    })
 }
 
 fn default_time_scale() -> f64 {
@@ -283,7 +313,11 @@ fn start_pointer_passthrough_monitor(app: AppHandle) {
             tokio::time::sleep(Duration::from_millis(16)).await;
             let data = app.state::<AppData>();
             let enabled = data.passthrough_enabled.load(Ordering::Relaxed);
-            let bounds = data.pointer_bounds.lock().ok().and_then(|value| *value);
+            let regions = data
+                .pointer_regions
+                .lock()
+                .map(|value| value.clone())
+                .unwrap_or_default();
             let dragging = data
                 .drag_state
                 .lock()
@@ -293,18 +327,9 @@ fn start_pointer_passthrough_monitor(app: AppHandle) {
                 continue;
             };
 
-            let inside_enter = bounds
-                .as_ref()
-                .map(|bounds| cursor_inside_pointer_bounds(&window, bounds, 4.0))
-                .unwrap_or(false);
-            let inside_exit = bounds
-                .as_ref()
-                .map(|bounds| cursor_inside_pointer_bounds(&window, bounds, 10.0))
-                .unwrap_or(false);
-            let proximity = bounds
-                .as_ref()
-                .map(|bounds| cursor_inside_pointer_bounds(&window, bounds, 48.0))
-                .unwrap_or(false);
+            let inside_enter = cursor_inside_pointer_regions(&window, &regions, 4.0);
+            let inside_exit = cursor_inside_pointer_regions(&window, &regions, 10.0);
+            let proximity = cursor_inside_pointer_regions(&window, &regions, 48.0);
             if last_proximity_state != Some(proximity) {
                 let _ = app.emit("companion:pointer-proximity", proximity);
                 last_proximity_state = Some(proximity);
@@ -343,6 +368,59 @@ fn start_pointer_passthrough_monitor(app: AppHandle) {
 #[cfg(not(target_os = "windows"))]
 fn start_pointer_passthrough_monitor(_app: AppHandle) {}
 
+#[allow(unreachable_code)]
+fn pointer_passthrough_capability() -> serde_json::Value {
+    #[cfg(target_os = "windows")]
+    {
+        return serde_json::json!({
+            "platform": "windows",
+            "backend": "native-regions",
+            "supported": true,
+            "maxRegions": 16,
+            "fallback": false
+        });
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return serde_json::json!({
+            "platform": "macos",
+            "backend": "interactive-fallback",
+            "supported": false,
+            "maxRegions": 0,
+            "fallback": true,
+            "reason": "Native dynamic input regions are not enabled until they pass real-device validation."
+        });
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let session = std::env::var("XDG_SESSION_TYPE")
+            .unwrap_or_else(|_| "unknown".to_string())
+            .to_ascii_lowercase();
+        let platform = if session == "wayland" {
+            "linux-wayland"
+        } else if session == "x11" {
+            "linux-x11"
+        } else {
+            "linux"
+        };
+        return serde_json::json!({
+            "platform": platform,
+            "backend": "interactive-fallback",
+            "supported": false,
+            "maxRegions": 0,
+            "fallback": true,
+            "reason": "Native dynamic input regions are not enabled until this display backend passes real-device validation."
+        });
+    }
+    serde_json::json!({
+        "platform": std::env::consts::OS,
+        "backend": "interactive-fallback",
+        "supported": false,
+        "maxRegions": 0,
+        "fallback": true
+    })
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ImportModelInput {
@@ -374,6 +452,16 @@ struct SaveSettingsInput {
     patch: serde_json::Value,
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelPresentationInput {
+    model_id: String,
+    scale: f64,
+    offset_x: f64,
+    offset_y: f64,
+    fit_mode: String,
+}
+
 fn fallback_config() -> serde_json::Value {
     serde_json::json!({
         "window": { "width": 360, "height": 460, "alwaysOnTop": true, "transparent": true },
@@ -384,6 +472,7 @@ fn fallback_config() -> serde_json::Value {
             "scale": 0.86,
             "offsetX": 0,
             "offsetY": -18,
+            "fitMode": "legacy",
             "mixDurationMs": 520,
             "boundsSamples": 10,
             "framePadding": 1.08,
@@ -410,6 +499,7 @@ fn fallback_config() -> serde_json::Value {
             "debugHitbox": false
         },
         "models": {
+            "presentations": {},
             "sources": [
                 {
                     "id": "ark-models",
@@ -806,6 +896,54 @@ fn refresh_public_asset_fields(public: &mut serde_json::Value) {
         url_encode_path_segment(&skel)
     ));
     public["spine"]["assetDirConfigured"] = serde_json::Value::Bool(!asset_dir.is_empty());
+
+    let metadata = if asset_dir.is_empty() {
+        None
+    } else {
+        std::fs::read_to_string(PathBuf::from(&asset_dir).join(".companion-model.json"))
+            .ok()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+    }
+    .or_else(|| model_by_skel(public, &skel));
+    let model_id = metadata
+        .as_ref()
+        .and_then(|model| model.get("id"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let defaults = public
+        .get("spine")
+        .and_then(|spine| spine.get("presentationDefaults"))
+        .cloned()
+        .unwrap_or_else(|| {
+            serde_json::json!({
+                "scale": public["spine"]["scale"].clone(),
+                "offsetX": public["spine"]["offsetX"].clone(),
+                "offsetY": public["spine"]["offsetY"].clone(),
+                "fitMode": "legacy"
+            })
+        });
+    let presentation = public
+        .get("models")
+        .and_then(|models| models.get("presentations"))
+        .and_then(|presentations| presentations.get(&model_id))
+        .cloned()
+        .unwrap_or(defaults);
+    for key in ["scale", "offsetX", "offsetY", "fitMode"] {
+        if let Some(value) = presentation.get(key) {
+            public["spine"][key] = value.clone();
+        }
+    }
+    public["spine"]["modelId"] = serde_json::Value::String(model_id);
+    if let Some(value) = metadata.as_ref().and_then(|model| model.get("category")) {
+        public["spine"]["modelCategory"] = value.clone();
+    }
+    if let Some(value) = metadata
+        .as_ref()
+        .and_then(|model| model.get("compatibilityProfile"))
+    {
+        public["spine"]["compatibilityProfile"] = value.clone();
+    }
 }
 
 fn update_ui_settings(app: &AppHandle, patch: UiSettingsPatch) -> Option<UiSettings> {
@@ -992,6 +1130,13 @@ fn load_runtime_config() -> RuntimeConfig {
             "scale": config["spine"]["scale"].clone(),
             "offsetX": config["spine"]["offsetX"].clone(),
             "offsetY": config["spine"]["offsetY"].clone(),
+            "fitMode": config["spine"]["fitMode"].clone(),
+            "presentationDefaults": {
+                "scale": config["spine"]["scale"].clone(),
+                "offsetX": config["spine"]["offsetX"].clone(),
+                "offsetY": config["spine"]["offsetY"].clone(),
+                "fitMode": config["spine"]["fitMode"].clone()
+            },
             "mixDurationMs": config["spine"]["mixDurationMs"].clone(),
             "boundsSamples": config["spine"]["boundsSamples"].clone(),
             "framePadding": config["spine"]["framePadding"].clone(),
@@ -1530,10 +1675,11 @@ async fn install_model_value_inner(
 async fn import_catalog_model(
     app: tauri::AppHandle,
     data: State<'_, AppData>,
-    entry: catalog::CatalogModelEntry,
+    source_id: String,
+    model_id: String,
     activate: Option<bool>,
 ) -> Result<ImportModelResult, String> {
-    entry.model.validate()?;
+    let entry = resolve_catalog_model(&data, &source_id, &model_id)?;
     let id = entry.model.id.clone();
     let mut value = serde_json::to_value(&entry.model).map_err(|error| error.to_string())?;
     if let Some(object) = value.as_object_mut() {
@@ -1562,10 +1708,11 @@ async fn import_catalog_model(
 async fn prepare_model_preview(
     window: WebviewWindow,
     data: State<'_, AppData>,
-    entry: catalog::CatalogModelEntry,
+    source_id: String,
+    model_id: String,
 ) -> Result<serde_json::Value, String> {
     require_manager_window(&window)?;
-    entry.model.validate()?;
+    let entry = resolve_catalog_model(&data, &source_id, &model_id)?;
     let id = entry.model.id.clone();
     let skel = entry.model.skel.clone();
     let preview_root = data.config_dir.join("preview-assets");
@@ -2178,7 +2325,18 @@ async fn save_settings(
     input: SaveSettingsInput,
 ) -> Result<(), String> {
     let path = &data.local_config_path;
-    let patch = input.patch;
+    let mut patch = input.patch;
+    if let Some(spine) = patch.get("spine").and_then(serde_json::Value::as_object) {
+        let mut defaults = serde_json::Map::new();
+        for key in ["scale", "offsetX", "offsetY", "fitMode"] {
+            if let Some(value) = spine.get(key) {
+                defaults.insert(key.to_string(), value.clone());
+            }
+        }
+        if !defaults.is_empty() {
+            patch["spine"]["presentationDefaults"] = serde_json::Value::Object(defaults);
+        }
+    }
     let mut config = read_json_if_exists(path).unwrap_or_else(|| serde_json::json!({}));
     merge_json(&mut config, patch.clone());
     if let Some(parent) = path.parent() {
@@ -2197,6 +2355,63 @@ async fn save_settings(
     let _ = app.emit("companion:config-changed", public_config_with_ui(&data));
     refresh_tray_menu(&app);
     Ok(())
+}
+
+fn validate_model_presentation(input: &ModelPresentationInput) -> Result<(), String> {
+    validate_model_download_file_name(&input.model_id)?;
+    if !(0.2..=2.5).contains(&input.scale) {
+        return Err("Model scale must be between 0.2 and 2.5.".to_string());
+    }
+    if !(-240.0..=240.0).contains(&input.offset_x) || !(-240.0..=240.0).contains(&input.offset_y) {
+        return Err("Model offsets must be between -240 and 240.".to_string());
+    }
+    if !matches!(input.fit_mode.as_str(), "legacy" | "character" | "full") {
+        return Err("Model fit mode must be legacy, character, or full.".to_string());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn save_model_presentation(
+    app: tauri::AppHandle,
+    data: State<'_, AppData>,
+    input: ModelPresentationInput,
+) -> Result<serde_json::Value, String> {
+    validate_model_presentation(&input)?;
+    let presentation = serde_json::json!({
+        "scale": input.scale,
+        "offsetX": input.offset_x,
+        "offsetY": input.offset_y,
+        "fitMode": input.fit_mode
+    });
+    let patch = serde_json::json!({
+        "models": {
+            "presentations": {
+                (input.model_id.clone()): presentation.clone()
+            }
+        }
+    });
+    let mut local =
+        read_json_if_exists(&data.local_config_path).unwrap_or_else(|| serde_json::json!({}));
+    merge_json(&mut local, patch.clone());
+    if let Some(parent) = data.local_config_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let text = serde_json::to_string_pretty(&local).map_err(|error| error.to_string())?;
+    std::fs::write(&data.local_config_path, format!("{}\n", text))
+        .map_err(|error| error.to_string())?;
+    if let Ok(mut public) = data.public_config.lock() {
+        merge_json(&mut public, patch);
+    }
+    let public = public_config_with_ui(&data);
+    let active = string_at(&public, &["spine", "modelId"]) == Some(input.model_id.as_str());
+    let payload = serde_json::json!({
+        "modelId": input.model_id,
+        "presentation": presentation,
+        "active": active
+    });
+    let _ = app.emit("companion:model-presentation", payload.clone());
+    Ok(payload)
 }
 
 #[tauri::command]
@@ -2364,7 +2579,8 @@ async fn get_diagnostics(data: State<'_, AppData>) -> Result<serde_json::Value, 
         },
         "runtime": {
             "name": "tauri",
-            "experimental": true
+            "experimental": !cfg!(target_os = "windows"),
+            "pointerPassthrough": pointer_passthrough_capability()
         },
         "mcpConfigured": mcp_configured,
         "mcpMatches": mcp_matches,
@@ -3175,25 +3391,80 @@ fn repack_avatar_pack(
     avatar::repack_pack(&avatar::path_from_input(input))
 }
 
-#[tauri::command]
-fn get_cached_model_catalogs(
-    window: WebviewWindow,
-    data: State<'_, AppData>,
-    sources: Vec<catalog::CatalogSource>,
-) -> Result<Vec<catalog::CatalogModelEntry>, String> {
-    require_manager_window(&window)?;
-    let cache_path = data.config_dir.join("catalog-cache.json");
+fn configured_catalog_sources(data: &AppData) -> Result<Vec<catalog::CatalogSource>, String> {
+    let public = data
+        .public_config
+        .lock()
+        .map(|config| config.clone())
+        .map_err(|_| "Config lock is poisoned".to_string())?;
+    let sources = public
+        .get("models")
+        .and_then(|models| models.get("sources"))
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!([]));
+    serde_json::from_value(sources).map_err(|error| format!("Model sources are invalid: {error}"))
+}
+
+fn load_catalog_cache(config_dir: &Path) -> Result<catalog::CatalogCache, String> {
+    let cache_path = config_dir.join("catalog-cache.json");
     if !cache_path.exists() {
-        return Ok(Vec::new());
+        return Ok(catalog::CatalogCache::default());
     }
     let metadata = std::fs::metadata(&cache_path).map_err(|error| error.to_string())?;
     if metadata.len() > 16 * 1024 * 1024 {
         return Err("Cached model catalog exceeds the 16 MiB safety limit.".to_string());
     }
     let bytes = std::fs::read(&cache_path).map_err(|error| error.to_string())?;
-    let cache = serde_json::from_slice::<catalog::CatalogCache>(&bytes)
-        .map_err(|error| format!("Cached model catalog is invalid: {error}"))?;
-    Ok(catalog::cached_enabled_models(&sources, &cache))
+    serde_json::from_slice::<catalog::CatalogCache>(&bytes)
+        .map_err(|error| format!("Cached model catalog is invalid: {error}"))
+}
+
+fn read_catalog_cache(data: &AppData) -> Result<catalog::CatalogCache, String> {
+    data.catalog_cache
+        .lock()
+        .map(|cache| cache.clone())
+        .map_err(|_| "Catalog cache lock is poisoned".to_string())
+}
+
+fn resolve_catalog_model(
+    data: &AppData,
+    source_id: &str,
+    model_id: &str,
+) -> Result<catalog::CatalogModelEntry, String> {
+    let sources = configured_catalog_sources(data)?;
+    let cache = read_catalog_cache(data)?;
+    catalog::resolve_cached_model_entry(&sources, &cache, source_id, model_id)
+}
+
+#[tauri::command]
+fn get_cached_model_catalogs(
+    window: WebviewWindow,
+    data: State<'_, AppData>,
+) -> Result<catalog::CatalogRefreshResult, String> {
+    require_manager_window(&window)?;
+    let sources = configured_catalog_sources(&data)?;
+    let cache = read_catalog_cache(&data)?;
+    Ok(catalog::CatalogRefreshResult {
+        models: Vec::new(),
+        sources: sources
+            .iter()
+            .filter(|source| source.enabled)
+            .map(|source| catalog::CatalogSourceStatus {
+                source_id: source.id.clone(),
+                state: if cache.entries.contains_key(&source.id) {
+                    catalog::CatalogSourceState::Fresh
+                } else {
+                    catalog::CatalogSourceState::Failed
+                },
+                model_count: cache
+                    .entries
+                    .get(&source.id)
+                    .map(|entry| entry.document.models.len())
+                    .unwrap_or(0),
+                error: None,
+            })
+            .collect(),
+    })
 }
 
 fn cleanup_stale_model_downloads(config_dir: &Path) -> u64 {
@@ -3226,20 +3497,17 @@ fn cleanup_stale_model_downloads(config_dir: &Path) -> u64 {
 async fn refresh_model_catalogs(
     window: WebviewWindow,
     data: State<'_, AppData>,
-    sources: Vec<catalog::CatalogSource>,
 ) -> Result<catalog::CatalogRefreshResult, String> {
     require_manager_window(&window)?;
+    let sources = configured_catalog_sources(&data)?;
     let cache_path = data.config_dir.join("catalog-cache.json");
-    let mut cache = std::fs::read_to_string(&cache_path)
-        .ok()
-        .and_then(|text| serde_json::from_str::<catalog::CatalogCache>(&text).ok())
-        .unwrap_or_default();
+    let mut cache = read_catalog_cache(&data)?;
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
         .redirect(safe_download_redirect_policy())
         .build()
         .map_err(|error| error.to_string())?;
-    let result = catalog::refresh_catalogs(&client, &sources, &mut cache).await;
+    let mut result = catalog::refresh_catalogs(&client, &sources, &mut cache).await;
     if let Some(parent) = cache_path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
@@ -3248,16 +3516,40 @@ async fn refresh_model_catalogs(
         serde_json::to_vec_pretty(&cache).map_err(|error| error.to_string())?,
     )
     .map_err(|error| error.to_string())?;
+    if let Ok(mut stored) = data.catalog_cache.lock() {
+        *stored = cache;
+    }
+    result.models.clear();
     Ok(result)
 }
 
 #[tauri::command]
 fn search_model_catalog(
     window: WebviewWindow,
-    models: Vec<catalog::CatalogModelEntry>,
+    data: State<'_, AppData>,
     request: catalog::CatalogSearchRequest,
 ) -> Result<catalog::CatalogSearchResult, String> {
     require_manager_window(&window)?;
+    let sources = configured_catalog_sources(&data)?;
+    let cache = read_catalog_cache(&data)?;
+    let mut models = catalog::cached_enabled_models(&sources, &cache);
+    match request.installation_filter.as_str() {
+        "installed" => models.retain(|entry| {
+            data.config_dir
+                .join("models")
+                .join(&entry.model.id)
+                .is_dir()
+        }),
+        "available" => models.retain(|entry| {
+            !data
+                .config_dir
+                .join("models")
+                .join(&entry.model.id)
+                .is_dir()
+        }),
+        "" | "all" => {}
+        _ => return Err("Unknown model installation filter.".to_string()),
+    }
     Ok(catalog::search_catalog(&models, &request))
 }
 
@@ -3658,11 +3950,11 @@ async fn set_mouse_passthrough(
     window: WebviewWindow,
     data: State<'_, AppData>,
     enabled: bool,
-    bounds: Option<PointerBounds>,
+    bounds: Option<PointerBoundsInput>,
 ) -> Result<(), String> {
     data.passthrough_enabled.store(enabled, Ordering::Relaxed);
-    if let Ok(mut current) = data.pointer_bounds.lock() {
-        *current = bounds;
+    if let Ok(mut current) = data.pointer_regions.lock() {
+        *current = normalize_pointer_regions(bounds);
     }
     // macOS and Linux do not yet have the native bounds monitor used on Windows.
     // Keep the window interactive there instead of making touch and pointer input
@@ -3684,13 +3976,13 @@ async fn set_mouse_passthrough(
 #[tauri::command]
 fn update_pointer_bounds(
     data: State<'_, AppData>,
-    bounds: Option<PointerBounds>,
+    bounds: Option<PointerBoundsInput>,
 ) -> Result<(), String> {
     let mut current = data
-        .pointer_bounds
+        .pointer_regions
         .lock()
         .map_err(|_| "Pointer bounds lock is poisoned".to_string())?;
-    *current = bounds;
+    *current = normalize_pointer_regions(bounds);
     Ok(())
 }
 
@@ -4801,6 +5093,9 @@ pub fn run() {
     let public_config_store = Arc::new(Mutex::new(runtime_config.public.clone()));
     let public_config_for_server = public_config_store.clone();
     let history_for_server = history_store.clone();
+    let catalog_cache_store = Arc::new(Mutex::new(
+        load_catalog_cache(&runtime_config.config_dir).unwrap_or_default(),
+    ));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
@@ -4823,10 +5118,11 @@ pub fn run() {
             history: history_store.clone(),
             drag_state: Arc::new(Mutex::new(None)),
             passthrough_enabled: Arc::new(AtomicBool::new(false)),
-            pointer_bounds: Arc::new(Mutex::new(None)),
+            pointer_regions: Arc::new(Mutex::new(Vec::new())),
             panel_pinned: Arc::new(AtomicBool::new(false)),
             panel_interaction_locked: Arc::new(AtomicBool::new(false)),
             renderer_health: Arc::new(Mutex::new(RendererHealth::default())),
+            catalog_cache: catalog_cache_store,
             ai_integration_lock: Arc::new(Mutex::new(())),
             model_trial_previous: Arc::new(Mutex::new(None)),
             download_cancellations: Arc::new(Mutex::new(HashMap::new())),
@@ -5048,6 +5344,7 @@ pub fn run() {
             cancel_model_download,
             prepare_model_preview,
             save_settings,
+            save_model_presentation,
             get_diagnostics,
             export_logs,
             export_diagnostics_report,
@@ -5258,6 +5555,32 @@ mod tests {
     }
 
     #[test]
+    fn pointer_regions_accept_legacy_payloads_and_cap_multi_region_updates() {
+        let legacy = PointerBounds {
+            left: 10.0,
+            right: 20.0,
+            top: 30.0,
+            bottom: 40.0,
+        };
+        assert_eq!(
+            normalize_pointer_regions(Some(PointerBoundsInput::Single(legacy))).len(),
+            1
+        );
+
+        let mut regions = vec![legacy; 20];
+        regions.push(PointerBounds {
+            left: 10.0,
+            right: 10.0,
+            top: 30.0,
+            bottom: 40.0,
+        });
+        assert_eq!(
+            normalize_pointer_regions(Some(PointerBoundsInput::Multiple(regions))).len(),
+            16
+        );
+    }
+
+    #[test]
     fn drag_deltas_convert_css_pixels_to_physical_pixels() {
         assert_eq!(physical_drag_delta(80.0, 1.0), 80);
         assert_eq!(physical_drag_delta(80.0, 1.25), 100);
@@ -5274,6 +5597,63 @@ mod tests {
         assert_eq!(normalize_frame_rate_mode("30"), "30");
         assert_eq!(normalize_frame_rate_mode("165"), "display");
         assert_eq!(normalize_drag_mode("compatible"), "compatible");
+    }
+
+    #[test]
+    fn active_model_presentation_overlays_defaults_without_leaking_to_the_next_model() {
+        let mut public = serde_json::json!({
+            "server": { "origin": "http://127.0.0.1:17388" },
+            "spine": {
+                "assetDir": "",
+                "skel": "alpha.skel",
+                "scale": 0.86,
+                "offsetX": 0,
+                "offsetY": -18,
+                "presentationDefaults": { "scale": 0.86, "offsetX": 0, "offsetY": -18, "fitMode": "legacy" }
+            },
+            "models": {
+                "catalog": [
+                    { "id": "alpha", "skel": "alpha.skel", "category": "illustration", "compatibilityProfile": "idle-only" },
+                    { "id": "beta", "skel": "beta.skel", "category": "operator", "compatibilityProfile": "companion" }
+                ],
+                "presentations": {
+                    "alpha": { "scale": 1.2, "offsetX": 12, "offsetY": -30, "fitMode": "full" }
+                }
+            }
+        });
+        refresh_public_asset_fields(&mut public);
+        assert_eq!(public["spine"]["modelId"], "alpha");
+        assert_eq!(public["spine"]["scale"], 1.2);
+        assert_eq!(public["spine"]["fitMode"], "full");
+
+        public["spine"]["skel"] = serde_json::json!("beta.skel");
+        refresh_public_asset_fields(&mut public);
+        assert_eq!(public["spine"]["modelId"], "beta");
+        assert_eq!(public["spine"]["scale"], 0.86);
+        assert_eq!(public["spine"]["offsetY"], -18);
+        assert_eq!(public["spine"]["fitMode"], "legacy");
+    }
+
+    #[test]
+    fn model_presentation_validation_is_bounded_and_explicit() {
+        let valid = ModelPresentationInput {
+            model_id: "alpha".to_string(),
+            scale: 1.0,
+            offset_x: 0.0,
+            offset_y: -18.0,
+            fit_mode: "character".to_string(),
+        };
+        assert!(validate_model_presentation(&valid).is_ok());
+        assert!(validate_model_presentation(&ModelPresentationInput {
+            scale: 3.0,
+            ..valid.clone()
+        })
+        .is_err());
+        assert!(validate_model_presentation(&ModelPresentationInput {
+            fit_mode: "crop".to_string(),
+            ..valid
+        })
+        .is_err());
     }
 
     #[test]
