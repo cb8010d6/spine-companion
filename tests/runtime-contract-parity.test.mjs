@@ -50,6 +50,19 @@ describe("runtime contract parity", () => {
     expect(packagedTools).toEqual(completePackaged);
   });
 
+  it("uses the raw tool value as structuredContent in every MCP runtime", () => {
+    const source = read("scripts/mcp-companion-server.mjs");
+    const plugin = read("plugins/spine-companion-status/scripts/mcp-companion-server.mjs");
+    const packaged = read("src-tauri/src/mcp.rs");
+
+    for (const implementation of [source, plugin]) {
+      expect(implementation).toContain("structuredContent: typeof value === \"object\" ? value : undefined");
+      expect(implementation).not.toContain("structuredContent: { value");
+    }
+    expect(packaged).toContain('"structuredContent": value');
+    expect(packaged).not.toMatch(/"structuredContent"\s*:\s*\{\s*"value"\s*:\s*value/u);
+  });
+
   it("exposes avatar job persistence as a planning-only contract", () => {
     expect(runtimeContract.mcp.packagedExtensions).toEqual(expect.arrayContaining([
       "companion_create_avatar_job",

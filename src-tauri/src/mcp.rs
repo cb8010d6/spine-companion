@@ -40,17 +40,13 @@ fn public_api_endpoint() -> String {
     format!("{}://{}{}", url.scheme(), host, port)
 }
 
-fn text_result(value: Value, source: &SourceInfo) -> Value {
+fn text_result(value: Value, _source: &SourceInfo) -> Value {
     json!({
         "content": [{
             "type": "text",
             "text": serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".to_string())
         }],
-        "structuredContent": {
-            "value": value,
-            "source": source.source,
-            "sourceLabel": source.label
-        }
+        "structuredContent": value
     })
 }
 

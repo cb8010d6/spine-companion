@@ -317,6 +317,8 @@ MCP tools:
 - `companion_reminder`
 - `companion_report_ai_phase`
 - `companion_report_codex_phase`
+- `companion_get_diagnostics`
+- `companion_test_bridge`
 
 The desktop app or `bun run dev:api` must be running before the MCP tools can
 reach the companion.

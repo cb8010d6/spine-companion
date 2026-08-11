@@ -55,6 +55,7 @@ const fallbackConfig = {
     scale: 0.86,
     offsetX: 0,
     offsetY: -18,
+    fitMode: "legacy",
     mixDurationMs: 520,
     boundsSamples: 10,
     framePadding: 1.08,
@@ -208,6 +209,13 @@ function loadConfig() {
 }
 
 function getPublicConfig(config, serverOrigin) {
+  const spine = config.spine || {};
+  const presentationDefaults = {
+    scale: spine.scale,
+    offsetX: spine.offsetX,
+    offsetY: spine.offsetY,
+    fitMode: spine.fitMode || "legacy"
+  };
   return {
     window: config.window,
     server: {
@@ -217,19 +225,21 @@ function getPublicConfig(config, serverOrigin) {
       websocketUrl: serverOrigin.replace(/^http/, "ws") + "/ws"
     },
     spine: {
-      assetDir: config.spine.assetDir,
-      skel: config.spine.skel,
-      assetUrl: `${serverOrigin}/assets/spine/${encodeURIComponent(config.spine.skel)}`,
-      assetDirConfigured: Boolean(config.spine.assetDir),
-      scale: config.spine.scale,
-      offsetX: config.spine.offsetX,
-      offsetY: config.spine.offsetY,
-      mixDurationMs: config.spine.mixDurationMs,
-      boundsSamples: config.spine.boundsSamples,
-      framePadding: config.spine.framePadding,
-      maxViewportFill: config.spine.maxViewportFill,
-      stageBottomInset: config.spine.stageBottomInset,
-      fitStates: config.spine.fitStates
+      assetDir: spine.assetDir,
+      skel: spine.skel,
+      assetUrl: `${serverOrigin}/assets/spine/${encodeURIComponent(spine.skel)}`,
+      assetDirConfigured: Boolean(spine.assetDir),
+      scale: spine.scale,
+      offsetX: spine.offsetX,
+      offsetY: spine.offsetY,
+      fitMode: presentationDefaults.fitMode,
+      presentationDefaults,
+      mixDurationMs: spine.mixDurationMs,
+      boundsSamples: spine.boundsSamples,
+      framePadding: spine.framePadding,
+      maxViewportFill: spine.maxViewportFill,
+      stageBottomInset: spine.stageBottomInset,
+      fitStates: spine.fitStates
     },
     ui: config.ui,
     models: config.models,
