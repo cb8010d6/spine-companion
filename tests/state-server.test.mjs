@@ -3,8 +3,13 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { WebSocket } from "ws";
 
-const { createCompanionServer, rewriteAtlasTextureUrls } = require("../src/backend/state-server.cjs");
+const {
+  createCompanionServer,
+  isLoopbackHost,
+  rewriteAtlasTextureUrls
+} = require("../src/backend/state-server.cjs");
 
 function request(url, options = {}) {
   return new Promise((resolve, reject) => {
@@ -86,6 +91,17 @@ function waitForSseEvent(url, eventName, predicate, action) {
       }
     });
     req.end();
+  });
+}
+
+function firstWebSocketMessage(url) {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(url);
+    socket.once("message", (data) => {
+      socket.close();
+      resolve(JSON.parse(String(data)));
+    });
+    socket.once("error", reject);
   });
 }
 
@@ -241,6 +257,13 @@ describe("state-server HTTP API", () => {
     });
   });
 
+  describe("WebSocket development contract", () => {
+    it("keeps /ws available in the JavaScript development API", async () => {
+      const message = await firstWebSocketMessage(baseUrl.replace(/^http/, "ws") + "/ws");
+      expect(message).toMatchObject({ type: "state", payload: { state: "idle" } });
+    });
+  });
+
   describe("404", () => {
     it("returns 404 for unknown paths", async () => {
       const res = await request(`${baseUrl}/nonexistent`);
@@ -271,6 +294,32 @@ describe("state-server HTTP API", () => {
       }
     });
   });
+});
+
+describe("state-server bind contract", () => {
+  it.each(["localhost", "127.0.0.1", "127.42.0.7", "::1"])(
+    "accepts loopback host %s",
+    (host) => {
+      expect(isLoopbackHost(host)).toBe(true);
+    }
+  );
+
+  it.each(["0.0.0.0", "192.168.1.10", "example.com", "127.0.0.1.example.com"])(
+    "rejects non-loopback host %s before listen",
+    async (host) => {
+      const runtime = createCompanionServer(
+        {
+          state: { initial: "idle" },
+          server: { host, port: 0 },
+          spine: { assetDir: "" }
+        },
+        () => ({})
+      );
+
+      await expect(runtime.listen()).rejects.toThrow(/loopback/i);
+      runtime.store.destroy();
+    }
+  );
 });
 
 describe("rewriteAtlasTextureUrls", () => {

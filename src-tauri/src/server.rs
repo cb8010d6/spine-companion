@@ -1,6 +1,6 @@
 use axum::{
     extract::{Path, State as AxumState},
-    http::{header, HeaderMap, Method, StatusCode},
+    http::{header, HeaderMap, Method, StatusCode, Uri},
     response::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Json, Response,
@@ -10,7 +10,7 @@ use axum::{
 };
 use serde_json::json;
 use std::convert::Infallible;
-use std::net::SocketAddr;
+use std::net::IpAddr;
 use std::path::{Path as FsPath, PathBuf};
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
@@ -39,19 +39,53 @@ pub struct AppState {
     pub history: HistoryStore,
 }
 
-fn localhost_cors() -> CorsLayer {
+fn validate_loopback_host(host: &str) -> Result<(), String> {
+    let value = host.trim();
+    if value.eq_ignore_ascii_case("localhost")
+        || value
+            .parse::<IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
+    {
+        return Ok(());
+    }
+    Err(format!(
+        "Companion API host \"{value}\" must be loopback in v0.2.6."
+    ))
+}
+
+fn origin_is_allowed(origin: &str) -> bool {
+    if origin == "null" {
+        return true;
+    }
+    let Ok(uri) = origin.parse::<Uri>() else {
+        return false;
+    };
+    if uri.path() != "/" || uri.query().is_some() {
+        return false;
+    }
+    let Some(scheme) = uri.scheme_str() else {
+        return false;
+    };
+    let Some(authority) = uri.authority() else {
+        return false;
+    };
+    if authority.as_str().contains('@') {
+        return false;
+    }
+    let host = authority.host().trim_matches(['[', ']']);
+    if scheme == "tauri" {
+        return host.eq_ignore_ascii_case("localhost");
+    }
+    if scheme != "http" && scheme != "https" {
+        return false;
+    }
+    host.eq_ignore_ascii_case("tauri.localhost") || validate_loopback_host(host).is_ok()
+}
+
+fn loopback_cors() -> CorsLayer {
     CorsLayer::new()
         .allow_origin(AllowOrigin::predicate(|origin, _| {
-            if let Ok(s) = origin.to_str() {
-                s.starts_with("http://127.0.0.1")
-                    || s.starts_with("http://localhost")
-                    || s.starts_with("http://tauri.localhost")
-                    || s.starts_with("https://tauri.localhost")
-                    || s.starts_with("tauri://localhost")
-                    || s == "null"
-            } else {
-                false
-            }
+            origin.to_str().is_ok_and(origin_is_allowed)
         }))
         .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
         .allow_headers(tower_http::cors::Any)
@@ -321,7 +355,7 @@ fn build_router(app_state: AppState) -> Router {
         .route("/events", get(events))
         .route("/assets/spine/*path", get(get_spine_asset))
         .route("/assets/previews/:model_id/*path", get(get_preview_asset))
-        .layer(localhost_cors())
+        .layer(loopback_cors())
         .with_state(app_state)
 }
 
@@ -337,6 +371,19 @@ pub async fn start_api_server(
     host: &str,
     port: u16,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    validate_loopback_host(host)
+        .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidInput, message))?;
+    let addresses = tokio::net::lookup_host((host, port))
+        .await?
+        .collect::<Vec<_>>();
+    if addresses.is_empty() || addresses.iter().any(|address| !address.ip().is_loopback()) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("Companion API host \"{host}\" resolved outside loopback."),
+        )
+        .into());
+    }
+    let addr = addresses[0];
     let app_state = AppState {
         store,
         tx,
@@ -350,9 +397,8 @@ pub async fn start_api_server(
 
     let app = build_router(app_state);
 
-    let addr: SocketAddr = format!("{}:{}", host, port).parse()?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    println!("Companion API listening on {}", addr);
+    println!("Companion API listening on {}", listener.local_addr()?);
 
     tokio::spawn(async move {
         axum::serve(listener, app).await.ok();
@@ -367,6 +413,51 @@ mod tests {
     use crate::state::{create_reminder_broadcast, create_reminder_store, create_state_store};
     use axum::{body::Body, http::Request};
     use tower::ServiceExt;
+
+    #[test]
+    fn accepts_only_loopback_api_hosts() {
+        for host in ["localhost", "127.0.0.1", "127.42.0.7", "::1"] {
+            assert!(validate_loopback_host(host).is_ok(), "{host}");
+        }
+        for host in [
+            "0.0.0.0",
+            "192.168.1.10",
+            "example.com",
+            "127.0.0.1.example.com",
+        ] {
+            assert!(validate_loopback_host(host).is_err(), "{host}");
+        }
+    }
+
+    #[test]
+    fn cors_accepts_tauri_and_real_loopback_origins() {
+        for origin in [
+            "null",
+            "tauri://localhost",
+            "http://tauri.localhost",
+            "https://tauri.localhost",
+            "http://localhost:17389",
+            "https://127.42.0.7",
+            "http://[::1]:17389",
+        ] {
+            assert!(origin_is_allowed(origin), "{origin}");
+        }
+    }
+
+    #[test]
+    fn cors_rejects_malicious_similar_hosts() {
+        for origin in [
+            "http://localhost.example.com",
+            "http://127.0.0.1.example.com",
+            "https://tauri.localhost.example.com",
+            "http://example.com",
+            "ws://127.0.0.1:17388",
+            "http://user@localhost",
+            "http://localhost/path",
+        ] {
+            assert!(!origin_is_allowed(origin), "{origin}");
+        }
+    }
 
     #[tokio::test]
     async fn file_type_matches_spine_assets() {
@@ -400,6 +491,27 @@ mod tests {
         .await;
         assert_eq!(reminder.text, "API");
         assert_eq!(list_reminders(&reminders).await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn rejects_non_loopback_host_before_binding() {
+        let (store, tx) = create_state_store("idle");
+        let error = start_api_server(
+            store,
+            tx,
+            create_reminder_store(),
+            create_reminder_broadcast(),
+            Arc::new(RwLock::new(None)),
+            std::env::temp_dir(),
+            Arc::new(Mutex::new(json!({}))),
+            Arc::new(Mutex::new(Vec::new())),
+            "0.0.0.0",
+            0,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("loopback"));
     }
 
     #[test]

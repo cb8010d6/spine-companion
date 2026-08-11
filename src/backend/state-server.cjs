@@ -1,5 +1,7 @@
 const fs = require("node:fs");
 const http = require("node:http");
+const dns = require("node:dns").promises;
+const net = require("node:net");
 const path = require("node:path");
 const { WebSocketServer } = require("ws");
 
@@ -8,6 +10,28 @@ const { createStateStore, createStateMachine } = require("../shared/state-store.
 const { validateReminder, validateSetState } = require("./ipc-schema.cjs");
 
 const { normalizeStateId } = createStateMachine(stateMachine);
+
+function isLoopbackHost(host) {
+  const value = String(host || "").trim().toLowerCase();
+  if (value === "localhost") return true;
+  const family = net.isIP(value);
+  if (family === 4) return value.split(".")[0] === "127";
+  return family === 6 && value === "::1";
+}
+
+async function resolveLoopbackHost(host) {
+  const value = String(host || "").trim();
+  if (!isLoopbackHost(value)) {
+    throw new Error(`Companion API host "${value}" must be loopback in v0.2.6.`);
+  }
+  if (net.isIP(value)) return value;
+
+  const addresses = await dns.lookup(value, { all: true });
+  if (!addresses.length || addresses.some(({ address }) => !isLoopbackHost(address))) {
+    throw new Error(`Companion API host "${value}" resolved outside loopback.`);
+  }
+  return addresses[0].address;
+}
 
 const LOCALHOST_ORIGINS = new Set([
   "http://127.0.0.1", "http://localhost",
@@ -260,10 +284,11 @@ function createCompanionServer(config, publicConfig) {
   return {
     server,
     store,
-    listen() {
+    async listen() {
+      const host = await resolveLoopbackHost(config.server.host);
       return new Promise((resolve, reject) => {
         server.once("error", reject);
-        server.listen(config.server.port, config.server.host, () => {
+        server.listen(config.server.port, host, () => {
           server.off("error", reject);
           resolve(server.address());
         });
@@ -288,6 +313,7 @@ function createCompanionServer(config, publicConfig) {
 
 module.exports = {
   createCompanionServer,
+  isLoopbackHost,
   normalizeStateId,
   rewriteAtlasTextureUrls
 };
