@@ -1,8 +1,12 @@
 #!/usr/bin/env node
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { createRequire } from "node:module";
 import { z } from "zod";
 import sourceRegistry from "../src/shared/source-registry.cjs";
+
+const require = createRequire(import.meta.url);
+const { version: companionVersion } = require("../package.json");
 
 const apiBase = (process.env.COMPANION_API || "http://127.0.0.1:17388").replace(/\/$/, "");
 const states = ["idle", "working", "reviewing", "running", "success", "failed", "waiting", "sleeping", "reminder"];
@@ -62,7 +66,7 @@ function textResult(value) {
 
 const server = new McpServer({
   name: "spine-companion",
-  version: "0.1.0"
+  version: companionVersion
 });
 
 server.registerTool("companion_get_state", {

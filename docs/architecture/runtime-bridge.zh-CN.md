@@ -9,6 +9,10 @@ Spine Companion 只使用 Tauri 作为桌面运行时。Renderer 通过
 保留与具体框架无关的接口名称是有意设计：UI 依赖小而明确的应用契约，不需要在各业务
 模块中散落原生 API。浏览器预览使用 HTTP provider，不会伪造不支持的桌面 command。
 
+共享 HTTP 与 MCP 接口的机器可读清单位于 `src/shared/runtime-contract.json`。契约测试会
+保持源码开发 Bridge 与安装包 Rust 运行时的共同接口一致，同时明确允许安装包专属的
+Avatar Studio MCP 扩展，以及仅供开发预览使用的 `/ws` adapter。
+
 | 能力 | 原生实现 |
 | --- | --- |
 | 状态与提醒 | Rust 状态存储、Tauri command/event |

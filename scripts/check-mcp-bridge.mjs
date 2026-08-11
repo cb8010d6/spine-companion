@@ -1,7 +1,12 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { createRequire } from "node:module";
 import { createCompanionServer } from "../src/backend/state-server.cjs";
 import { getPublicConfig, loadConfig } from "../src/backend/config.cjs";
+import runtimeContract from "../src/shared/runtime-contract.json" with { type: "json" };
+
+const require = createRequire(import.meta.url);
+const { version: companionVersion } = require("../package.json");
 
 const config = loadConfig();
 config.server.port = 0;
@@ -28,9 +33,14 @@ const client = new Client({ name: "spine-companion-check", version: "0.1.0" });
 try {
   await client.connect(transport);
   const tools = await client.listTools();
-  const names = tools.tools.map((tool) => tool.name);
-  for (const expected of ["companion_get_state", "companion_set_state", "companion_reminder", "companion_report_codex_phase", "companion_report_ai_phase"]) {
-    if (!names.includes(expected)) throw new Error(`Missing MCP tool: ${expected}`);
+  const names = tools.tools.map((tool) => tool.name).sort();
+  const expectedNames = [...runtimeContract.mcp.core].sort();
+  if (JSON.stringify(names) !== JSON.stringify(expectedNames)) {
+    throw new Error(`Source MCP tools differ from the runtime contract: ${JSON.stringify(names)}`);
+  }
+  const serverVersion = client.getServerVersion?.();
+  if (serverVersion?.version !== companionVersion) {
+    throw new Error(`Source MCP version ${serverVersion?.version || "unknown"} does not match package ${companionVersion}`);
   }
 
   await client.callTool({

@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "http": {
+    "shared": [
+      "GET /health",
+      "GET /config",
+      "GET /state",
+      "POST /state",
+      "POST /state/:id",
+      "GET /reminders",
+      "POST /reminders",
+      "DELETE /reminders/:id",
+      "GET /history",
+      "GET /events"
+    ],
+    "developmentOnly": [
+      "GET /ws"
+    ]
+  },
+  "mcp": {
+    "core": [
+      "companion_get_state",
+      "companion_set_state",
+      "companion_reminder",
+      "companion_report_ai_phase",
+      "companion_report_codex_phase"
+    ],
+    "packagedExtensions": [
+      "companion_avatar_requirements",
+      "companion_create_avatar_job",
+      "companion_update_avatar_job",
+      "companion_validate_avatar_pack",
+      "companion_import_avatar_pack"
+    ]
+  }
+}
