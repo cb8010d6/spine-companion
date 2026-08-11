@@ -79,7 +79,8 @@ open.
 ## External Dependencies And Honest Limits
 
 These items cannot be completed by repository code alone and are not represented
-as implemented:
+as implemented. They are disclosed, non-blocking limitations for v0.2.6 rather
+than hidden release claims:
 
 - Windows/macOS signing and macOS notarization require trusted signing identity
   and credentials. Unsigned status must remain visible in release notes.
