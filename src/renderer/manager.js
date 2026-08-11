@@ -91,10 +91,7 @@ const topbarLocaleIcon = document.getElementById("topbar-locale-icon");
 const NAV_ICONS = {
   dashboard: House,
   library: Library,
-  installed: PackageCheck,
-  downloads: Download,
   integrations: Bot,
-  avatar: Sparkles,
   settings: Settings,
   diagnostics: Activity
 };
@@ -110,6 +107,15 @@ let avatarPacks = [];
 const remoteCatalogCache = new Map();
 const ALL_CATALOG_SOURCES = "all";
 export const MANAGER_FRAME_RATE_MODES = Object.freeze(["display", "60", "30"]);
+export const MANAGER_PRIMARY_VIEWS = Object.freeze(["dashboard", "library", "integrations", "settings", "diagnostics"]);
+export const LIBRARY_TABS = Object.freeze(["catalog", "installed", "downloads"]);
+
+export function resolveManagerNavigation(viewName) {
+  if (viewName === "installed" || viewName === "downloads") {
+    return { view: "library", libraryTab: viewName };
+  }
+  return { view: viewName, libraryTab: null };
+}
 let updateStatus = null;
 let liveState = null;
 const downloads = {};
@@ -120,6 +126,7 @@ let integrationTestAllInFlight = false;
 let dashboardRenderRevision = 0;
 const navigationGuard = createNavigationGuard();
 let librarySession = null;
+let libraryTab = "catalog";
 let librarySelectedSource = ALL_CATALOG_SOURCES;
 let modalReturnFocus = null;
 let modalOnDismiss = null;
@@ -268,10 +275,33 @@ function trapModalKeys(event) {
 }
 
 function navTo(viewName) {
-  activeView = viewName;
-  for (const button of navButtons) button.classList.toggle("active", button.dataset.view === viewName);
-  if (topbarTitle) topbarTitle.textContent = t(`manager.nav.${viewName}`);
-  renderView(viewName);
+  const navigation = resolveManagerNavigation(viewName);
+  if (navigation.libraryTab) libraryTab = navigation.libraryTab;
+  activeView = navigation.view;
+  for (const button of navButtons) button.classList.toggle("active", button.dataset.view === activeView);
+  if (topbarTitle) topbarTitle.textContent = t(`manager.nav.${activeView}`);
+  renderView(activeView);
+}
+
+function selectLibraryTab(tab) {
+  if (!LIBRARY_TABS.includes(tab)) return;
+  libraryTab = tab;
+  activeView = "library";
+  for (const button of navButtons) button.classList.toggle("active", button.dataset.view === "library");
+  if (topbarTitle) topbarTitle.textContent = t("manager.nav.library");
+  renderView("library");
+}
+
+function libraryTabs(selectedTab) {
+  return h("div", { class: "library-tabs", role: "tablist", "aria-label": t("manager.library.tabsLabel") },
+    ...LIBRARY_TABS.map((tab) => h("button", {
+      class: `library-tab${selectedTab === tab ? " active" : ""}`,
+      type: "button",
+      role: "tab",
+      "aria-selected": selectedTab === tab ? "true" : "false",
+      onClick: () => selectLibraryTab(tab)
+    }, t(`manager.library.tab.${tab}`)))
+  );
 }
 
 function animateLibraryCount(element, target) {
@@ -329,9 +359,10 @@ function libraryLoadingView() {
       ),
       h("div", { class: "model-actions" },
         h("button", { class: "btn", type: "button", disabled: true }, t("manager.actions.importLocal")),
-        h("button", { class: "btn", type: "button", onClick: () => navTo("installed") }, t("manager.library.manageInstalled"))
+        h("button", { class: "btn", type: "button", onClick: () => navTo("avatar") }, ...iconLabel(Sparkles, t("manager.labs.open")))
       )
     ),
+    libraryTabs("catalog"),
     h("div", { class: "library-summary" },
       h("div", {}, h("strong", {}, "0"), h("span", {}, t("manager.library.catalogCount"))),
       h("div", {}, h("strong", {}, "0"), h("span", {}, t("manager.library.installedCount"))),
@@ -681,7 +712,7 @@ async function startDownload(id, catalogEntry = null, acknowledgement = false) {
       } }, t("manager.actions.retry"))
     ]);
   }
-  if (activeView === "downloads" || activeView === "installed") renderView(activeView);
+  if (activeView === "library" && libraryTab !== "catalog") renderView("library");
 }
 
 function emptyRemoteCatalog() {
@@ -1069,9 +1100,10 @@ async function libraryView({ cachedOnly = false } = {}) {
       ),
       h("div", { class: "model-actions" },
         h("button", { class: "btn", type: "button", onClick: importLocalModel }, t("manager.actions.importLocal")),
-        h("button", { class: "btn", type: "button", onClick: () => navTo("installed") }, t("manager.library.manageInstalled"))
+        h("button", { class: "btn", type: "button", onClick: () => navTo("avatar") }, ...iconLabel(Sparkles, t("manager.labs.open")))
       )
     ),
+    libraryTabs("catalog"),
     h("div", { class: "library-summary" },
       h("div", {}, catalogCount, h("span", {}, t("manager.library.catalogCount"))),
       h("div", {}, installedCount, h("span", {}, t("manager.library.installedCount"))),
@@ -1132,9 +1164,11 @@ async function activateModel(id, { incremental = false } = {}) {
   setStatus(t("manager.status.activating", { id }));
   await window.companion?.setActiveModel?.(id);
   await refreshConfig();
-  if (incremental && activeView === "library") {
+  if (incremental && activeView === "library" && libraryTab === "catalog") {
     librarySession?.refresh({ installed: true });
     setStatus(t("manager.status.active"));
+  } else if (incremental && activeView === "library") {
+    renderView("library");
   } else {
     renderView(activeView);
   }
@@ -1211,7 +1245,16 @@ function installedView() {
     })
     : [h("p", { class: "empty-text" }, t("manager.empty.noModels"))];
   return h("section", {},
-    h("h2", { class: "view-title" }, t("manager.installed.title")),
+    h("div", { class: "view-header" },
+      h("div", {},
+        h("h2", { class: "view-title" }, t("manager.installed.title")),
+        h("p", { class: "empty-text" }, t("manager.library.subtitle"))
+      ),
+      h("div", { class: "model-actions" },
+        h("button", { class: "btn", type: "button", onClick: () => navTo("avatar") }, ...iconLabel(Sparkles, t("manager.labs.open")))
+      )
+    ),
+    libraryTabs("installed"),
     h("div", { class: "grid-2 installed-grid" }, content)
   );
 }
@@ -1247,7 +1290,19 @@ function downloadsView() {
       } }, t("manager.actions.retry")) : null
     );
   }) : [h("p", { class: "empty-text" }, t("manager.empty.noDownloads"))];
-  return h("section", {}, h("h2", { class: "view-title" }, t("manager.downloads.title")), h("div", { class: "grid-2" }, cards));
+  return h("section", {},
+    h("div", { class: "view-header" },
+      h("div", {},
+        h("h2", { class: "view-title" }, t("manager.downloads.title")),
+        h("p", { class: "empty-text" }, t("manager.library.subtitle"))
+      ),
+      h("div", { class: "model-actions" },
+        h("button", { class: "btn", type: "button", onClick: () => navTo("avatar") }, ...iconLabel(Sparkles, t("manager.labs.open")))
+      )
+    ),
+    libraryTabs("downloads"),
+    h("div", { class: "grid-2" }, cards)
+  );
 }
 
 function settingsView() {
@@ -1370,6 +1425,9 @@ function settingsView() {
           }, t(`manager.option.frameRateMode.${value}`))))),
           check(t("manager.field.debugHitbox"), ui.debugHitbox === true, (checked) => saveUi({ debugHitbox: checked }))
         )
+      ),
+      section(t("manager.labs.title"), t("manager.labs.body"),
+        h("button", { class: "btn", type: "button", onClick: () => navTo("avatar") }, ...iconLabel(Sparkles, t("manager.labs.open")))
       ),
       section(t("manager.section.reminders"), t("manager.settings.remindersHelp"),
         reminders.length
@@ -2134,6 +2192,9 @@ async function avatarStudioView() {
       h("div", {},
         h("h2", { class: "view-title" }, t("manager.avatar.title")),
         h("p", { class: "empty-text" }, t("manager.avatar.subtitle"))
+      ),
+      h("div", { class: "model-actions" },
+        h("button", { class: "btn", type: "button", onClick: () => navTo("settings") }, t("manager.labs.back"))
       )
     ),
     h("div", { class: "avatar-studio-layout" },
@@ -2208,6 +2269,12 @@ async function avatarStudioView() {
 }
 
 async function renderView(viewName) {
+  const resolved = resolveManagerNavigation(viewName);
+  if (resolved.libraryTab) libraryTab = resolved.libraryTab;
+  viewName = resolved.view;
+  activeView = viewName;
+  for (const button of navButtons) button.classList.toggle("active", button.dataset.view === activeView);
+  if (topbarTitle) topbarTitle.textContent = t(`manager.nav.${activeView}`);
   const navigation = navigationGuard.begin(viewName);
   librarySession = null;
   if (viewName === "dashboard") {
@@ -2215,10 +2282,14 @@ async function renderView(viewName) {
     await renderDashboard();
     return;
   }
-  if (viewName === "library") render(libraryLoadingView(), viewContainer);
+  if (viewName === "library" && libraryTab === "catalog") render(libraryLoadingView(), viewContainer);
   else if (viewName !== "library") viewContainer.replaceChildren(h("p", { class: "empty-text" }, t("manager.status.loading")));
   setStatus(t("manager.status.viewing", { view: t(`manager.nav.${viewName}`) }));
   if (viewName === "library") {
+    if (libraryTab !== "catalog") {
+      render(libraryTab === "installed" ? installedView() : downloadsView(), viewContainer);
+      return;
+    }
     const cachedResult = await libraryView({ cachedOnly: true });
     if (!navigationGuard.isCurrent(navigation, activeView)) return;
     librarySession = cachedResult.session;
@@ -2282,15 +2353,16 @@ async function boot() {
   });
   window.companion?.onDownloadProgress?.((p) => {
     downloads[p.id] = { ...(downloads[p.id] || {}), ...p, status: p.status || "downloading" };
-    if (activeView === "library") librarySession?.refreshModel(p.id);
-    else if (activeView === "downloads") renderView(activeView);
+    if (activeView === "library" && libraryTab === "catalog") librarySession?.refreshModel(p.id);
+    else if (activeView === "library" && libraryTab === "downloads") renderView("library");
   });
   window.companion?.onConfigChanged?.(async (nextConfig) => {
     config = nextConfig || await window.companion?.getConfig?.() || config;
     applyUiLocale();
     if (activeView === "library") {
       await refreshConfig();
-      librarySession?.refresh({ installed: true });
+      if (libraryTab === "catalog") librarySession?.refresh({ installed: true });
+      else renderView("library");
     } else if (activeView === "settings" || activeView === "installed" || activeView === "dashboard") {
       renderView(activeView);
     }

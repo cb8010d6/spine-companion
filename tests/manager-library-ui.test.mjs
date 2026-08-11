@@ -5,10 +5,13 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   MANAGER_FRAME_RATE_MODES,
+  MANAGER_PRIMARY_VIEWS,
+  LIBRARY_TABS,
   catalogSourcesForSelection,
   managerInitialView,
   mergeRemoteCatalogs,
-  resolveLibraryCatalogSource
+  resolveLibraryCatalogSource,
+  resolveManagerNavigation
 } from "../src/renderer/manager.js";
 
 const sources = [
@@ -18,6 +21,23 @@ const sources = [
 ];
 
 describe("manager all-enabled-sources library view", () => {
+  it("keeps the primary navigation focused while retaining library sections", () => {
+    const managerHtml = readFileSync(resolve(process.cwd(), "manager.html"), "utf8");
+    expect(MANAGER_PRIMARY_VIEWS).toEqual(["dashboard", "library", "integrations", "settings", "diagnostics"]);
+    expect(LIBRARY_TABS).toEqual(["catalog", "installed", "downloads"]);
+    for (const view of MANAGER_PRIMARY_VIEWS) expect(managerHtml).toContain(`data-view="${view}"`);
+    expect(managerHtml).not.toContain('data-view="installed"');
+    expect(managerHtml).not.toContain('data-view="downloads"');
+    expect(managerHtml).not.toContain('data-view="avatar"');
+  });
+
+  it("redirects legacy installed and download routes into Library tabs", () => {
+    expect(resolveManagerNavigation("installed")).toEqual({ view: "library", libraryTab: "installed" });
+    expect(resolveManagerNavigation("downloads")).toEqual({ view: "library", libraryTab: "downloads" });
+    expect(resolveManagerNavigation("library")).toEqual({ view: "library", libraryTab: null });
+    expect(resolveManagerNavigation("avatar")).toEqual({ view: "avatar", libraryTab: null });
+  });
+
   it("keeps hidden status badges out of the compact card layout", () => {
     const styles = readFileSync(resolve(process.cwd(), "src/renderer/manager.css"), "utf8");
     expect(styles).toMatch(/\.badge\[hidden\][^{]*\{\s*display:\s*none/);
