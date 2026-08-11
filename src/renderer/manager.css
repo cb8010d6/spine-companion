@@ -297,6 +297,14 @@ nav button.active .nav-icon {
   margin-bottom: 16px;
 }
 
+.view-header-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 /* Modal / Toast */
 .toast-container {
   position: fixed;

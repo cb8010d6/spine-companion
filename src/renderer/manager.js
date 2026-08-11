@@ -24,12 +24,16 @@ import { createI18n, getLocale, t } from "../shared/i18n.js";
 import { avatarActionKey, avatarResultToastKey, avatarStatusKey } from "./avatar-ui.js";
 import {
   INTEGRATION_FILTERS,
+  integrationCanTest,
   integrationCompletion,
   integrationErrorKey,
+  integrationReportResult,
   integrationMatchesFilter,
+  integrationMatchesSource,
   integrationPrimaryAction,
   integrationSummaryKey,
   integrationTestResult,
+  isIntegrationSelfTest,
   selectFilteredIntegration
 } from "./integration-ui.js";
 import { modelPreview } from "./model-preview.js";
@@ -112,6 +116,7 @@ const downloads = {};
 const integrationTestResults = new Map();
 let integrationFilter = "all";
 let selectedIntegrationId = "";
+let integrationTestAllInFlight = false;
 let dashboardRenderRevision = 0;
 const navigationGuard = createNavigationGuard();
 let librarySession = null;
@@ -1639,28 +1644,78 @@ async function restoreIntegration(id) {
   ]);
 }
 
-async function testIntegration(id) {
+async function testIntegration(id, { silent = false, refresh = true } = {}) {
   try {
     const result = await window.companion?.testAiIntegration?.(id);
-    await refreshIntegrations();
-    if (activeView === "integrations") await renderView("integrations");
-    showModal(t("manager.integrations.testTitle"), t("manager.integrations.testOk", {
-      label: result?.sourceLabel || result?.source || id,
-      count: result?.toolCount || 0
-    }), [
-      h("button", { class: "btn btn-primary", type: "button", onClick: closeModal }, t("manager.actions.close"))
-    ]);
+    if (refresh) {
+      await refreshIntegrations();
+      if (activeView === "integrations") await renderView("integrations");
+    }
+    if (!silent) {
+      showModal(t("manager.integrations.testTitle"), t("manager.integrations.testOk", {
+        label: result?.sourceLabel || result?.source || id,
+        count: result?.toolCount || 0
+      }), [
+        h("button", { class: "btn btn-primary", type: "button", onClick: closeModal }, t("manager.actions.close"))
+      ]);
+    }
+    return { ok: true, result };
   } catch (error) {
-    await refreshIntegrations().catch(() => {});
-    if (activeView === "integrations") await renderView("integrations");
+    if (refresh) {
+      await refreshIntegrations().catch(() => {});
+      if (activeView === "integrations") await renderView("integrations");
+    }
     const item = integrations.find((integration) => integration.id === id);
     const rawError = error.message || String(error);
-    showModal(t("manager.integrations.testTitle"), `${t(integrationErrorKey(rawError))}\n\n${t("manager.integrations.technicalDetails")}: ${rawError}`, [
-      h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.close")),
-      item?.configPath ? h("button", { class: "btn", type: "button", onClick: () => openIntegrationConfig(id) }, t("manager.actions.openConfig")) : null,
-      h("button", { class: "btn btn-primary", type: "button", onClick: () => testIntegration(id) }, t("manager.actions.retry"))
-    ]);
+    if (!silent) {
+      showModal(t("manager.integrations.testTitle"), `${t(integrationErrorKey(rawError))}\n\n${t("manager.integrations.technicalDetails")}: ${rawError}`, [
+        h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.close")),
+        item?.configPath ? h("button", { class: "btn", type: "button", onClick: () => openIntegrationConfig(id) }, t("manager.actions.openConfig")) : null,
+        h("button", { class: "btn btn-primary", type: "button", onClick: () => testIntegration(id) }, t("manager.actions.retry"))
+      ]);
+    }
+    return { ok: false, error: rawError, item };
   }
+}
+
+async function testAllIntegrations() {
+  if (integrationTestAllInFlight) return;
+  integrationTestAllInFlight = true;
+  let body = "";
+  try {
+    await refreshIntegrations();
+    const candidates = integrations.filter(integrationCanTest);
+    if (!candidates.length) {
+      body = t("manager.integrations.testAllEmpty");
+    } else {
+      setStatus(t("manager.status.testingIntegrations", { count: candidates.length }));
+      const results = [];
+      for (const item of candidates) {
+        results.push({ item, ...(await testIntegration(item.id, { silent: true, refresh: false })) });
+      }
+      await refreshIntegrations();
+      const failures = results.filter((result) => !result.ok);
+      body = failures.length
+        ? t("manager.integrations.testAllPartial", {
+            passed: results.length - failures.length,
+            total: results.length,
+            failed: failures.map(({ item }) => item.name).join(", ")
+          })
+        : t("manager.integrations.testAllOk", { count: results.length });
+    }
+  } catch (error) {
+    body = t("manager.integrations.testAllFailed", { error: error.message || String(error) });
+  } finally {
+    integrationTestAllInFlight = false;
+    if (activeView === "integrations" || activeView === "diagnostics") {
+      await renderView(activeView).catch((error) => {
+        body = `${body}\n\n${t("manager.integrations.testAllFailed", { error: error.message || String(error) })}`;
+      });
+    }
+  }
+  showModal(t("manager.integrations.testAllTitle"), body, [
+    h("button", { class: "btn btn-primary", type: "button", onClick: closeModal }, t("manager.actions.close"))
+  ]);
 }
 
 async function diagnosticsReportText() {
@@ -1684,11 +1739,18 @@ async function integrationsView() {
       h("article", { class: "card" }, h("p", { class: "empty-text" }, t("manager.integrations.runtimeUnavailable")))
     );
   }
-  const filtered = integrations.filter((item) => integrationMatchesFilter(item, integrationFilter, integrationTestResults.get(item.id)));
+  const realReportFor = (item) => integrationReportResult(item);
+  const filtered = integrations.filter((item) => integrationMatchesFilter(
+    item,
+    integrationFilter,
+    integrationTestResults.get(item.id),
+    Boolean(realReportFor(item))
+  ));
   const selected = selectFilteredIntegration(filtered, selectedIntegrationId);
   selectedIntegrationId = selected?.id || "";
   const testResult = selected ? integrationTestResults.get(selected.id) : null;
-  const progress = selected ? integrationCompletion(selected, testResult) : null;
+  const realReport = selected ? realReportFor(selected) : null;
+  const progress = selected ? integrationCompletion(selected, testResult, Boolean(realReport)) : null;
   const action = selected ? integrationPrimaryAction(selected, testResult) : "manual";
   const statusStep = (label, done, detail) => h("div", { class: `setup-step${done ? " done" : ""}` },
     h("span", { class: "setup-step-mark", "aria-hidden": "true" }, done ? "✓" : "·"),
@@ -1730,9 +1792,12 @@ async function integrationsView() {
         h("h2", { class: "view-title" }, t("manager.integrations.title")),
         h("p", { class: "empty-text" }, t("manager.integrations.subtitle"))
       ),
-      h("div", { class: "integration-overview" },
-        h("strong", {}, integrations.filter((item) => item.configured).length),
-        h("span", {}, t("manager.integrations.configuredCount", { total: integrations.length }))
+      h("div", { class: "view-header-actions" },
+        h("div", { class: "integration-overview" },
+          h("strong", {}, integrations.filter((item) => item.configured).length),
+          h("span", {}, t("manager.integrations.configuredCount", { total: integrations.length }))
+        ),
+        h("button", { class: "btn", type: "button", disabled: integrationTestAllInFlight, onClick: testAllIntegrations }, t("manager.actions.testAllIntegrations"))
       )
     ),
     h("div", { class: "integration-filters", role: "group", "aria-label": t("manager.integrations.filterLabel") },
@@ -1746,7 +1811,8 @@ async function integrationsView() {
     h("div", { class: "integration-workspace" },
       h("div", { class: "integration-list" },
         filtered.length ? filtered.map((item) => {
-          const itemProgress = integrationCompletion(item, integrationTestResults.get(item.id));
+          const itemReport = realReportFor(item);
+          const itemProgress = integrationCompletion(item, integrationTestResults.get(item.id), Boolean(itemReport));
           return h("button", {
             class: `integration-row${item.id === selected?.id ? " active" : ""}`,
             type: "button",
@@ -1755,7 +1821,7 @@ async function integrationsView() {
             brandIcon(item, "row", itemProgress.state),
             h("span", { class: "integration-row-copy" },
               h("strong", {}, item.name),
-              h("small", {}, t(integrationSummaryKey(item, integrationTestResults.get(item.id))))
+              h("small", {}, t(integrationSummaryKey(item, integrationTestResults.get(item.id), Boolean(itemReport))))
             ),
             itemProgress.total ? h("span", { class: "integration-progress" }, `${itemProgress.completed}/${itemProgress.total}`) : null
           );
@@ -1768,10 +1834,10 @@ async function integrationsView() {
             h("div", {},
               h("p", { class: "integration-kicker" }, selected.sourceLabel || selected.source),
               h("h3", {}, selected.name),
-              h("p", { class: "model-meta" }, t(integrationSummaryKey(selected, testResult)))
+              h("p", { class: "model-meta" }, t(integrationSummaryKey(selected, testResult, Boolean(realReport))))
             )
           ),
-          h("span", { class: progress?.state === "ready" ? "status-value status-ok" : "status-value" }, t(integrationSummaryKey(selected, testResult)))
+          h("span", { class: progress?.state === "ready" ? "status-value status-ok" : "status-value" }, t(integrationSummaryKey(selected, testResult, Boolean(realReport))))
         ),
         selected.configFormat !== "templateOnly" ? h("div", { class: "setup-checklist" },
           statusStep(t("manager.integrations.step.detected"), selected.installed || selected.configFound || selected.configured, selected.installed ? t("manager.integrations.installed") : t("manager.integrations.notDetected")),
@@ -1783,7 +1849,14 @@ async function integrationsView() {
             ? t("manager.integrations.step.restartHelp", { name: selected.name })
             : testResult?.ok
               ? t("manager.integrations.testPassedAt", { time: testResult.testedAt ? new Intl.DateTimeFormat(getLocale(), { dateStyle: "medium", timeStyle: "short" }).format(new Date(testResult.testedAt)) : "" })
-              : testResult?.error ? t(integrationErrorKey(testResult.error)) : t("manager.integrations.step.testHelp"))
+              : testResult?.error ? t(integrationErrorKey(testResult.error)) : t("manager.integrations.step.testHelp")),
+          statusStep(t("manager.integrations.step.firstReport"), Boolean(realReport), realReport
+            ? t("manager.integrations.step.firstReportAt", {
+                time: realReport.reportedAt ? new Intl.DateTimeFormat(getLocale(), { dateStyle: "medium", timeStyle: "short" }).format(new Date(realReport.reportedAt)) : ""
+              })
+            : testResult?.ok
+              ? t("manager.integrations.step.firstReportHelp", { name: selected.name })
+              : t("manager.integrations.step.firstReportBlocked"))
         ) : customForm,
         testResult?.ok === false && testResult.error ? h("div", { class: "integration-alert", role: "status" },
           h("strong", {}, t(integrationErrorKey(testResult.error))),
@@ -1879,7 +1952,8 @@ async function diagnosticsView() {
           h("button", { class: "btn", type: "button", onClick: async () => {
             const result = await window.companion?.exportLogs?.();
             showToast(t("manager.status.logsExported", { path: result?.file || "" }));
-          } }, t("manager.actions.exportLogs"))
+          } }, t("manager.actions.exportLogs")),
+          h("button", { class: "btn", type: "button", disabled: integrationTestAllInFlight, onClick: testAllIntegrations }, t("manager.actions.testAllIntegrations"))
         )
       ),
       h("article", { class: "card diag-card" },
@@ -2229,6 +2303,11 @@ async function boot() {
   window.companion?.onState?.((nextState) => {
     liveState = nextState || null;
     if (activeView === "dashboard") dashboardRefresh.schedule();
+    else if (activeView === "integrations"
+      && !isIntegrationSelfTest(nextState)
+      && integrations.some((item) => integrationMatchesSource(item, nextState?.source))) {
+      renderView("integrations");
+    }
   });
   navTo(managerInitialView(config));
 }

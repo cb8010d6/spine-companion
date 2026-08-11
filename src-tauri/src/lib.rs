@@ -3682,7 +3682,7 @@ async fn test_ai_integration_inner(
             "name": "companion_report_ai_phase",
             "arguments": {
                 "phase": "thinking",
-                "message": format!("Connection test from {source_label}"),
+                "message": format!("[Spine Companion self-test] {source_label}"),
                 "autoReturnMs": 2200
             }
         }
@@ -5136,6 +5136,9 @@ pub fn run() {
                     });
                 });
             }
+            // Subscribe before binding so a state posted as soon as the API is
+            // reachable cannot be lost during renderer setup.
+            let mut rx = tx.subscribe();
             // Bind the local API server before the hidden window is revealed.
             // The renderer loads Spine assets from this server on startup, so
             // racing the first PIXI load against server startup can leave the
@@ -5157,10 +5160,21 @@ pub fn run() {
             }
 
             let app_handle = app.handle().clone();
-            let mut rx = tx.subscribe();
             tauri::async_runtime::spawn(async move {
-                while let Ok(state) = rx.recv().await {
+                loop {
+                    let state = match rx.recv().await {
+                        Ok(state) => state,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    };
                     let data = app_handle.state::<AppData>();
+                    if let Ok(_guard) = data.ai_integration_lock.lock() {
+                        let _ = ai_integrations::record_source_report(
+                            &data.config_dir,
+                            &state.source,
+                            &state.message,
+                        );
+                    }
                     if let Ok(mut history) = data.history.lock() {
                         history.push(state.clone());
                         while history.len() > 50 {
@@ -5180,7 +5194,12 @@ pub fn run() {
             let app_handle = app.handle().clone();
             let mut reminder_rx = reminder_tx.subscribe();
             tauri::async_runtime::spawn(async move {
-                while let Ok(reminders) = reminder_rx.recv().await {
+                loop {
+                    let reminders = match reminder_rx.recv().await {
+                        Ok(reminders) => reminders,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    };
                     let _ = app_handle.emit("companion:reminders", reminders);
                 }
             });
