@@ -15,21 +15,23 @@ afterEach(async () => {
 });
 
 describe("release preflight", () => {
-  it("accepts the exact tag, matching versions, notes, and built commit", () => {
+  it("accepts the exact tag, matching versions, notes, and built commit", async () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-    const result = checkReleasePreflight(root, { tag: "v0.2.6-rc.10", commit: "a".repeat(40) });
+    const { version } = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
+    const result = checkReleasePreflight(root, { tag: `v${version}`, commit: "a".repeat(40) });
     expect(result.versions).toEqual({
-      package: "0.2.6-rc.10",
-      cargo: "0.2.6-rc.10",
-      lock: "0.2.6-rc.10",
-      tauri: "0.2.6-rc.10"
+      package: version,
+      cargo: version,
+      lock: version,
+      tauri: version
     });
     expect(result.commit).toBe("a".repeat(40));
   });
 
-  it("rejects a tag that is close but not exact", () => {
+  it("rejects a tag that is close but not exact", async () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-    expect(() => checkReleasePreflight(root, { tag: "v0.2.6-rc.9", commit: "a".repeat(40) })).toThrow(/must equal/);
+    const { version } = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
+    expect(() => checkReleasePreflight(root, { tag: `v${version}-mismatch`, commit: "a".repeat(40) })).toThrow(/must equal/);
   });
 
   it("rejects a missing release note", async () => {
