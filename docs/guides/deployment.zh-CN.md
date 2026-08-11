@@ -31,7 +31,7 @@ Actions 的 release matrix 会分别执行。
 1. 从 GitHub Release 下载 Windows NSIS、macOS DMG、Linux AppImage 或 DEB。
    Windows 是稳定目标；macOS 和 Linux 包是未签名预览版。
 2. 启动应用，打开 **Manager > Library**，选择角色并点击 **Download and use**。
-   如果使用有授权的本地模型，可通过 `Open Config Folder` 打开目录，再到 **Installed** 管理。
+   如果使用有授权的本地模型，点击 **导入本地 .skel**，再到 **Library > 已安装** 管理。
 3. 打开 **Manager > Settings** 调整大小和位置。如果没有显示模型，打开
    **Manager > Diagnostics**，确认模型目录包含兼容的 skeleton、atlas 以及引用的贴图。
 
@@ -50,7 +50,7 @@ Release 版也会读取：
 
 升级时直接安装新版本即可。用户配置、下载的模型、预览缓存、日志和 AI 集成备份保存在
 用户数据中；应用版本和 renderer 会被替换。升级后如果模型没有激活，打开
-**Manager > Installed** 再次设为 active。
+**Manager > Library > 已安装** 再次设为 active。
 
 卸载时使用操作系统的正常卸载入口。它会移除已安装应用，但不要求删除用户数据目录。
 确认不再需要模型、设置、日志或备份后，再手动删除该目录。
@@ -222,7 +222,7 @@ release/Spine Companion Portable.zip
 
 ## 9. 排错
 
-- 模型缺失：重新选择 **Manager > Installed** 中的模型，或使用源码流程指定模型目录。
+- 模型缺失：重新选择 **Manager > Library > 已安装** 中的模型，或使用源码流程指定模型目录。
 - 端口冲突：设置 `COMPANION_PORT`，并同步更新 MCP 的 `COMPANION_API`。
 - Codex 看不到 MCP 工具：确认 `~/.codex/config.toml` 有 `[mcp_servers.spine_companion]`，然后重启 Codex。
 - AI 集成失败：在 **Manager > AI Integrations** 使用 **Restore Previous Config**，确认目标文件

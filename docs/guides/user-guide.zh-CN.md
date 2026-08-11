@@ -31,15 +31,17 @@
 
 Manager 主要有五个页面：
 
-- **Library**：浏览支持的目录模型，按名称或来源搜索，下载并激活已安装模型。
+- **Dashboard**：集中查看当前模型、AI 来源、本地 Bridge、渲染健康、提醒和更新。
+- **Library**：通过 **浏览模型**、**已安装**、**下载** 三个标签搜索目录来源、管理本地模型和查看传输错误。
   - **基建小人**支持完整桌宠动作。
   - **动态立绘**以展示为主，任务状态通常回退到 Idle/Default。
   - **敌人**的上游动画命名不统一，因此标记为实验性。
   动作支持有限的模型会在下载前提示；任务状态和消息仍会正常工作。
-- **Installed**：查看本地模型，打开文件夹，设为当前模型，或删除未使用模型。
-- **Downloads**：查看最近下载进度和错误。
+- **AI 集成**：检测、配置、测试 AI 工具，并在需要时安全恢复原配置。
 - **Settings**：调整缩放、位置、语言、主题和气泡表现。
 - **Diagnostics**：检查本地 API、模型路径、MCP 配置、状态历史和更新状态。
+
+Avatar Studio 是 **Settings > 实验功能** 下的实验工具，不再占用日常一级导航。
 
 大部分设置会热更新。修改 scale 和 offset 后，运行中的伴随窗口应该无需重启即可更新。
 
@@ -58,20 +60,12 @@ curl -X POST http://127.0.0.1:17388/reminders -H "Content-Type: application/json
 
 ## AI 工具配置
 
-可以用内置脚本配置常见 AI 工具：
+打开 **Manager > AI 集成**，选择检测到的工具，检查将修改的文件和备份信息后点击配置。
+运行安装包内置自检，安装或复制界面显示的 Agent 指令，再重启 AI 工具或打开新会话。
+只有 Manager 收到第一次真实工作上报后才算完成；自检成功本身不代表 AI 已开始主动上报。
 
-```bash
-bun run skill:install
-bun run ai:configure -- --target all
-```
-
-Codex Desktop 和 Codex CLI 也可以单独配置：
-
-```bash
-bun run mcp:install:codex
-```
-
-配置后需要重启 AI 工具或打开新会话。AI 工具上报状态时，Spine Companion 应用或本地 API 必须正在运行。
+AI 工具上报状态时，Spine Companion 必须正在运行。源码脚本和手动 MCP 模板只是开发者
+兜底方案，见 [AI 工具指南](ai-tools.zh-CN.md)，不是安装版用户的前置条件。
 
 ## 常见问题
 
@@ -83,15 +77,16 @@ bun run mcp:install:codex
 
 如果看到 missing asset 或 `XMLHttpRequest failed`：
 
-- 进入 **Manager > Installed** 确认当前模型目录。
+- 进入 **Manager > Library > 已安装** 确认当前模型目录。
 - 在 **Library** 重新下载模型。
 - 如果 `companion.local.json` 使用相对路径，不要只移动配置文件而不移动模型目录。
 
 如果 Codex 或其他 AI 工具一直是 idle：
 
 - 确认 Spine Companion 正在运行。
-- 重新执行 `bun run mcp:install:codex`。
+- 打开 **Manager > AI 集成**，选择对应工具并执行 **测试连接**。
 - 重启 Codex 或打开新会话。
+- 运行一次真实任务后，确认 Manager 不再显示“等待首次上报”。
 - 在 **Manager > Diagnostics** 查看 MCP 配置路径。
 
 如果只有托盘图标但没有窗口：

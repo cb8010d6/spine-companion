@@ -36,8 +36,8 @@ Use this path if you only want to run the app.
    from the GitHub Release page. Windows is the stable target; macOS and Linux
    packages are unsigned previews.
 2. Start the app, open **Manager > Library**, choose a model, and select
-   **Download and use**. For an authorized local model, use **Open Config Folder**
-   and then manage it from **Installed**.
+   **Download and use**. For an authorized local model, choose **Import local
+   .skel**, then manage it from **Library > Installed**.
 3. Open **Manager > Settings** to tune scale and position. If no model appears,
    open **Manager > Diagnostics** and confirm the model directory contains a
    compatible skeleton, atlas, and referenced textures.
@@ -63,7 +63,7 @@ important. The install directory and the user data directory are separate.
 For an upgrade, install the newer package over the existing installation. The
 user configuration, downloaded models, previews, logs, and AI integration
 backups are kept in user data; the application version and renderer are
-replaced. If a model is not active after the upgrade, open **Manager >
+replaced. If a model is not active after the upgrade, open **Manager > Library >
 Installed** and set it active again.
 
 For an uninstall, use the operating system's normal app removal flow. It removes
