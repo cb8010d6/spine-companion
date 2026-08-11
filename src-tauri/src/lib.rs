@@ -3035,6 +3035,15 @@ async fn test_ai_integration(
     tool_id: String,
 ) -> Result<serde_json::Value, String> {
     require_manager_window(&window)?;
+    let integration = ai_integrations::list_ai_integrations_with_state(&data.config_dir)?
+        .into_iter()
+        .find(|integration| integration.id == tool_id)
+        .ok_or_else(|| format!("Unknown AI integration: {tool_id}"))?;
+    validate_ai_integration_self_test(
+        &integration.name,
+        integration.configured,
+        integration.needs_restart,
+    )?;
     let revision = {
         let _guard = data
             .ai_integration_lock
@@ -3058,10 +3067,30 @@ async fn test_ai_integration(
     match (result, persisted) {
         (Ok(value), Ok(_)) => Ok(value),
         (Ok(_), Err(error)) => Err(format!(
-            "Connection test passed, but its result could not be saved: {error}"
+            "MCP self-test passed, but its result could not be saved: {error}"
         )),
         (Err(error), _) => Err(error),
     }
+}
+
+fn validate_ai_integration_self_test(
+    name: &str,
+    configured: bool,
+    needs_restart: bool,
+) -> Result<(), String> {
+    if !configured {
+        return Err(format!(
+            "Configure {} before running the Spine Companion MCP self-test.",
+            name
+        ));
+    }
+    if needs_restart {
+        return Err(format!(
+            "Confirm that {} was restarted before running the Spine Companion MCP self-test.",
+            name
+        ));
+    }
+    Ok(())
 }
 
 async fn test_ai_integration_inner(
@@ -5327,5 +5356,16 @@ mod tests {
             latest.get("tag_name").and_then(|value| value.as_str()),
             Some("v0.2.5")
         );
+    }
+
+    #[test]
+    fn ai_integration_self_test_requires_configured_restarted_client() {
+        assert!(validate_ai_integration_self_test("Codex", true, false).is_ok());
+        assert!(validate_ai_integration_self_test("Codex", false, false)
+            .unwrap_err()
+            .contains("Configure Codex"));
+        assert!(validate_ai_integration_self_test("Codex", true, true)
+            .unwrap_err()
+            .contains("Confirm that Codex was restarted"));
     }
 }
