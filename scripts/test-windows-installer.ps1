@@ -2,6 +2,7 @@ param(
   [Parameter(Mandatory = $true)]
   [string] $InstallerPath,
   [string] $PreviousInstallerPath,
+  [string] $PreviousInstallerSha256,
   [string] $ApiBase = "http://127.0.0.1:17388"
 )
 
@@ -18,6 +19,12 @@ $previousInstaller = if ([string]::IsNullOrWhiteSpace($PreviousInstallerPath)) {
   $null
 } else {
   (Resolve-Path -LiteralPath $PreviousInstallerPath).Path
+}
+if ($previousInstaller -and -not [string]::IsNullOrWhiteSpace($PreviousInstallerSha256)) {
+  $actualPreviousSha256 = (Get-FileHash -LiteralPath $previousInstaller -Algorithm SHA256).Hash
+  if (-not $actualPreviousSha256.Equals($PreviousInstallerSha256, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "Previous installer SHA-256 is $actualPreviousSha256; expected $PreviousInstallerSha256."
+  }
 }
 
 $installDir = Join-Path $runnerTemp "spine-companion-install"

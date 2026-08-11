@@ -110,7 +110,9 @@ jobs:
             throw "Expected exactly one NSIS installer, found $($installer.Count)."
           }
           $previous = Join-Path $env:RUNNER_TEMP "Spine.Companion_0.2.6-rc.10_x64-setup.exe"
-          ./scripts/test-windows-installer.ps1 -InstallerPath $installer[0].FullName -PreviousInstallerPath $previous
+          ./scripts/test-windows-installer.ps1 -InstallerPath $installer[0].FullName `
+            -PreviousInstallerPath $previous `
+            -PreviousInstallerSha256 "844049CC7F6478F6FEE6C0AF1AD50E7215F0D68DEF73293815837AF78A3292B1"
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: spine-companion-tauri-${{ matrix.artifact }}
