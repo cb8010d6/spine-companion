@@ -13,8 +13,8 @@ describe("catalog acknowledgement IPC contract", () => {
   });
 
   it("pins official catalogs to the released rc.10 snapshot", () => {
-    const backend = readFileSync(resolve(process.cwd(), "src-tauri/src/lib.rs"), "utf8");
-    const defaults = backend.slice(backend.indexOf("fn fallback_config"), backend.indexOf("fn merge_json"));
+    const config = readFileSync(resolve(process.cwd(), "src-tauri/src/config.rs"), "utf8");
+    const defaults = config.slice(config.indexOf("fn fallback_config"), config.indexOf("fn merge_json"));
     expect(defaults).toContain("/v0.2.6-rc.10/catalog/catalog.json");
     expect(defaults).toContain("/v0.2.6-rc.10/catalog/illustrations.json");
     expect(defaults).toContain("/v0.2.6-rc.10/catalog/enemies.json");
