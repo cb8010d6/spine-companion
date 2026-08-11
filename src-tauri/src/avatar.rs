@@ -443,6 +443,11 @@ fn avatar_job_lock_is_stale(path: &Path, stale_after: Duration) -> bool {
         .is_some_and(|age| age > stale_after)
 }
 
+fn avatar_job_lock_is_contended(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::AlreadyExists
+        || error.kind() == std::io::ErrorKind::PermissionDenied
+}
+
 fn acquire_avatar_job_lock_with_limits(
     config_dir: &Path,
     timeout: Duration,
@@ -472,7 +477,7 @@ fn acquire_avatar_job_lock_with_limits(
                 }
                 return Ok(AvatarJobStoreLock { path, owner });
             }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            Err(error) if avatar_job_lock_is_contended(&error) => {
                 if avatar_job_lock_is_stale(&path, stale_after) {
                     match fs::remove_file(&path) {
                         Ok(()) => continue,
@@ -2610,6 +2615,24 @@ mod tests {
         assert!(error.contains("busy"));
         assert!(started.elapsed() < Duration::from_secs(1));
         fs::remove_file(avatar_job_lock_path(&config)).unwrap();
+        let _ = fs::remove_dir_all(config);
+    }
+
+    #[test]
+    fn permission_denied_is_transient_lock_contention() {
+        let config = temp_pack("job-lock-contention");
+        fs::create_dir_all(&config).unwrap();
+        let lock_path = avatar_job_lock_path(&config);
+        fs::write(&lock_path, b"locked").unwrap();
+
+        let permission_denied = std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "simulated Windows sharing violation",
+        );
+        assert!(avatar_job_lock_is_contended(&permission_denied));
+
+        fs::remove_file(&lock_path).unwrap();
+        assert!(avatar_job_lock_is_contended(&permission_denied));
         let _ = fs::remove_dir_all(config);
     }
 
