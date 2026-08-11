@@ -33,7 +33,6 @@ const settingDragMode = document.getElementById("setting-drag-mode");
 const settingZoomIn = document.getElementById("setting-zoom-in");
 const settingZoomOut = document.getElementById("setting-zoom-out");
 const settingZoomReset = document.getElementById("setting-zoom-reset");
-const modelSelect = document.getElementById("model-select");
 const modelImport = document.getElementById("model-import");
 const modelStatus = document.getElementById("model-status");
 const reminderForm = document.getElementById("reminder-form");
@@ -503,46 +502,11 @@ async function beginNativeDrag(event) {
   }
 }
 
-function renderModelCatalog(config) {
-  const catalog = config.models?.catalog || [];
-  const fragment = document.createDocumentFragment();
-  for (const model of catalog) {
-    const option = document.createElement("option");
-    option.value = model.id;
-    option.textContent = model.name || model.id;
-    fragment.appendChild(option);
-  }
-  modelSelect.replaceChildren(fragment);
-  const hasModels = catalog.length > 0 && window.companion?.importModel;
-  modelSelect.disabled = !hasModels;
-  modelImport.disabled = !hasModels;
-  emptyImport.hidden = !hasModels;
+function renderModelActions() {
+  const managerAvailable = Boolean(window.companion?.openManager);
+  modelImport.hidden = !managerAvailable;
+  emptyImport.hidden = !managerAvailable;
   emptyManager.hidden = !window.companion?.openManager;
-}
-
-async function importSelectedModel(source = "settings") {
-  const id = modelSelect.value || runtimeConfig?.models?.catalog?.[0]?.id;
-  if (!id || !window.companion?.importModel) return;
-  modelStatus.textContent = t("app.model.downloading");
-  modelImport.disabled = true;
-  emptyImport.disabled = true;
-  try {
-    const result = await window.companion.importModel({ id });
-    // config-changed is emitted only after the downloaded asset set is
-    // committed, so it is the single authoritative model reload channel.
-    modelStatus.textContent = t("app.model.importedFrom", { path: result.assetDir });
-    if (!emptyState.hidden) {
-      emptyState.querySelector("span").textContent = t("app.model.imported");
-      emptyStatePath.textContent = result.localConfigPath;
-    }
-    if (source === "empty") settingsPanel.hidden = false;
-  } catch (error) {
-    modelStatus.textContent = error.message;
-    if (!emptyState.hidden) emptyState.querySelector("span").textContent = error.message;
-  } finally {
-    modelImport.disabled = false;
-    emptyImport.disabled = false;
-  }
 }
 
 function showEmptyState(error, config) {
@@ -563,8 +527,7 @@ function showOnboardingIfNeeded(config) {
   }
   onboardingRoot.hidden = false;
   onboardingRoot.replaceChildren(createOnboarding({
-    onManager: openManagerFromRenderer,
-    onDownload: () => importSelectedModel("onboarding")
+    onManager: openManagerFromRenderer
   }));
 }
 
@@ -950,7 +913,8 @@ function applyMainLocale(config = {}) {
   createI18n(config);
   document.documentElement.lang = getLocale();
   emptyRetry.textContent = t("error.retry");
-  emptyImport.textContent = t("onboarding.download");
+  modelImport.textContent = t("onboarding.start");
+  emptyImport.textContent = t("onboarding.importOwn");
   emptyManager.textContent = t("error.openManager");
 }
 
@@ -965,7 +929,7 @@ async function boot() {
   provider = createStateProvider(config);
   provider.onError = showProviderError;
   renderStateControls((state) => provider.setState(state));
-  renderModelCatalog(config);
+  renderModelActions();
   showOnboardingIfNeeded(config);
   wireDragging();
   wireMousePassthrough();
@@ -1051,8 +1015,8 @@ async function boot() {
   settingZoomIn.addEventListener("click", () => window.companion?.emitScale?.({ delta: 0.08 }));
   settingZoomOut.addEventListener("click", () => window.companion?.emitScale?.({ delta: -0.08 }));
   settingZoomReset.addEventListener("click", () => window.companion?.emitScale?.({ action: "reset" }));
-  modelImport.addEventListener("click", () => importSelectedModel("settings"));
-  emptyImport.addEventListener("click", () => importSelectedModel("empty"));
+  bindManagerButton(modelImport, modelStatus, openManagerFromRenderer);
+  bindManagerButton(emptyImport, emptyManagerStatus, openManagerFromRenderer);
   bindManagerButton(emptyManager, emptyManagerStatus, openManagerFromRenderer);
   emptyRetry.addEventListener("click", () => loadPlayer(runtimeConfig).catch((error) => showErrorBoundary(error, runtimeConfig)));
 

@@ -34,6 +34,10 @@ import {
 } from "./integration-ui.js";
 import { modelPreview } from "./model-preview.js";
 import { readCachedModelPreview, writeCachedModelPreview } from "./model-preview-cache.js";
+import {
+  createModelAcknowledgementCoordinator,
+  modelRequiresAcknowledgement
+} from "./model-consent.js";
 import { installManagerPreviewBridge } from "./manager-preview.js";
 import { applyThemePreference } from "./theme.js";
 import { integrationBrand } from "./integration-icons.js";
@@ -115,6 +119,7 @@ let librarySelectedSource = ALL_CATALOG_SOURCES;
 let modalReturnFocus = null;
 let modalOnDismiss = null;
 let spinePreviewModulePromise = null;
+const modelAcknowledgementCoordinator = createModelAcknowledgementCoordinator();
 
 function loadSpinePreview() {
   spinePreviewModulePromise ||= import("./spine-preview.js");
@@ -134,6 +139,15 @@ export function catalogSourcesForSelection(sourceId, sources = []) {
   return sourceId === ALL_CATALOG_SOURCES
     ? enabledSources
     : enabledSources.filter((source) => source.id === sourceId);
+}
+
+export function managerInitialView(runtimeConfig = {}) {
+  const spine = runtimeConfig.spine || {};
+  const hasActiveModel = Boolean(
+    String(spine.modelId || "").trim()
+    || (spine.assetDirConfigured !== false && String(spine.assetDir || "").trim() && String(spine.skel || "").trim())
+  );
+  return hasActiveModel ? "dashboard" : "library";
 }
 
 function setStatus(text) {
@@ -179,6 +193,51 @@ function showModal(title, bodyText, actions = [], { onDismiss = null } = {}) {
   modalContainer.classList.remove("hidden");
   document.addEventListener("keydown", trapModalKeys);
   window.setTimeout(() => modalContainer.querySelector("button")?.focus(), 0);
+}
+
+function modelAcknowledgementBody(details, modelCount) {
+  const blocks = details.map((detail) => [
+    t("manager.modal.modelConsentSource", { value: detail.source }),
+    t("manager.modal.modelConsentAuthor", { value: detail.author }),
+    t("manager.modal.modelConsentLicense", { value: detail.license }),
+    t("manager.modal.modelConsentWarning", { value: detail.licenseWarning }),
+    t("manager.modal.modelConsentRepository", { value: detail.repository }),
+    t("manager.modal.modelConsentRevision", { value: detail.revision }),
+    detail.licenseNote ? t("manager.modal.modelConsentNote", { value: detail.licenseNote }) : ""
+  ].filter(Boolean).join("\n"));
+  return [
+    t("manager.modal.modelConsentIntro", { count: modelCount }),
+    ...blocks
+  ].join("\n\n");
+}
+
+async function requestModelAcknowledgement(models = []) {
+  return modelAcknowledgementCoordinator.request(models, (pending, requestedModels) => new Promise((resolve) => {
+    let settled = false;
+    const finish = (accepted) => {
+      if (settled) return;
+      settled = true;
+      closeModal({ dismissed: false });
+      resolve(accepted);
+    };
+    showModal(
+      t("manager.modal.modelConsentTitle"),
+      modelAcknowledgementBody(pending, new Set(requestedModels.map((model) => model?.id).filter(Boolean)).size || requestedModels.length),
+      [
+        h("button", { class: "btn", type: "button", onClick: () => finish(false) }, t("manager.actions.cancel")),
+        h("button", { class: "btn btn-primary", type: "button", onClick: () => finish(true) }, t("manager.actions.acknowledgeContinue"))
+      ],
+      { onDismiss: () => {
+        if (settled) return;
+        settled = true;
+        resolve(false);
+      } }
+    );
+  }));
+}
+
+function modelFromCatalogEntry(entry) {
+  return normalizeCatalogEntries(entry ? [entry] : [])[0] || null;
 }
 
 function trapModalKeys(event) {
@@ -263,7 +322,10 @@ function libraryLoadingView() {
         h("h2", { class: "view-title" }, t("manager.library.title")),
         h("p", { class: "empty-text" }, t("manager.library.subtitle"))
       ),
-      h("button", { class: "btn", type: "button", onClick: () => navTo("installed") }, t("manager.library.manageInstalled"))
+      h("div", { class: "model-actions" },
+        h("button", { class: "btn", type: "button", disabled: true }, t("manager.actions.importLocal")),
+        h("button", { class: "btn", type: "button", onClick: () => navTo("installed") }, t("manager.library.manageInstalled"))
+      )
     ),
     h("div", { class: "library-summary" },
       h("div", {}, h("strong", {}, "0"), h("span", {}, t("manager.library.catalogCount"))),
@@ -305,7 +367,12 @@ function previewNode(model, onPreviewReady = null) {
     }));
   }
   let previewButton = null;
-  const renderAndCache = async () => {
+  const renderAndCache = async ({ acknowledgement = false } = {}) => {
+    const acknowledgementRequired = preview.canPrepareRemotePreview && modelRequiresAcknowledgement(model);
+    if (acknowledgementRequired && !acknowledgement) {
+      acknowledgement = await requestModelAcknowledgement([model]);
+      if (!acknowledgement) return false;
+    }
     if (previewButton) {
       previewButton.disabled = true;
       previewButton.textContent = t("manager.model.previewLoading");
@@ -316,7 +383,7 @@ function previewNode(model, onPreviewReady = null) {
         if (!window.companion?.prepareModelPreview) throw new Error(t("manager.model.previewUnavailable"));
         const sourceId = model.catalogSourceId || model.sourceId;
         if (!sourceId) throw new Error(t("manager.model.previewUnavailable"));
-        const prepared = await window.companion.prepareModelPreview(sourceId, model.id);
+        const prepared = await window.companion.prepareModelPreview(sourceId, model.id, acknowledgementRequired && acknowledgement);
         preview.spinePreviewUrl = prepared?.assetUrl || "";
       }
       const { renderSpinePreview } = await loadSpinePreview();
@@ -351,7 +418,7 @@ function previewNode(model, onPreviewReady = null) {
     children
   );
   if (previewButton && typeof onPreviewReady === "function") {
-    onPreviewReady({ id: model.id, bytes: catalogModelSizeBytes(model), run: renderAndCache });
+    onPreviewReady({ id: model.id, model, bytes: catalogModelSizeBytes(model), run: renderAndCache });
   }
   if (!preview.imageUrl && preview.autoRenderSpinePreview) {
     window.requestAnimationFrame(() => {
@@ -568,7 +635,7 @@ const dashboardRefresh = createCoalescedRefresh(() => {
   }
 });
 
-async function startDownload(id, catalogEntry = null) {
+async function startDownload(id, catalogEntry = null, acknowledgement = false) {
   downloads[id] = beginDownloadRecord(catalogEntry, t("manager.download.initializing"));
   librarySession?.refreshModel(id);
   try {
@@ -577,7 +644,7 @@ async function startDownload(id, catalogEntry = null) {
       : window.companion?.installModel;
     if (!installer) throw new Error(t("manager.error.installUnavailable"));
     const result = catalogEntry
-      ? await installer(catalogEntry.catalogSourceId || catalogEntry.sourceId, id)
+      ? await installer(catalogEntry.catalogSourceId || catalogEntry.sourceId, id, acknowledgement)
       : await installer({ id });
     downloads[id] = { ...(downloads[id] || {}), status: "succeeded", current: downloads[id]?.total || 1, total: downloads[id]?.total || 1, file: t("manager.download.done") };
     await refreshConfig();
@@ -603,7 +670,9 @@ async function startDownload(id, catalogEntry = null) {
       h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.close")),
       h("button", { class: "btn btn-primary", type: "button", onClick: () => {
         closeModal();
-        startDownload(id, catalogEntry);
+        const model = modelFromCatalogEntry(catalogEntry);
+        if (model) confirmDownload(model);
+        else startDownload(id, null, false);
       } }, t("manager.actions.retry"))
     ]);
   }
@@ -769,19 +838,22 @@ async function libraryView({ cachedOnly = false } = {}) {
     previewCurrentPageButton.textContent = t("manager.library.previewingPage", { count: tasks.length });
     let completed = 0;
     for (let index = 0; index < tasks.length; index += 2) {
-      const results = await Promise.allSettled(tasks.slice(index, index + 2).map((task) => task.run()));
+      const results = await Promise.allSettled(tasks.slice(index, index + 2).map((task) => task.run({
+        acknowledgement: modelRequiresAcknowledgement(task.model)
+      })));
       completed += results.filter((result) => result.status === "fulfilled" && result.value === true).length;
     }
     previewCurrentPageButton.disabled = false;
     previewCurrentPageButton.replaceChildren(...iconLabel(Eye, previewButtonLabel()));
     showToast(t("manager.library.previewPageResult", { completed, total: tasks.length }));
   };
-  const requestPreviewBatch = () => {
+  const requestPreviewBatch = async () => {
     const tasks = selectPreviewBatch(currentPagePreviewTasks);
     if (!tasks.length) {
       showToast(t("manager.library.previewPageEmpty"));
       return;
     }
+    if (!await requestModelAcknowledgement(tasks.map((task) => task.model))) return;
     const bytes = tasks.reduce((total, task) => total + task.bytes, 0);
     if (bytes >= LIBRARY_PREVIEW_CONFIRM_BYTES) {
       showModal(t("manager.library.previewConfirmTitle"), t("manager.library.previewConfirmBody", {
@@ -990,7 +1062,10 @@ async function libraryView({ cachedOnly = false } = {}) {
         h("h2", { class: "view-title" }, t("manager.library.title")),
         h("p", { class: "empty-text" }, t("manager.library.subtitle"))
       ),
-      h("button", { class: "btn", type: "button", onClick: () => navTo("installed") }, t("manager.library.manageInstalled"))
+      h("div", { class: "model-actions" },
+        h("button", { class: "btn", type: "button", onClick: importLocalModel }, t("manager.actions.importLocal")),
+        h("button", { class: "btn", type: "button", onClick: () => navTo("installed") }, t("manager.library.manageInstalled"))
+      )
     ),
     h("div", { class: "library-summary" },
       h("div", {}, catalogCount, h("span", {}, t("manager.library.catalogCount"))),
@@ -1024,18 +1099,20 @@ async function libraryView({ cachedOnly = false } = {}) {
   return { content, session, remoteCatalog, sourceId: sourceValue, hasCachedCatalog: cachedResult?.available === true };
 }
 
-function confirmDownload(model) {
+async function confirmDownload(model) {
   const request = catalogDownloadRequest(model);
+  const acknowledgementRequired = modelRequiresAcknowledgement(model);
+  if (!await requestModelAcknowledgement([model])) return;
   const proceed = h("button", { class: "btn btn-primary", type: "button", onClick: () => {
-    closeModal();
-    startDownload(request.id, request.catalogEntry);
+    closeModal({ dismissed: false });
+    startDownload(request.id, request.catalogEntry, acknowledgementRequired);
   } }, t("manager.actions.acceptDownload"));
   const cancel = h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.cancel"));
   const profile = model.compatibilityProfile || "companion";
   const compatibilityWarning = profile === "companion"
     ? ""
     : t(`manager.library.compatibilityWarning.${profile}`);
-  const body = [model.licenseNote ? t("manager.modal.licensePrompt", { note: model.licenseNote }) : "", compatibilityWarning]
+  const body = [!acknowledgementRequired && model.licenseNote ? t("manager.modal.licensePrompt", { note: model.licenseNote }) : "", compatibilityWarning]
     .filter(Boolean)
     .join("\n\n");
   if (body) showModal(
@@ -1043,7 +1120,7 @@ function confirmDownload(model) {
     body,
     [cancel, proceed]
   );
-  else startDownload(request.id, request.catalogEntry);
+  else startDownload(request.id, request.catalogEntry, acknowledgementRequired);
 }
 
 async function activateModel(id, { incremental = false } = {}) {
@@ -1157,7 +1234,12 @@ function downloadsView() {
       h("div", { class: "download-meta" }, `${String(dl.status || "pending").toUpperCase()} ${dl.file || ""} ${dl.current || 0}/${dl.total || 1}`),
       h("div", { class: "progress-bar" }, h("div", { class: "progress-fill", style: { width: `${percent}%` } })),
       dl.error ? h("div", { class: "error-text" }, dl.error) : null,
-      dl.status === "failed" ? h("button", { class: "btn", type: "button", onClick: () => startDownload(id, retryCatalogEntry(dl)) }, t("manager.actions.retry")) : null
+      dl.status === "failed" ? h("button", { class: "btn", type: "button", onClick: () => {
+        const catalogEntry = retryCatalogEntry(dl);
+        const model = modelFromCatalogEntry(catalogEntry);
+        if (model) confirmDownload(model);
+        else startDownload(id, null, false);
+      } }, t("manager.actions.retry")) : null
     );
   }) : [h("p", { class: "empty-text" }, t("manager.empty.noDownloads"))];
   return h("section", {}, h("h2", { class: "view-title" }, t("manager.downloads.title")), h("div", { class: "grid-2" }, cards));
@@ -2148,7 +2230,7 @@ async function boot() {
     liveState = nextState || null;
     if (activeView === "dashboard") dashboardRefresh.schedule();
   });
-  navTo("dashboard");
+  navTo(managerInitialView(config));
 }
 
 if (document.getElementById("manager-app")) {
