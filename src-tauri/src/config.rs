@@ -422,6 +422,26 @@ where
     }
 }
 
+fn active_env_overlay_names<F>(get_env: F) -> Vec<&'static str>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let mut names = Vec::new();
+    if get_env("SPINE_ASSET_DIR").is_some() {
+        names.push("SPINE_ASSET_DIR");
+    }
+    if get_env("SPINE_SKEL").is_some() {
+        names.push("SPINE_SKEL");
+    }
+    if get_env("COMPANION_PORT")
+        .and_then(|value| value.parse::<u16>().ok())
+        .is_some()
+    {
+        names.push("COMPANION_PORT");
+    }
+    names
+}
+
 pub(crate) fn first_recoverable_model(
     config_dir: &Path,
     config: &serde_json::Value,
@@ -571,6 +591,7 @@ pub(crate) fn load_runtime_config() -> RuntimeConfig {
         load_config_layers(&root, &candidates);
     ensure_official_model_sources(&mut config);
     let local_config_path = canonical_config_path;
+    let environment_overrides = active_env_overlay_names(|key| std::env::var(key).ok());
     apply_env_overlays(&mut config, |key| std::env::var(key).ok());
 
     let host = string_at(&config, &["server", "host"])
@@ -630,8 +651,9 @@ pub(crate) fn load_runtime_config() -> RuntimeConfig {
         .unwrap_or("companion");
     let config_dir = config_dir_path.to_string_lossy().to_string();
     let ui_settings = ui_settings_from_config(&config);
-    let config_layers =
+    let mut config_layers =
         config_layer_report(&root, &local_config_path, &candidates, &loaded_config_paths);
+    config_layers["environmentOverrides"] = serde_json::json!(environment_overrides);
 
     let public = serde_json::json!({
         "window": config["window"].clone(),
@@ -834,6 +856,17 @@ mod tests {
             (key == "COMPANION_PORT").then(|| "18100".to_string())
         });
         assert_eq!(config["server"]["port"], 18100);
+    }
+
+    #[test]
+    fn environment_override_report_lists_names_without_values() {
+        let names = active_env_overlay_names(|key| match key {
+            "SPINE_ASSET_DIR" => Some("private-model-path".to_string()),
+            "COMPANION_PORT" => Some("17389".to_string()),
+            _ => None,
+        });
+        assert_eq!(names, vec!["SPINE_ASSET_DIR", "COMPANION_PORT"]);
+        assert!(!format!("{names:?}").contains("private-model-path"));
     }
 
     #[test]

@@ -72,7 +72,8 @@ are written only to the canonical file; legacy files are never overwritten.
 Relative `spine.assetDir` values are resolved against the directory of the
 layer that supplied that value. Manager > Diagnostics shows the canonical write
 path and the loaded layers so an override can be traced without exposing
-configuration contents or secrets.
+configuration contents or secrets. Active environment override names are shown
+there as well, but their values are not included.
 
 The browser/source adapter in `src/backend/config.cjs` mirrors this precedence
 for development. It is a development adapter, not a second packaged runtime.

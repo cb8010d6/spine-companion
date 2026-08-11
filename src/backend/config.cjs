@@ -136,6 +136,7 @@ function resolveMaybeRelative(value) {
 
 function loadConfig() {
   const warnings = [];
+  const environmentOverrides = [];
   const beforeCommittedWarnings = warnings.length;
   let config = mergeDeep(fallbackConfig, readJsonIfExists(committedConfigPath, warnings));
   const loadedConfigPaths = warnings.length === beforeCommittedWarnings && fs.existsSync(committedConfigPath)
@@ -156,12 +157,15 @@ function loadConfig() {
 
   if (process.env.SPINE_ASSET_DIR) {
     config.spine.assetDir = process.env.SPINE_ASSET_DIR;
+    environmentOverrides.push("SPINE_ASSET_DIR");
   }
   if (process.env.SPINE_SKEL) {
     config.spine.skel = process.env.SPINE_SKEL;
+    environmentOverrides.push("SPINE_SKEL");
   }
   if (process.env.COMPANION_PORT) {
     config.server.port = Number(process.env.COMPANION_PORT);
+    environmentOverrides.push("COMPANION_PORT");
   }
 
   const canonicalPath = canonicalConfigPath();
@@ -185,7 +189,8 @@ function loadConfig() {
         loaded: loadedConfigPaths.includes(file),
         writable: false
       })),
-    loaded: loadedConfigPaths
+    loaded: loadedConfigPaths,
+    environmentOverrides
   };
   config.spine.assetDir = config.spine.assetDir
     ? path.resolve(assetBaseDir, config.spine.assetDir)
