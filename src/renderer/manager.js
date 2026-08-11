@@ -69,6 +69,7 @@ import {
 } from "./catalog-model.js";
 import { createAvatarEditor } from "./avatar-editor-view.js";
 import { createNavigationGuard } from "./navigation.js";
+import { actionableManagerErrorBody, readableManagerError } from "./manager-error.js";
 import {
   createCoalescedRefresh,
   integrationLabelForState,
@@ -205,6 +206,39 @@ function showModal(title, bodyText, actions = [], { onDismiss = null } = {}) {
   modalContainer.classList.remove("hidden");
   document.addEventListener("keydown", trapModalKeys);
   window.setTimeout(() => modalContainer.querySelector("button")?.focus(), 0);
+}
+
+function showManagerError({ title, error, retry = null, extraActions = [], openDiagnostics = true, fallback = "" }) {
+  const retryAction = typeof retry === "function"
+    ? h("button", { class: "btn btn-primary", type: "button", onClick: async () => {
+      closeModal({ dismissed: false });
+      try {
+        await retry();
+      } catch (retryError) {
+        showManagerError({ title, error: retryError, retry, extraActions, openDiagnostics, fallback });
+      }
+    } }, t("manager.actions.retry"))
+    : null;
+  const diagnosticsAction = openDiagnostics
+    ? h("button", { class: "btn", type: "button", onClick: () => {
+      closeModal({ dismissed: false });
+      navTo("diagnostics");
+    } }, t("manager.actions.openDiagnostics"))
+    : null;
+  showModal(
+    title,
+    actionableManagerErrorBody(
+      error,
+      t(openDiagnostics ? "manager.error.nextStep" : "manager.error.nextStep.retryOnly"),
+      fallback
+    ),
+    [
+      h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.close")),
+      ...extraActions,
+      diagnosticsAction,
+      retryAction
+    ]
+  );
 }
 
 function modelAcknowledgementBody(details, modelCount) {
@@ -403,7 +437,7 @@ function previewNode(model, onPreviewReady = null) {
     }));
   }
   let previewButton = null;
-  const renderAndCache = async ({ acknowledgement = false } = {}) => {
+  const renderAndCache = async ({ acknowledgement = false, reportError = false } = {}) => {
     const acknowledgementRequired = preview.canPrepareRemotePreview && modelRequiresAcknowledgement(model);
     if (acknowledgementRequired && !acknowledgement) {
       acknowledgement = await requestModelAcknowledgement([model]);
@@ -414,6 +448,7 @@ function previewNode(model, onPreviewReady = null) {
       previewButton.textContent = t("manager.model.previewLoading");
     }
     let dataUrl = "";
+    let previewError = null;
     try {
       if (!preview.spinePreviewUrl && preview.canPrepareRemotePreview) {
         if (!window.companion?.prepareModelPreview) throw new Error(t("manager.model.previewUnavailable"));
@@ -425,12 +460,29 @@ function previewNode(model, onPreviewReady = null) {
       const { renderSpinePreview } = await loadSpinePreview();
       dataUrl = await renderSpinePreview(node, preview);
     } catch (error) {
-      node.title = error?.message || String(error);
+      previewError = error;
+      node.title = readableManagerError(error, t("manager.model.previewFailed"));
+      if (reportError) {
+        showManagerError({
+          title: t("manager.model.previewFailed"),
+          error,
+          retry: () => renderAndCache({ acknowledgement: true, reportError: true }),
+          fallback: t("manager.model.previewFailed")
+        });
+      }
     }
     if (dataUrl) {
       writeCachedModelPreview(model, dataUrl);
       previewButton?.remove();
       return true;
+    }
+    if (reportError && !previewError) {
+      showManagerError({
+        title: t("manager.model.previewFailed"),
+        error: t("manager.model.previewFailed"),
+        retry: () => renderAndCache({ acknowledgement: true, reportError: true }),
+        fallback: t("manager.model.previewFailed")
+      });
     }
     if (previewButton) {
       previewButton.disabled = false;
@@ -445,7 +497,7 @@ function previewNode(model, onPreviewReady = null) {
       title: t("manager.model.previewOnDemandHint"),
       onClick: (event) => {
         event.stopPropagation();
-        renderAndCache();
+        renderAndCache({ reportError: true });
       }
     }, ...iconLabel(Eye, t("manager.model.preview")));
     children.push(previewButton);
@@ -702,15 +754,16 @@ async function startDownload(id, catalogEntry = null, acknowledgement = false) {
     downloads[id] = { ...(downloads[id] || {}), status: "failed", error: message, current: 0, total: downloads[id]?.total || 1 };
     librarySession?.refreshModel(id);
     setStatus(t("manager.status.downloadFailed", { id }));
-    showModal(t("manager.error.downloadFailed"), message, [
-      h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.close")),
-      h("button", { class: "btn btn-primary", type: "button", onClick: () => {
-        closeModal();
+    showManagerError({
+      title: t("manager.error.downloadFailed"),
+      error: message,
+      retry: () => {
         const model = modelFromCatalogEntry(catalogEntry);
         if (model) confirmDownload(model);
         else startDownload(id, null, false);
-      } }, t("manager.actions.retry"))
-    ]);
+      },
+      fallback: t("manager.error.downloadFailed")
+    });
   }
   if (activeView === "library" && libraryTab !== "catalog") renderView("library");
 }
@@ -949,7 +1002,14 @@ async function libraryView({ cachedOnly = false } = {}) {
     } catch (error) {
       if (revision !== catalogSearchRevision) return;
       searchResult = { models: [], page: 1, total: 0, totalPages: 0 };
-      setStatus(error?.message || String(error));
+      const message = readableManagerError(error, t("manager.library.catalogLoadFailed"));
+      setStatus(message);
+      showManagerError({
+        title: t("manager.library.catalogLoadFailed"),
+        error: message,
+        retry: () => renderCards(query, selectedFilter),
+        fallback: t("manager.library.catalogLoadFailed")
+      });
     }
     if (revision !== catalogSearchRevision || activeView !== "library") return;
     catalog = normalizeCatalogEntries(searchResult?.models || []);
@@ -1162,15 +1222,24 @@ async function confirmDownload(model) {
 
 async function activateModel(id, { incremental = false } = {}) {
   setStatus(t("manager.status.activating", { id }));
-  await window.companion?.setActiveModel?.(id);
-  await refreshConfig();
-  if (incremental && activeView === "library" && libraryTab === "catalog") {
-    librarySession?.refresh({ installed: true });
-    setStatus(t("manager.status.active"));
-  } else if (incremental && activeView === "library") {
-    renderView("library");
-  } else {
-    renderView(activeView);
+  try {
+    await window.companion?.setActiveModel?.(id);
+    await refreshConfig();
+    if (incremental && activeView === "library" && libraryTab === "catalog") {
+      librarySession?.refresh({ installed: true });
+      setStatus(t("manager.status.active"));
+    } else if (incremental && activeView === "library") {
+      renderView("library");
+    } else {
+      renderView(activeView);
+    }
+  } catch (error) {
+    showManagerError({
+      title: t("manager.model.activationFailed"),
+      error,
+      retry: () => activateModel(id, { incremental }),
+      fallback: t("manager.model.activationFailed")
+    });
   }
 }
 
@@ -1514,9 +1583,12 @@ async function previewIntegration(id) {
       } }, t("manager.actions.copyTemplate"))
     ]);
   } catch (error) {
-    showModal(t("manager.integrations.title"), error.message || String(error), [
-      h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.close"))
-    ]);
+    showManagerError({
+      title: t("manager.integrations.previewErrorTitle"),
+      error,
+      retry: () => previewIntegration(id),
+      fallback: t("manager.integrations.previewErrorTitle")
+    });
   }
 }
 
@@ -1530,9 +1602,12 @@ async function openIntegrationConfig(id) {
   try {
     await window.companion?.openAiIntegrationConfig?.(id);
   } catch (error) {
-    showModal(t("manager.actions.openConfig"), error.message || String(error), [
-      h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.close"))
-    ]);
+    showManagerError({
+      title: t("manager.integrations.openConfigErrorTitle"),
+      error,
+      retry: () => openIntegrationConfig(id),
+      fallback: t("manager.integrations.openConfigErrorTitle")
+    });
   }
 }
 
@@ -1558,9 +1633,12 @@ async function showAgentInstructions(id) {
       } }, t("manager.actions.copyInstructions"))
     ]);
   } catch (error) {
-    showModal(t("manager.actions.agentInstructions"), error.message || String(error), [
-      h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.close"))
-    ]);
+    showManagerError({
+      title: t("manager.integrations.instructionsErrorTitle"),
+      error,
+      retry: () => showAgentInstructions(id),
+      fallback: t("manager.integrations.instructionsErrorTitle")
+    });
   }
 }
 
@@ -1587,17 +1665,22 @@ async function installAgentInstructions(id) {
             h("button", { class: "btn btn-primary", type: "button", onClick: closeModal }, t("manager.actions.close"))
           ]);
         } catch (error) {
-          showModal(t("manager.actions.agentInstructions"), error.message || String(error), [
-            h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.close")),
-            h("button", { class: "btn btn-primary", type: "button", onClick: () => installAgentInstructions(id) }, t("manager.actions.retry"))
-          ]);
+          showManagerError({
+            title: t("manager.integrations.instructionsErrorTitle"),
+            error,
+            retry: () => installAgentInstructions(id),
+            fallback: t("manager.integrations.instructionsErrorTitle")
+          });
         }
       } }, t("manager.actions.installInstructions"))
     ]);
   } catch (error) {
-    showModal(t("manager.actions.agentInstructions"), error.message || String(error), [
-      h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.close"))
-    ]);
+    showManagerError({
+      title: t("manager.integrations.instructionsErrorTitle"),
+      error,
+      retry: () => installAgentInstructions(id),
+      fallback: t("manager.integrations.instructionsErrorTitle")
+    });
   }
 }
 
@@ -1627,17 +1710,22 @@ async function configureIntegration(id) {
             h("button", { class: "btn btn-primary", type: "button", onClick: closeModal }, t("manager.actions.close"))
           ]);
         } catch (error) {
-          showModal(t("manager.integrations.title"), error.message || String(error), [
-            h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.close")),
-            h("button", { class: "btn btn-primary", type: "button", onClick: () => configureIntegration(id) }, t("manager.actions.retry"))
-          ]);
+          showManagerError({
+            title: t("manager.integrations.configureErrorTitle"),
+            error,
+            retry: () => configureIntegration(id),
+            fallback: t("manager.integrations.configureErrorTitle")
+          });
         }
       } }, t("manager.actions.confirmConfigure"))
     ]);
   } catch (error) {
-    showModal(t("manager.integrations.title"), error.message || String(error), [
-      h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.close"))
-    ]);
+    showManagerError({
+      title: t("manager.integrations.configureErrorTitle"),
+      error,
+      retry: () => configureIntegration(id),
+      fallback: t("manager.integrations.configureErrorTitle")
+    });
   }
 }
 
@@ -1648,10 +1736,12 @@ async function acknowledgeIntegrationRestart(id) {
     await renderView("integrations");
     showToast(t("manager.status.restartAcknowledged"));
   } catch (error) {
-    showModal(t("manager.integrations.title"), error.message || String(error), [
-      h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.close")),
-      h("button", { class: "btn btn-primary", type: "button", onClick: () => acknowledgeIntegrationRestart(id) }, t("manager.actions.retry"))
-    ]);
+    showManagerError({
+      title: t("manager.integrations.recoveryErrorTitle"),
+      error,
+      retry: () => acknowledgeIntegrationRestart(id),
+      fallback: t("manager.integrations.recoveryErrorTitle")
+    });
   }
 }
 
@@ -1668,12 +1758,14 @@ async function showRestoredIntegrationResult(name, result) {
       h("button", { class: "btn btn-primary", type: "button", onClick: closeModal }, t("manager.actions.close"))
     ]);
   } catch (error) {
-    showModal(t("manager.modal.restoreIntegrationDoneTitle", { name }), `${body}\n\n${t("manager.modal.restoreIntegrationRefreshWarning", {
-      error: error.message || String(error)
-    })}`, [
-      h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.close")),
-      h("button", { class: "btn btn-primary", type: "button", onClick: () => showRestoredIntegrationResult(name, result) }, t("manager.actions.retry"))
-    ]);
+    showManagerError({
+      title: t("manager.modal.restoreIntegrationDoneTitle", { name }),
+      error: `${body}\n\n${t("manager.modal.restoreIntegrationRefreshWarning", {
+        error: readableManagerError(error)
+      })}`,
+      retry: () => showRestoredIntegrationResult(name, result),
+      fallback: t("manager.modal.restoreIntegrationRefreshWarning", { error: t("error.unknown") })
+    });
   }
 }
 
@@ -1691,10 +1783,12 @@ async function restoreIntegration(id) {
       try {
         result = await window.companion?.restoreAiIntegrationBackup?.(id);
       } catch (error) {
-        showModal(t("manager.modal.restoreIntegrationTitle", { name }), error.message || String(error), [
-          h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.close")),
-          h("button", { class: "btn btn-primary", type: "button", onClick: () => restoreIntegration(id) }, t("manager.actions.retry"))
-        ]);
+        showManagerError({
+          title: t("manager.modal.restoreIntegrationTitle", { name }),
+          error,
+          retry: () => restoreIntegration(id),
+          fallback: t("manager.modal.restoreIntegrationRefreshWarning", { error: t("error.unknown") })
+        });
         return;
       }
       await showRestoredIntegrationResult(name, result);
@@ -1724,13 +1818,18 @@ async function testIntegration(id, { silent = false, refresh = true } = {}) {
       if (activeView === "integrations") await renderView("integrations");
     }
     const item = integrations.find((integration) => integration.id === id);
-    const rawError = error.message || String(error);
+    const rawError = readableManagerError(error, t("manager.integrations.testErrorTitle"));
     if (!silent) {
-      showModal(t("manager.integrations.testTitle"), `${t(integrationErrorKey(rawError))}\n\n${t("manager.integrations.technicalDetails")}: ${rawError}`, [
-        h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.close")),
-        item?.configPath ? h("button", { class: "btn", type: "button", onClick: () => openIntegrationConfig(id) }, t("manager.actions.openConfig")) : null,
-        h("button", { class: "btn btn-primary", type: "button", onClick: () => testIntegration(id) }, t("manager.actions.retry"))
-      ]);
+      showManagerError({
+        title: t("manager.integrations.testErrorTitle"),
+        error: `${t(integrationErrorKey(rawError))}\n\n${t("manager.integrations.technicalDetails")}: ${rawError}`,
+        extraActions: item?.configPath ? [h("button", { class: "btn", type: "button", onClick: async () => {
+          closeModal({ dismissed: false });
+          await openIntegrationConfig(id);
+        } }, t("manager.actions.openConfig"))] : [],
+        retry: () => testIntegration(id),
+        fallback: t("manager.integrations.testErrorTitle")
+      });
     }
     return { ok: false, error: rawError, item };
   }
@@ -1788,8 +1887,96 @@ async function diagnosticsReportText() {
   return JSON.stringify(report, null, 2);
 }
 
+async function restartRendererFromDiagnostics() {
+  try {
+    await window.companion?.restartRenderer?.({ reason: "manager-diagnostics" });
+    showToast(t("manager.status.rendererRestarted"));
+  } catch (error) {
+    showManagerError({
+      title: t("manager.diagnostics.rendererRecoveryErrorTitle"),
+      error,
+      retry: restartRendererFromDiagnostics,
+      openDiagnostics: false,
+      fallback: t("manager.diagnostics.rendererRecoveryErrorTitle")
+    });
+  }
+}
+
+async function clearGpuCacheFromDiagnostics() {
+  try {
+    const result = await window.companion?.clearGpuCache?.();
+    showToast(t("manager.status.gpuCacheCleared", { count: result?.removed || 0 }));
+  } catch (error) {
+    showManagerError({
+      title: t("manager.diagnostics.gpuCacheErrorTitle"),
+      error,
+      retry: clearGpuCacheFromDiagnostics,
+      openDiagnostics: false,
+      fallback: t("manager.diagnostics.gpuCacheErrorTitle")
+    });
+  }
+}
+
+async function exportDiagnosticsFromManager() {
+  try {
+    const result = await window.companion?.exportDiagnostics?.();
+    showToast(t("manager.status.diagnosticsExported", { path: result?.file || "" }));
+  } catch (error) {
+    showManagerError({
+      title: t("manager.diagnostics.exportErrorTitle"),
+      error,
+      retry: exportDiagnosticsFromManager,
+      openDiagnostics: false,
+      fallback: t("manager.diagnostics.exportErrorTitle")
+    });
+  }
+}
+
+async function copyDiagnosticsFromManager() {
+  try {
+    await copyText(await diagnosticsReportText());
+    showToast(t("manager.status.diagnosticsCopied"));
+  } catch (error) {
+    showManagerError({
+      title: t("manager.diagnostics.copyErrorTitle"),
+      error,
+      retry: copyDiagnosticsFromManager,
+      openDiagnostics: false,
+      fallback: t("manager.diagnostics.copyErrorTitle")
+    });
+  }
+}
+
+async function exportLogsFromManager() {
+  try {
+    const result = await window.companion?.exportLogs?.();
+    showToast(t("manager.status.logsExported", { path: result?.file || "" }));
+  } catch (error) {
+    showManagerError({
+      title: t("manager.diagnostics.logsExportErrorTitle"),
+      error,
+      retry: exportLogsFromManager,
+      openDiagnostics: false,
+      fallback: t("manager.diagnostics.logsExportErrorTitle")
+    });
+  }
+}
+
 async function integrationsView() {
-  await refreshIntegrations();
+  try {
+    await refreshIntegrations();
+  } catch (error) {
+    showManagerError({
+      title: t("manager.integrations.configureErrorTitle"),
+      error,
+      retry: () => renderView("integrations"),
+      fallback: t("manager.integrations.configureErrorTitle")
+    });
+    return h("section", {},
+      h("h2", { class: "view-title" }, t("manager.integrations.title")),
+      h("p", { class: "error-text", role: "alert" }, readableManagerError(error, t("manager.integrations.configureErrorTitle")))
+    );
+  }
   const available = typeof window.companion?.listAiIntegrations === "function";
   if (!available) {
     return h("section", {},
@@ -1991,26 +2178,11 @@ async function diagnosticsView() {
           h("button", { class: "btn", type: "button", onClick: () => window.companion?.openFolder?.(config.paths?.configDir) }, t("manager.actions.openConfigFolder")),
           diagnostics.cache?.modelsDir ? h("button", { class: "btn", type: "button", onClick: () => window.companion?.openFolder?.(diagnostics.cache.modelsDir) }, t("manager.actions.openModelCache")) : null,
           diagnostics.cache?.previewsDir ? h("button", { class: "btn", type: "button", onClick: () => window.companion?.openFolder?.(diagnostics.cache.previewsDir) }, t("manager.actions.openPreviewCache")) : null,
-          h("button", { class: "btn", type: "button", onClick: async () => {
-            await window.companion?.restartRenderer?.({ reason: "manager-diagnostics" });
-            showToast(t("manager.status.rendererRestarted"));
-          } }, t("manager.actions.restartRenderer")),
-          h("button", { class: "btn", type: "button", onClick: async () => {
-            const result = await window.companion?.clearGpuCache?.();
-            showToast(t("manager.status.gpuCacheCleared", { count: result?.removed || 0 }));
-          } }, t("manager.actions.clearGpuCache")),
-          h("button", { class: "btn", type: "button", onClick: async () => {
-            await copyText(await diagnosticsReportText());
-            showToast(t("manager.status.diagnosticsCopied"));
-          } }, t("manager.actions.copyDiagnostics")),
-          h("button", { class: "btn", type: "button", onClick: async () => {
-            const result = await window.companion?.exportDiagnostics?.();
-            showToast(t("manager.status.diagnosticsExported", { path: result?.file || "" }));
-          } }, t("manager.actions.exportDiagnostics")),
-          h("button", { class: "btn", type: "button", onClick: async () => {
-            const result = await window.companion?.exportLogs?.();
-            showToast(t("manager.status.logsExported", { path: result?.file || "" }));
-          } }, t("manager.actions.exportLogs")),
+          h("button", { class: "btn", type: "button", onClick: restartRendererFromDiagnostics }, t("manager.actions.restartRenderer")),
+          h("button", { class: "btn", type: "button", onClick: clearGpuCacheFromDiagnostics }, t("manager.actions.clearGpuCache")),
+          h("button", { class: "btn", type: "button", onClick: copyDiagnosticsFromManager }, t("manager.actions.copyDiagnostics")),
+          h("button", { class: "btn", type: "button", onClick: exportDiagnosticsFromManager }, t("manager.actions.exportDiagnostics")),
+          h("button", { class: "btn", type: "button", onClick: exportLogsFromManager }, t("manager.actions.exportLogs")),
           h("button", { class: "btn", type: "button", disabled: integrationTestAllInFlight, onClick: testAllIntegrations }, t("manager.actions.testAllIntegrations"))
         )
       ),
@@ -2301,6 +2473,18 @@ async function renderView(viewName) {
     if (!navigationGuard.isCurrent(navigation, activeView)) return;
     if (cachedResult.sourceId) cacheRemoteCatalog(cachedResult.sourceId, config.models?.sources || [], result);
     await librarySession?.applyRemoteCatalog(result);
+    const selectedSources = catalogSourcesForSelection(cachedResult.sourceId, enabledCatalogSources(config.models?.sources || []));
+    const failedSources = (result?.sources || []).filter((status) => status.state === "failed");
+    const allSelectedSourcesFailed = selectedSources.length > 0
+      && selectedSources.every((source) => failedSources.some((status) => status.sourceId === source.id));
+    if (!cachedResult.hasCachedCatalog && allSelectedSourcesFailed && !(result?.models || []).length) {
+      showManagerError({
+        title: t("manager.library.catalogLoadFailed"),
+        error: failedSources.map((status) => status.error).filter(Boolean).join("\n") || t("manager.library.catalogLoadFailed"),
+        retry: () => renderView("library"),
+        fallback: t("manager.library.catalogLoadFailed")
+      });
+    }
   }
   else if (viewName === "installed") render(installedView(), viewContainer);
   else if (viewName === "downloads") render(downloadsView(), viewContainer);
