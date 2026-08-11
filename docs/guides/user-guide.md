@@ -33,19 +33,23 @@ Use the tray menu for daily control:
 
 The Manager has five main views:
 
-- **Library**: browse supported catalog models, search by name/source, download,
-  and activate an installed model.
+- **Dashboard**: see the active model, AI source, local bridge, renderer health,
+  reminders, and updates at a glance.
+- **Library**: use the **Browse**, **Installed**, and **Downloads** tabs to search
+  catalog sources, manage local models, and inspect transfer errors.
   - **Base operators** provide the full companion action set.
   - **Dynamic illustrations** are display-oriented and usually fall back to
     Idle/Default for task states.
   - **Enemies** are experimental because upstream animation names vary.
   Limited models show a warning before download; state messages still work.
-- **Installed**: inspect local models, open folders, set the active model, or
-  remove inactive models.
-- **Downloads**: see recent download progress and errors.
+- **AI Integrations**: detect, configure, test, and safely restore supported AI
+  tool configurations.
 - **Settings**: adjust scale, offset, language, theme, and bubble behavior.
 - **Diagnostics**: check local API health, model paths, MCP config paths, state
   history, and update status.
+
+Avatar Studio is an experimental tool under **Settings > Labs** rather than a
+primary daily-use page.
 
 Settings are hot-applied where possible. Scale and offset changes should update
 the running companion without restarting.
@@ -67,21 +71,15 @@ application restart or upgrade.
 
 ## AI Tool Setup
 
-Run the bundled installer to configure common tools:
+Open **Manager > AI Integrations**, choose the detected tool, review the file and
+backup preview, then select **Configure**. Run the packaged self-test, install or
+copy the displayed Agent instructions, and restart the AI tool or open a new
+session. Setup is complete only after Manager receives the first real work
+report; a successful self-test alone does not prove that the AI is reporting.
 
-```bash
-bun run skill:install
-bun run ai:configure -- --target all
-```
-
-Codex Desktop and Codex CLI can also be configured directly:
-
-```bash
-bun run mcp:install:codex
-```
-
-Restart the AI tool after installing the MCP bridge. The companion app or local
-API must be running while the tool sends status updates.
+The companion app must be running while the AI tool sends status updates. Source
+scripts and manual MCP templates are developer fallbacks documented in the
+[AI tools guide](ai-tools.md), not prerequisites for an installed app.
 
 ## Troubleshooting
 
@@ -93,15 +91,16 @@ If the model window is missing:
 
 If you see a missing asset or `XMLHttpRequest failed` error:
 
-- Use **Manager > Installed** to confirm the active model folder.
+- Use **Manager > Library > Installed** to confirm the active model folder.
 - Re-download the model from **Library**.
 - Avoid moving `companion.local.json` without moving its relative model folder.
 
 If Codex or another AI tool stays idle:
 
 - Make sure the companion app is running.
-- Re-run `bun run mcp:install:codex`.
+- Open **Manager > AI Integrations**, select the tool, and run **Test Connection**.
 - Restart Codex or open a new Codex session.
+- Confirm Manager no longer says **Waiting for first report** after a real task.
 - Check **Manager > Diagnostics** for the MCP config path.
 
 If the tray icon appears but the window does not:
