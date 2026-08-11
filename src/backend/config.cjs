@@ -134,6 +134,12 @@ function resolveMaybeRelative(value) {
   return path.resolve(rootDir, value);
 }
 
+function parseCompanionPort(value) {
+  if (value === undefined || value === null || value === "") return null;
+  const port = Number(value);
+  return Number.isInteger(port) && port >= 0 && port <= 65535 ? port : null;
+}
+
 function loadConfig() {
   const warnings = [];
   const environmentOverrides = [];
@@ -163,8 +169,9 @@ function loadConfig() {
     config.spine.skel = process.env.SPINE_SKEL;
     environmentOverrides.push("SPINE_SKEL");
   }
-  if (process.env.COMPANION_PORT) {
-    config.server.port = Number(process.env.COMPANION_PORT);
+  const companionPort = parseCompanionPort(process.env.COMPANION_PORT);
+  if (companionPort !== null) {
+    config.server.port = companionPort;
     environmentOverrides.push("COMPANION_PORT");
   }
 
@@ -250,5 +257,6 @@ module.exports = {
   localConfigCandidates,
   mergeDeep,
   userConfigDir,
+  parseCompanionPort,
   readJsonIfExists
 };
