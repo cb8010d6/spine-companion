@@ -17,9 +17,11 @@ describe("Manager actionable error recovery", () => {
   it("uses bilingual actionable copy", () => {
     createI18n({ ui: { locale: "en" } }, { language: "en-US" });
     expect(t("manager.error.nextStep")).toContain("Open Diagnostics");
+    expect(t("manager.error.nextStep.retryOnly")).not.toContain("Open Diagnostics");
     expect(t("manager.actions.openDiagnostics")).toBe("Open Diagnostics");
     createI18n({ ui: { locale: "zh-CN" } }, { language: "en-US" });
     expect(t("manager.error.nextStep")).toContain("打开诊断");
+    expect(t("manager.error.nextStep.retryOnly")).not.toContain("打开诊断");
     expect(t("manager.actions.openDiagnostics")).toBe("打开诊断");
   });
 
@@ -29,6 +31,9 @@ describe("Manager actionable error recovery", () => {
     expect(managerSource).toContain("retry: () => renderView(\"library\")");
     expect(managerSource).toContain("retry: () => activateModel(id, { incremental })");
     expect(managerSource).toContain("exportDiagnosticsFromManager");
+    expect(managerSource).toContain("copyDiagnosticsFromManager");
+    expect(managerSource).toContain("exportLogsFromManager");
+    expect(managerSource).toContain("openDiagnostics: false");
     expect(managerSource).not.toContain("Fix all");
   });
 

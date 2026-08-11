@@ -227,7 +227,11 @@ function showManagerError({ title, error, retry = null, extraActions = [], openD
     : null;
   showModal(
     title,
-    actionableManagerErrorBody(error, t("manager.error.nextStep"), fallback),
+    actionableManagerErrorBody(
+      error,
+      t(openDiagnostics ? "manager.error.nextStep" : "manager.error.nextStep.retryOnly"),
+      fallback
+    ),
     [
       h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.close")),
       ...extraActions,
@@ -1892,6 +1896,7 @@ async function restartRendererFromDiagnostics() {
       title: t("manager.diagnostics.rendererRecoveryErrorTitle"),
       error,
       retry: restartRendererFromDiagnostics,
+      openDiagnostics: false,
       fallback: t("manager.diagnostics.rendererRecoveryErrorTitle")
     });
   }
@@ -1906,6 +1911,7 @@ async function clearGpuCacheFromDiagnostics() {
       title: t("manager.diagnostics.gpuCacheErrorTitle"),
       error,
       retry: clearGpuCacheFromDiagnostics,
+      openDiagnostics: false,
       fallback: t("manager.diagnostics.gpuCacheErrorTitle")
     });
   }
@@ -1920,7 +1926,38 @@ async function exportDiagnosticsFromManager() {
       title: t("manager.diagnostics.exportErrorTitle"),
       error,
       retry: exportDiagnosticsFromManager,
+      openDiagnostics: false,
       fallback: t("manager.diagnostics.exportErrorTitle")
+    });
+  }
+}
+
+async function copyDiagnosticsFromManager() {
+  try {
+    await copyText(await diagnosticsReportText());
+    showToast(t("manager.status.diagnosticsCopied"));
+  } catch (error) {
+    showManagerError({
+      title: t("manager.diagnostics.copyErrorTitle"),
+      error,
+      retry: copyDiagnosticsFromManager,
+      openDiagnostics: false,
+      fallback: t("manager.diagnostics.copyErrorTitle")
+    });
+  }
+}
+
+async function exportLogsFromManager() {
+  try {
+    const result = await window.companion?.exportLogs?.();
+    showToast(t("manager.status.logsExported", { path: result?.file || "" }));
+  } catch (error) {
+    showManagerError({
+      title: t("manager.diagnostics.logsExportErrorTitle"),
+      error,
+      retry: exportLogsFromManager,
+      openDiagnostics: false,
+      fallback: t("manager.diagnostics.logsExportErrorTitle")
     });
   }
 }
@@ -2143,15 +2180,9 @@ async function diagnosticsView() {
           diagnostics.cache?.previewsDir ? h("button", { class: "btn", type: "button", onClick: () => window.companion?.openFolder?.(diagnostics.cache.previewsDir) }, t("manager.actions.openPreviewCache")) : null,
           h("button", { class: "btn", type: "button", onClick: restartRendererFromDiagnostics }, t("manager.actions.restartRenderer")),
           h("button", { class: "btn", type: "button", onClick: clearGpuCacheFromDiagnostics }, t("manager.actions.clearGpuCache")),
-          h("button", { class: "btn", type: "button", onClick: async () => {
-            await copyText(await diagnosticsReportText());
-            showToast(t("manager.status.diagnosticsCopied"));
-          } }, t("manager.actions.copyDiagnostics")),
+          h("button", { class: "btn", type: "button", onClick: copyDiagnosticsFromManager }, t("manager.actions.copyDiagnostics")),
           h("button", { class: "btn", type: "button", onClick: exportDiagnosticsFromManager }, t("manager.actions.exportDiagnostics")),
-          h("button", { class: "btn", type: "button", onClick: async () => {
-            const result = await window.companion?.exportLogs?.();
-            showToast(t("manager.status.logsExported", { path: result?.file || "" }));
-          } }, t("manager.actions.exportLogs")),
+          h("button", { class: "btn", type: "button", onClick: exportLogsFromManager }, t("manager.actions.exportLogs")),
           h("button", { class: "btn", type: "button", disabled: integrationTestAllInFlight, onClick: testAllIntegrations }, t("manager.actions.testAllIntegrations"))
         )
       ),
