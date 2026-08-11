@@ -1976,10 +1976,17 @@ async fn get_diagnostics(data: State<'_, AppData>) -> Result<serde_json::Value, 
                 .join("EBWebView")
         })
         .unwrap_or_else(|| data.config_dir.join("EBWebView"));
+    let config_paths = public
+        .get("paths")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
 
     Ok(serde_json::json!({
         "apiOk": state_ok,
         "localConfigExists": local_config_exists,
+        "localConfigPath": config_paths.get("localConfigPath").cloned().unwrap_or_default(),
+        "canonicalConfigPath": config_paths.get("canonicalConfigPath").cloned().unwrap_or_default(),
+        "configPaths": config_paths,
         "assetDirExists": asset_dir_exists,
         "hasSkel": has_skel,
         "hasAtlas": has_atlas,

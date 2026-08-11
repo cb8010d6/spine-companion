@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const { mergeDeep, localConfigCandidates, userConfigDir, readJsonIfExists } = require("../src/backend/config.cjs");
+const { mergeDeep, localConfigCandidates, canonicalConfigPath, userConfigDir, readJsonIfExists } = require("../src/backend/config.cjs");
 
 describe("config helpers", () => {
   it("deep merges nested objects without replacing sibling keys", () => {
@@ -27,6 +27,7 @@ describe("config helpers", () => {
     const candidates = localConfigCandidates();
     expect(new Set(candidates).size).toBe(candidates.length);
     expect(candidates.some((file) => file.endsWith("companion.local.json"))).toBe(true);
+    expect(candidates.at(-1)).toBe(canonicalConfigPath());
   });
 
   it("returns a stable user config directory", () => {

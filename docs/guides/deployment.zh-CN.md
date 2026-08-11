@@ -43,6 +43,25 @@ Release 版也会读取：
 
 安装目录同级的 `companion.local.json` 也会读取，但用户配置目录更稳定，覆盖安装不会影响。
 
+### 配置层与唯一写入位置
+
+打包后的 Tauri 运行时把用户配置目录中的文件作为唯一可写的 canonical 配置：
+
+```text
+<用户配置目录>/companion.local.json
+```
+
+仓库根目录、当前工作目录和 exe 所在目录中的 `companion.local.json` 只作为只读
+legacy 兼容层读取。它们会先于用户配置加载，因此用户配置始终拥有最高优先级。
+模型激活、显示设置以及 Manager 的其他修改只写入 canonical 文件，不会覆盖 legacy 文件。
+
+相对路径形式的 `spine.assetDir` 会按照提供该字段的配置层所在目录解析。打开
+**Manager > Diagnostics** 可以看到唯一写入路径和实际加载的配置层，便于排查覆盖来源；
+诊断不会显示配置内容或 secrets。
+
+浏览器/源码适配器 `src/backend/config.cjs` 也保持相同优先级，方便开发调试；它只是开发适配器，
+不是另一套打包运行时。
+
 ## 3. 升级、卸载与保留数据
 
 升级或卸载前先退出 Spine Companion；如果模型或配置重要，可通过 `Open Config Folder`

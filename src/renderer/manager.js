@@ -2137,6 +2137,8 @@ async function diagnosticsView() {
   history = await window.companion?.getHistory?.() || [];
   await refreshReminders();
   if (!updateStatus) await refreshUpdateStatus({ silent: true });
+  const configLayers = diagnostics.configPaths?.configLayers || {};
+  const loadedConfigLayers = Array.isArray(configLayers.loaded) ? configLayers.loaded : [];
   const row = (label, ok, value) => h("div", { class: "status-row" },
     h("span", { class: "status-label" }, label),
     h("span", { class: ok ? "status-value status-ok" : "status-value status-err" }, value || (ok ? t("manager.diagnostics.ok") : t("manager.diagnostics.needsAttention")))
@@ -2147,8 +2149,13 @@ async function diagnosticsView() {
       h("article", { class: "card diag-card" },
         row(t("manager.diagnostics.localApi"), diagnostics.apiOk, diagnostics.apiOk ? t("manager.diagnostics.online") : t("manager.diagnostics.unreachable")),
         row(t("manager.diagnostics.mcpConfigured"), diagnostics.mcpConfigured, diagnostics.mcpConfigured ? t("manager.diagnostics.yes") : t("manager.diagnostics.no")),
-        row(t("manager.diagnostics.localConfig"), diagnostics.localConfigExists, diagnostics.localConfigExists ? t("manager.diagnostics.found") : t("manager.diagnostics.missing")),
+        row(t("manager.diagnostics.canonicalConfig"), diagnostics.localConfigExists, diagnostics.localConfigExists ? t("manager.diagnostics.found") : t("manager.diagnostics.missing")),
         diagnostics.localConfigPath ? h("p", { class: "model-meta", title: diagnostics.localConfigPath }, diagnostics.localConfigPath) : null,
+        diagnostics.canonicalConfigPath ? h("p", { class: "model-meta", title: diagnostics.canonicalConfigPath }, `${t("manager.diagnostics.canonicalConfigPath")}: ${diagnostics.canonicalConfigPath}`) : null,
+        loadedConfigLayers.length ? h("div", { class: "config-layer-report" },
+          h("p", { class: "model-meta" }, t("manager.diagnostics.loadedConfigLayers")),
+          ...loadedConfigLayers.map((path) => h("p", { class: "model-meta selectable", title: path }, path))
+        ) : null,
         ...(diagnostics.configWarnings || []).map((warning) => h("p", { class: "error-text selectable", title: warning.file }, t("manager.diagnostics.configWarning", { message: warning.message }))),
         row(t("manager.diagnostics.spineAssets"), diagnostics.assetDirExists && diagnostics.hasSkel && diagnostics.hasAtlas && diagnostics.hasPng, "skel / atlas / png"),
         row(t("manager.diagnostics.modelHealth"), diagnostics.modelHealth?.ok, localizedDiagnosticMessage(diagnostics.modelHealth?.message)),

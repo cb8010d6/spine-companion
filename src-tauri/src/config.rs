@@ -155,15 +155,23 @@ fn local_config_candidates_with_context(
     user_dir: Option<&Path>,
     exe_dir: Option<&Path>,
 ) -> Vec<PathBuf> {
-    let mut candidates = vec![root.join("companion.local.json")];
+    // Legacy layers are read first. The per-user file is appended last so it
+    // always wins without making any legacy file a write target.
+    let mut candidates = Vec::new();
+    let mut push_unique = |path: PathBuf| {
+        if !candidates.iter().any(|candidate| candidate == &path) {
+            candidates.push(path);
+        }
+    };
+    push_unique(root.join("companion.local.json"));
     if let Some(cwd) = cwd {
-        candidates.push(cwd.join("companion.local.json"));
-    }
-    if let Some(dir) = user_dir {
-        candidates.push(dir.join("companion.local.json"));
+        push_unique(cwd.join("companion.local.json"));
     }
     if let Some(dir) = exe_dir {
-        candidates.push(dir.join("companion.local.json"));
+        push_unique(dir.join("companion.local.json"));
+    }
+    if let Some(dir) = user_dir {
+        push_unique(dir.join("companion.local.json"));
     }
     candidates
 }
@@ -340,23 +348,63 @@ pub(crate) fn resolved_update_channel(configured: &str, current_version: &str) -
     }
 }
 
-fn load_config_layers(root: &Path, candidates: &[PathBuf]) -> (serde_json::Value, String, PathBuf) {
+fn load_config_layers(
+    root: &Path,
+    candidates: &[PathBuf],
+) -> (serde_json::Value, PathBuf, Vec<PathBuf>) {
     let mut config = fallback_config();
-    if let Some(committed) = read_json_if_exists(&root.join("companion.config.json")) {
+    let committed_path = root.join("companion.config.json");
+    let mut loaded_paths = Vec::new();
+    if let Some(committed) = read_json_if_exists(&committed_path) {
         merge_json(&mut config, committed);
+        loaded_paths.push(committed_path);
     }
-    let mut resolved_local_config_path = String::new();
     let mut asset_base_dir = root.to_path_buf();
     for candidate in candidates {
         if let Some(local) = read_json_if_exists(candidate) {
-            merge_json(&mut config, local);
-            resolved_local_config_path = candidate.to_string_lossy().to_string();
-            if let Some(parent) = candidate.parent() {
-                asset_base_dir = parent.to_path_buf();
+            if string_at(&local, &["spine", "assetDir"]).is_some() {
+                if let Some(parent) = candidate.parent() {
+                    asset_base_dir = parent.to_path_buf();
+                }
             }
+            merge_json(&mut config, local);
+            loaded_paths.push(candidate.clone());
         }
     }
-    (config, resolved_local_config_path, asset_base_dir)
+    (config, asset_base_dir, loaded_paths)
+}
+
+fn config_layer_report(
+    root: &Path,
+    canonical_path: &Path,
+    candidates: &[PathBuf],
+    loaded_paths: &[PathBuf],
+) -> serde_json::Value {
+    let is_loaded = |path: &Path| loaded_paths.iter().any(|loaded| loaded == path);
+    let layer = |path: &Path, writable: bool| {
+        serde_json::json!({
+            "path": path.to_string_lossy().to_string(),
+            "exists": path.exists(),
+            "loaded": is_loaded(path),
+            "writable": writable
+        })
+    };
+    let committed_path = root.join("companion.config.json");
+    let legacy = candidates
+        .iter()
+        .filter(|path| *path != canonical_path)
+        .map(|path| layer(path, false))
+        .collect::<Vec<_>>();
+    let loaded = loaded_paths
+        .iter()
+        .map(|path| path.to_string_lossy().to_string())
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "canonical": layer(canonical_path, true),
+        "committed": layer(&committed_path, false),
+        "legacy": legacy,
+        "loaded": loaded
+    })
 }
 
 pub(crate) fn apply_env_overlays<F>(config: &mut serde_json::Value, get_env: F)
@@ -516,16 +564,13 @@ pub(crate) fn load_runtime_config() -> RuntimeConfig {
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    let config_dir_path = user_config_dir().unwrap_or_else(|| root.clone());
+    let canonical_config_path = default_local_config_path(&root);
     let candidates = local_config_candidates(&root);
-    let (mut config, mut resolved_local_config_path, asset_base_dir) =
+    let (mut config, asset_base_dir, mut loaded_config_paths) =
         load_config_layers(&root, &candidates);
     ensure_official_model_sources(&mut config);
-    let config_dir_path = user_config_dir().unwrap_or_else(|| root.clone());
-    let local_config_path = if resolved_local_config_path.is_empty() {
-        default_local_config_path(&root)
-    } else {
-        PathBuf::from(&resolved_local_config_path)
-    };
+    let local_config_path = canonical_config_path;
     apply_env_overlays(&mut config, |key| std::env::var(key).ok());
 
     let host = string_at(&config, &["server", "host"])
@@ -555,7 +600,12 @@ pub(crate) fn load_runtime_config() -> RuntimeConfig {
                 skel = recovered.skel;
                 config["spine"]["assetDir"] = serde_json::Value::String(asset_dir.clone());
                 config["spine"]["skel"] = serde_json::Value::String(skel.clone());
-                resolved_local_config_path = local_config_path.to_string_lossy().to_string();
+                if !loaded_config_paths
+                    .iter()
+                    .any(|path| path == &local_config_path)
+                {
+                    loaded_config_paths.push(local_config_path.clone());
+                }
             }
         }
     }
@@ -580,6 +630,8 @@ pub(crate) fn load_runtime_config() -> RuntimeConfig {
         .unwrap_or("companion");
     let config_dir = config_dir_path.to_string_lossy().to_string();
     let ui_settings = ui_settings_from_config(&config);
+    let config_layers =
+        config_layer_report(&root, &local_config_path, &candidates, &loaded_config_paths);
 
     let public = serde_json::json!({
         "window": config["window"].clone(),
@@ -613,7 +665,9 @@ pub(crate) fn load_runtime_config() -> RuntimeConfig {
         "paths": {
             "configDir": config_dir,
             "localConfigPath": local_config_path.to_string_lossy().to_string(),
-            "hasLocalConfig": !resolved_local_config_path.is_empty()
+            "canonicalConfigPath": local_config_path.to_string_lossy().to_string(),
+            "hasLocalConfig": loaded_config_paths.iter().any(|path| path == &local_config_path),
+            "configLayers": config_layers
         },
         "state": config["state"].clone(),
         "specialSegments": config["specialSegments"].clone()
@@ -651,7 +705,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_config_precedence_is_fallback_then_committed_then_last_local_candidate() {
+    fn canonical_config_has_highest_precedence_over_legacy_layers() {
         let root = temp_root("precedence");
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(
@@ -659,21 +713,34 @@ mod tests {
             r#"{"server":{"port":18000},"spine":{"skel":"committed.skel"}}"#,
         )
         .unwrap();
-        let first = root.join("first.local.json");
-        let second = root.join("second.local.json");
-        std::fs::write(&first, r#"{"server":{"port":18001},"spine":{"scale":1.1}}"#).unwrap();
+        let legacy_dir = root.join("legacy");
+        std::fs::create_dir_all(&legacy_dir).unwrap();
+        let legacy = legacy_dir.join("companion.local.json");
+        let canonical = root.join("user").join("companion.local.json");
+        std::fs::create_dir_all(canonical.parent().unwrap()).unwrap();
         std::fs::write(
-            &second,
+            &legacy,
+            r#"{"server":{"port":18001},"spine":{"scale":1.1,"assetDir":"assets"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            &canonical,
             r#"{"server":{"port":18002},"spine":{"skel":"local.skel"}}"#,
         )
         .unwrap();
 
-        let (config, resolved, base) = load_config_layers(&root, &[first, second.clone()]);
+        let (config, base, loaded) =
+            load_config_layers(&root, &[legacy.clone(), canonical.clone()]);
         assert_eq!(config["server"]["port"], 18002);
         assert_eq!(config["spine"]["scale"], 1.1);
         assert_eq!(config["spine"]["skel"], "local.skel");
-        assert_eq!(PathBuf::from(resolved), second);
-        assert_eq!(base, root);
+        assert!(loaded.contains(&legacy));
+        assert!(loaded.contains(&canonical));
+        assert_eq!(base, legacy_dir);
+        assert_eq!(
+            resolve_asset_dir(&base, "models"),
+            legacy_dir.join("models").to_string_lossy()
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -688,10 +755,62 @@ mod tests {
             vec![
                 root.join("companion.local.json"),
                 cwd.join("companion.local.json"),
-                user.join("companion.local.json"),
-                exe.join("companion.local.json")
+                exe.join("companion.local.json"),
+                user.join("companion.local.json")
             ]
         );
+    }
+
+    #[test]
+    fn canonical_write_does_not_modify_legacy_config() {
+        let root = temp_root("canonical-write");
+        let legacy = root.join("companion.local.json");
+        let canonical = root.join("user").join("companion.local.json");
+        let asset_dir = root.join("models").join("amiya");
+        std::fs::create_dir_all(&asset_dir).unwrap();
+        std::fs::write(
+            &legacy,
+            r#"{"spine":{"assetDir":"legacy-assets","skel":"legacy.skel"}}"#,
+        )
+        .unwrap();
+
+        write_local_model_config(&canonical, &asset_dir, "amiya.skel").unwrap();
+        verify_local_model_config(&canonical, &asset_dir, "amiya.skel").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&legacy).unwrap(),
+            r#"{"spine":{"assetDir":"legacy-assets","skel":"legacy.skel"}}"#
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn config_layer_report_identifies_canonical_and_loaded_legacy_layers() {
+        let root = temp_root("layer-report");
+        let cwd = root.join("cwd");
+        let canonical = root.join("user").join("companion.local.json");
+        let legacy = cwd.join("companion.local.json");
+        std::fs::create_dir_all(cwd).unwrap();
+        std::fs::create_dir_all(canonical.parent().unwrap()).unwrap();
+        std::fs::write(&legacy, r#"{"ui":{"theme":"dark"}}"#).unwrap();
+        std::fs::write(&canonical, r#"{"ui":{"theme":"light"}}"#).unwrap();
+        let report = config_layer_report(
+            &root,
+            &canonical,
+            &[legacy.clone(), canonical.clone()],
+            &[legacy.clone(), canonical.clone()],
+        );
+        assert_eq!(
+            report["canonical"]["path"],
+            canonical.to_string_lossy().to_string()
+        );
+        assert_eq!(report["canonical"]["writable"], true);
+        assert_eq!(
+            report["legacy"][0]["path"],
+            legacy.to_string_lossy().to_string()
+        );
+        assert_eq!(report["legacy"][0]["writable"], false);
+        assert_eq!(report["loaded"].as_array().unwrap().len(), 2);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
