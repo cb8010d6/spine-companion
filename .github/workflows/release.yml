@@ -47,6 +47,8 @@ jobs:
     name: Tauri Package (${{ matrix.label }})
     needs: validate
     runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -86,6 +88,19 @@ jobs:
         run: bun run release:preflight -- --tag "${{ github.ref_name }}"
       - name: Package Tauri app
         run: bunx tauri build --bundles ${{ matrix.bundles }}
+      - name: Download previous Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download v0.2.6-rc.10 --repo "${{ github.repository }}" `
+            --pattern "Spine.Companion_0.2.6-rc.10_x64-setup.exe" `
+            --dir "$env:RUNNER_TEMP" --clobber
+          $previous = Join-Path $env:RUNNER_TEMP "Spine.Companion_0.2.6-rc.10_x64-setup.exe"
+          if (-not (Test-Path -LiteralPath $previous)) {
+            throw "Previous Windows installer was not downloaded: $previous"
+          }
       - name: Install, smoke-test, and uninstall Windows package
         if: runner.os == 'Windows'
         shell: pwsh
@@ -94,7 +109,8 @@ jobs:
           if ($installer.Count -ne 1) {
             throw "Expected exactly one NSIS installer, found $($installer.Count)."
           }
-          ./scripts/test-windows-installer.ps1 -InstallerPath $installer[0].FullName
+          $previous = Join-Path $env:RUNNER_TEMP "Spine.Companion_0.2.6-rc.10_x64-setup.exe"
+          ./scripts/test-windows-installer.ps1 -InstallerPath $installer[0].FullName -PreviousInstallerPath $previous
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: spine-companion-tauri-${{ matrix.artifact }}

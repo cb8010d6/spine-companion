@@ -71,7 +71,8 @@ describe("release workflow contract", () => {
       workflow.indexOf("\n  publish:")
     );
 
-    expect(workflow).toContain("./scripts/test-windows-installer.ps1 -InstallerPath $installer[0].FullName");
+    expect(workflow).toContain("gh release download v0.2.6-rc.10");
+    expect(workflow).toContain("-PreviousInstallerPath $previous");
     expect(artifactUpload).toContain("src-tauri/target/release/bundle/**/*.exe");
     expect(artifactUpload).not.toContain("src-tauri/target/release/spine-companion.exe");
   });
@@ -83,8 +84,12 @@ describe("release workflow contract", () => {
 
     expect(workflow).toContain("windows-package-smoke:");
     expect(workflow).toContain("bunx tauri build --bundles nsis");
-    expect(workflow).toContain("./scripts/test-windows-installer.ps1 -InstallerPath $installer[0].FullName");
-    expect(smoke).toContain('Start-Process -FilePath $installer -ArgumentList @("/S", "/D=$installDir")');
+    expect(workflow).toContain("gh release download v0.2.6-rc.10");
+    expect(workflow).toContain("-PreviousInstallerPath $previous");
+    expect(smoke).toContain('[string] $PreviousInstallerPath');
+    expect(smoke).toContain('Start-Process -FilePath $PackagePath -ArgumentList @("/S", "/D=$installDir")');
+    expect(smoke).toContain('if ($previousInstaller)');
+    expect(smoke).toContain('$env:APPDATA = $appDataRoot');
     expect(smoke).toContain('Start-Process -FilePath $uninstaller -ArgumentList "/S"');
     expect(smoke).toContain("bun scripts/check-packaged-mcp.mjs $exe");
   });
