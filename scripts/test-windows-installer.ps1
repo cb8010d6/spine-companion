@@ -76,6 +76,21 @@ function Invoke-SilentInstall([string] $PackagePath) {
   }
 }
 
+function Invoke-SilentUninstall([string] $UninstallerPath) {
+  $transientDllInitializationFailure = -1073741502 # 0xC0000142
+  for ($attempt = 1; $attempt -le 2; $attempt++) {
+    $uninstall = Start-Process -FilePath $UninstallerPath -ArgumentList "/S" -Wait -PassThru
+    if ($uninstall.ExitCode -eq 0) {
+      return
+    }
+    if ($attempt -eq 1 -and $uninstall.ExitCode -eq $transientDllInitializationFailure) {
+      Start-Sleep -Seconds 2
+      continue
+    }
+    throw "NSIS uninstaller failed with exit code $($uninstall.ExitCode)."
+  }
+}
+
 Assert-UnderRunnerTemp $installDir
 Assert-UnderRunnerTemp $testDataRoot
 
@@ -143,10 +158,7 @@ try {
 
   if ($installationAttempted -and (Test-Path -LiteralPath $uninstaller)) {
     try {
-      $uninstall = Start-Process -FilePath $uninstaller -ArgumentList "/S" -Wait -PassThru
-      if ($uninstall.ExitCode -ne 0) {
-        [void] $cleanupErrors.Add("NSIS uninstaller failed with exit code $($uninstall.ExitCode).")
-      }
+      Invoke-SilentUninstall $uninstaller
       Start-Sleep -Seconds 3
     } catch {
       [void] $cleanupErrors.Add("Unable to run the NSIS uninstaller: $($_.Exception.Message)")

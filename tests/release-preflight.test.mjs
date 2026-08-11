@@ -93,7 +93,9 @@ describe("release workflow contract", () => {
     expect(smoke).toContain('Start-Process -FilePath $PackagePath -ArgumentList @("/S", "/D=$installDir")');
     expect(smoke).toContain('if ($previousInstaller)');
     expect(smoke).toContain('$env:APPDATA = $appDataRoot');
-    expect(smoke).toContain('Start-Process -FilePath $uninstaller -ArgumentList "/S"');
+    expect(smoke).toContain('Start-Process -FilePath $UninstallerPath -ArgumentList "/S"');
+    expect(smoke).toContain('$transientDllInitializationFailure = -1073741502');
+    expect(smoke).toContain('for ($attempt = 1; $attempt -le 2; $attempt++)');
     expect(smoke).toContain("bun scripts/check-packaged-mcp.mjs $exe");
     const packagedMcp = await readFile(path.join(root, "scripts", "check-packaged-mcp.mjs"), "utf8");
     expect(packagedMcp).toContain("client.getServerVersion()?.version");
