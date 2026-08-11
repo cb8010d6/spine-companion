@@ -1,3 +1,5 @@
+import { knownSource, normalizeSource } from "../shared/source-registry.js";
+
 export const INTEGRATION_FILTERS = ["all", "detected", "configured", "attention"];
 
 export function integrationTestResult(item, override = null) {
@@ -10,7 +12,33 @@ export function integrationTestResult(item, override = null) {
   };
 }
 
-export function integrationCompletion(item, testResult = null) {
+export function isIntegrationSelfTest(state = {}) {
+  return String(state?.message || "").startsWith("[Spine Companion self-test]");
+}
+
+export function integrationReportResult(item) {
+  const reportedAt = Number(item?.lastReportedAt || 0);
+  return reportedAt > 0 ? { reportedAt } : null;
+}
+
+export function integrationMatchesSource(item, source) {
+  const itemSource = normalizeSource(item?.source);
+  const incomingSource = normalizeSource(source);
+  if (!itemSource || !incomingSource) return false;
+  if (itemSource === incomingSource) return true;
+  const incomingId = knownSource(incomingSource)?.id;
+  const itemId = knownSource(itemSource)?.id;
+  if (!incomingId) return false;
+  const grouped = {
+    "roo-cline": ["roo", "cline"],
+    "gemini-antigravity": ["gemini", "antigravity"],
+    "claude-desktop": ["claude"],
+    "kimi-code": ["kimi"]
+  };
+  return grouped[item?.id]?.includes(incomingId) || (itemId && itemId === incomingId);
+}
+
+export function integrationCompletion(item, testResult = null, reportReceived = false) {
   if (item?.configFormat === "templateOnly") return { completed: 0, total: 0, state: "custom" };
   const detected = item?.installed || item?.configFound || item?.configured;
   const configured = item?.configured === true;
@@ -18,22 +46,28 @@ export function integrationCompletion(item, testResult = null) {
   const instructed = !hasManagedInstructions || item?.instructionsFound === true;
   const tested = item?.needsRestart !== true && integrationTestResult(item, testResult)?.ok === true;
   const steps = hasManagedInstructions
-    ? [detected, configured, instructed, tested]
-    : [detected, configured, tested];
+    ? [detected, configured, instructed, tested, reportReceived]
+    : [detected, configured, tested, reportReceived];
   const completed = steps.filter(Boolean).length;
   return {
     completed,
     total: steps.length,
-    state: completed === steps.length ? "ready" : detected ? "setup" : "undetected"
+    state: completed === steps.length
+      ? "ready"
+      : tested && !reportReceived
+        ? "awaitingReport"
+        : detected
+          ? "setup"
+          : "undetected"
   };
 }
 
-export function integrationMatchesFilter(item, filter, testResult = null) {
+export function integrationMatchesFilter(item, filter, testResult = null, reportReceived = false) {
   if (filter === "detected") return item?.installed || item?.configFound || item?.configured;
   if (filter === "configured") return item?.configured === true;
   if (filter === "attention") {
     if (item?.needsRestart) return true;
-    const progress = integrationCompletion(item, testResult);
+    const progress = integrationCompletion(item, testResult, reportReceived);
     return progress.state !== "custom" && progress.state !== "ready";
   }
   return true;
@@ -58,13 +92,19 @@ export function integrationErrorKey(error) {
   return "manager.integrations.error.generic";
 }
 
-export function integrationSummaryKey(item, testResult = null) {
+export function integrationSummaryKey(item, testResult = null, reportReceived = false) {
   if (item?.needsRestart) return "manager.integrations.summaryRestart";
-  const progress = integrationCompletion(item, testResult);
+  const progress = integrationCompletion(item, testResult, reportReceived);
   if (progress.state === "custom") return "manager.integrations.summaryCustom";
   if (progress.state === "ready") return "manager.integrations.summaryReady";
+  if (progress.state === "awaitingReport") return "manager.integrations.summaryAwaitingReport";
   if (progress.state === "undetected") return "manager.integrations.summaryUndetected";
   return "manager.integrations.summarySetup";
+}
+
+export function integrationCanTest(item) {
+  if (!item || item.configFormat === "templateOnly" || item.needsRestart || !item.configured) return false;
+  return true;
 }
 
 export function selectFilteredIntegration(items, selectedId) {

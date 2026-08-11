@@ -102,6 +102,7 @@ pub struct AiIntegration {
     pub last_test_ok: Option<bool>,
     pub last_test_error: String,
     pub last_configured_at: Option<u64>,
+    pub last_reported_at: Option<u64>,
     pub last_backup_path: String,
     pub restore_available: bool,
 }
@@ -165,6 +166,7 @@ struct IntegrationRuntimeState {
     last_test_ok: Option<bool>,
     last_test_error: String,
     last_configured_at: Option<u64>,
+    last_reported_at: Option<u64>,
     needs_restart: bool,
     config_restore: Option<IntegrationRestorePoint>,
 }
@@ -553,6 +555,7 @@ fn integration_from_def(env: &IntegrationEnv, def: &IntegrationDefinition) -> Ai
         last_test_ok: None,
         last_test_error: String::new(),
         last_configured_at: None,
+        last_reported_at: None,
         last_backup_path: String::new(),
         restore_available: false,
     }
@@ -867,6 +870,7 @@ fn commit_pending_operation(
     if let Some(configured_at) = operation.last_configured_at {
         state.last_configured_at = Some(configured_at);
     }
+    state.last_reported_at = None;
     clear_test_state(state);
     save_integration_state(config_dir, &state_file)
 }
@@ -972,6 +976,7 @@ fn apply_runtime_state(item: &mut AiIntegration, state: &IntegrationRuntimeState
     item.last_test_ok = state.last_test_ok;
     item.last_test_error = state.last_test_error.clone();
     item.last_configured_at = state.last_configured_at;
+    item.last_reported_at = state.last_reported_at;
     item.restore_available = state.config_restore.is_some();
     item.last_backup_path = state
         .config_restore
@@ -1013,6 +1018,7 @@ fn record_config_applied(
         .transpose()?;
     update_integration_state(config_dir, id, |state| {
         state.last_configured_at = Some(timestamp_millis());
+        state.last_reported_at = None;
         state.revision = state.revision.saturating_add(1);
         state.needs_restart = true;
         state.config_restore = Some(IntegrationRestorePoint {
@@ -1037,6 +1043,7 @@ pub fn record_instruction_change(config_dir: &Path, id: &str, changed: bool) -> 
     update_integration_state(config_dir, id, |state| {
         state.needs_restart = true;
         state.revision = state.revision.saturating_add(1);
+        state.last_reported_at = None;
         clear_test_state(state);
         Ok(())
     })?;
@@ -1096,6 +1103,58 @@ pub fn record_test_result_if_revision(
             state.last_test_error = bounded_error(error);
         }
     }
+    save_integration_state(config_dir, &state_file)?;
+    Ok(true)
+}
+
+pub fn record_source_report(
+    config_dir: &Path,
+    source: &str,
+    message: &str,
+) -> Result<bool, String> {
+    let env = match IntegrationEnv::current() {
+        Some(env) => env,
+        None => return Ok(false),
+    };
+    record_source_report_with_env(&env, config_dir, source, message)
+}
+
+fn record_source_report_with_env(
+    env: &IntegrationEnv,
+    config_dir: &Path,
+    source: &str,
+    message: &str,
+) -> Result<bool, String> {
+    let source = source.trim();
+    if source.is_empty() || message.starts_with("[Spine Companion self-test]") {
+        return Ok(false);
+    }
+    let source_id = crate::source_registry::canonical_source_id(source);
+    let Some(definition) = definitions(env).into_iter().find(|definition| {
+        if definition.source.eq_ignore_ascii_case(source) {
+            return true;
+        }
+        match (definition.id, source_id) {
+            ("roo-cline", Some("roo" | "cline")) => true,
+            ("gemini-antigravity", Some("gemini" | "antigravity")) => true,
+            ("claude-desktop", Some("claude")) => true,
+            ("kimi-code", Some("kimi")) => true,
+            (_, Some(id)) => crate::source_registry::canonical_source_id(definition.source)
+                .is_some_and(|definition_id| definition_id == id),
+            _ => false,
+        }
+    }) else {
+        return Ok(false);
+    };
+    let mut state_file = load_integration_state(config_dir)?;
+    let state = state_file
+        .tools
+        .entry(definition.id.to_string())
+        .or_default();
+    if state.last_reported_at.is_some() {
+        return Ok(false);
+    }
+    state.last_reported_at = Some(timestamp_millis());
     save_integration_state(config_dir, &state_file)?;
     Ok(true)
 }
@@ -1849,6 +1908,62 @@ mod tests {
         assert!(codex_item.config_found);
         assert!(codex_item.configured);
         assert_eq!(codex_item.status, "Configured");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn records_only_the_first_real_report_after_setup() {
+        let root = temp_root("first-report");
+        let env = fixture_env(&root);
+        let config_dir = root.join("companion-config");
+
+        assert!(!record_source_report_with_env(
+            &env,
+            &config_dir,
+            "codex-mcp",
+            "[Spine Companion self-test] Codex"
+        )
+        .unwrap());
+        assert!(
+            record_source_report_with_env(&env, &config_dir, "open-code-mcp", "Alias report")
+                .unwrap()
+        );
+        assert!(
+            load_integration_state(&config_dir).unwrap().tools["opencode"]
+                .last_reported_at
+                .is_some()
+        );
+        assert!(record_source_report_with_env(
+            &env,
+            &config_dir,
+            "codex-mcp",
+            "Reviewing the patch"
+        )
+        .unwrap());
+        let first = load_integration_state(&config_dir).unwrap().tools["codex"]
+            .last_reported_at
+            .unwrap();
+        assert!(
+            !record_source_report_with_env(&env, &config_dir, "codex-mcp", "Running tests")
+                .unwrap()
+        );
+        assert_eq!(
+            load_integration_state(&config_dir).unwrap().tools["codex"].last_reported_at,
+            Some(first)
+        );
+
+        record_instruction_change(&config_dir, "codex", true).unwrap();
+        assert_eq!(
+            load_integration_state(&config_dir).unwrap().tools["codex"].last_reported_at,
+            None
+        );
+        assert!(!record_source_report_with_env(
+            &env,
+            &config_dir,
+            "unknown-source",
+            "Should be ignored"
+        )
+        .unwrap());
         let _ = fs::remove_dir_all(root);
     }
 
