@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const { mergeDeep, localConfigCandidates, userConfigDir, readJsonIfExists } = require("../src/backend/config.cjs");
+const { mergeDeep, localConfigCandidates, canonicalConfigPath, userConfigDir, parseCompanionPort, readJsonIfExists } = require("../src/backend/config.cjs");
 
 describe("config helpers", () => {
   it("deep merges nested objects without replacing sibling keys", () => {
@@ -27,10 +27,19 @@ describe("config helpers", () => {
     const candidates = localConfigCandidates();
     expect(new Set(candidates).size).toBe(candidates.length);
     expect(candidates.some((file) => file.endsWith("companion.local.json"))).toBe(true);
+    expect(candidates.at(-1)).toBe(canonicalConfigPath());
   });
 
   it("returns a stable user config directory", () => {
     expect(userConfigDir()).toContain("spine-companion");
+  });
+
+  it("matches the packaged runtime port bounds", () => {
+    expect(parseCompanionPort("0")).toBe(0);
+    expect(parseCompanionPort("17388")).toBe(17388);
+    expect(parseCompanionPort("65535")).toBe(65535);
+    expect(parseCompanionPort("65536")).toBeNull();
+    expect(parseCompanionPort("invalid")).toBeNull();
   });
 
   it("ignores invalid JSON and records a warning", () => {

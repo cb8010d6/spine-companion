@@ -54,6 +54,30 @@ The release build also checks this per-user config path:
 The app also checks for `companion.local.json` next to the executable, but the
 per-user config folder is more reliable across reinstall or overwrite updates.
 
+### Configuration layers and write location
+
+The packaged Tauri runtime treats the per-user file as the canonical writable
+configuration:
+
+```text
+<user-config-dir>/companion.local.json
+```
+
+The repository-root, current-working-directory, and executable-directory
+`companion.local.json` files are read-only legacy compatibility layers. They are
+loaded before the canonical file, so the per-user file always has the highest
+priority. Model activation, presentation settings, and other Manager changes
+are written only to the canonical file; legacy files are never overwritten.
+
+Relative `spine.assetDir` values are resolved against the directory of the
+layer that supplied that value. Manager > Diagnostics shows the canonical write
+path and the loaded layers so an override can be traced without exposing
+configuration contents or secrets. Active environment override names are shown
+there as well, but their values are not included.
+
+The browser/source adapter in `src/backend/config.cjs` mirrors this precedence
+for development. It is a development adapter, not a second packaged runtime.
+
 ## 3. Upgrade, Uninstall, And Keep Data
 
 Before upgrading or uninstalling, quit Spine Companion and use **Open Config
