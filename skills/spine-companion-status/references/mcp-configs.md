@@ -10,7 +10,7 @@ Use these shapes when a tool cannot be configured by Manager > AI Integrations.
 {
   "mcpServers": {
     "spine_companion": {
-      "command": "C:/Program Files/Spine Companion/spine-companion.exe",
+      "command": "<install-dir>/spine-companion.exe",
       "args": ["--mcp"],
       "env": {
         "COMPANION_API": "http://127.0.0.1:17388",
@@ -26,7 +26,7 @@ Use these shapes when a tool cannot be configured by Manager > AI Integrations.
 
 ```toml
 [mcp_servers.spine_companion]
-command = "C:/Program Files/Spine Companion/spine-companion.exe"
+command = "<install-dir>/spine-companion.exe"
 args = ["--mcp"]
 env = { COMPANION_API = "http://127.0.0.1:17388", COMPANION_SOURCE = "codex-mcp", COMPANION_SOURCE_LABEL = "Codex" }
 ```
@@ -39,7 +39,7 @@ env = { COMPANION_API = "http://127.0.0.1:17388", COMPANION_SOURCE = "codex-mcp"
   "mcp": {
     "spine_companion": {
       "type": "local",
-      "command": ["C:/Program Files/Spine Companion/spine-companion.exe", "--mcp"],
+      "command": ["<install-dir>/spine-companion.exe", "--mcp"],
       "enabled": true,
       "environment": {
         "COMPANION_API": "http://127.0.0.1:17388",

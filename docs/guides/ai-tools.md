@@ -32,7 +32,7 @@ Installed Tauri app:
 {
   "mcpServers": {
     "spine_companion": {
-      "command": "C:/Program Files/Spine Companion/spine-companion.exe",
+      "command": "<install-dir>/spine-companion.exe",
       "args": ["--mcp"],
       "env": {
         "COMPANION_API": "http://127.0.0.1:17388",
@@ -56,7 +56,7 @@ On Windows, OpenCode Desktop 1.17.x loads user config from
   "mcp": {
     "spine_companion": {
       "type": "local",
-      "command": ["C:/Program Files/Spine Companion/spine-companion.exe", "--mcp"],
+      "command": ["<install-dir>/spine-companion.exe", "--mcp"],
       "enabled": true,
       "environment": {
         "COMPANION_API": "http://127.0.0.1:17388",
@@ -75,7 +75,7 @@ Source workflow fallback:
   "mcpServers": {
     "spine_companion": {
       "command": "node",
-      "args": ["C:/path/to/spine-companion/scripts/mcp-companion-server.mjs"],
+      "args": ["<repo-root>/scripts/mcp-companion-server.mjs"],
       "env": {
         "COMPANION_API": "http://127.0.0.1:17388",
         "COMPANION_SOURCE": "my-tool-mcp",

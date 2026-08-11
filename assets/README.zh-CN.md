@@ -8,7 +8,7 @@
 目录，然后运行：
 
 ```bash
-npm run setup:assets -- "C:\path\to\amiya_spine"
+bun run setup:assets -- <model-folder>
 ```
 
 该目录需要包含 `.skel`、`.atlas` 和 atlas 引用的 `.png` 贴图。脚本会写入

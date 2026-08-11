@@ -60,8 +60,10 @@ curl -X POST http://127.0.0.1:17388/state -H "Content-Type: application/json" -d
 curl -X POST http://127.0.0.1:17388/reminders -H "Content-Type: application/json" -d "{\"text\":\"Stretch\",\"inSeconds\":60}"
 ```
 
-Reminders are persisted under the user config directory, so future reminders
-survive app restarts.
+State, reminders, and recent history are held only for the current application
+session. They reset when the application exits. Model files, settings, and AI
+configuration backups are stored in user data and are intended to survive an
+application restart or upgrade.
 
 ## AI Tool Setup
 

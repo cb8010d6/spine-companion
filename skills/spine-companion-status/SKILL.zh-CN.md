@@ -16,7 +16,7 @@ description: Configure AI coding tools to report work phases to a local Spine Co
 3. 运行配置脚本：
 
 ```bash
-node scripts/configure-ai-tools.cjs --repo C:\path\to\spine-companion --target all
+node scripts/configure-ai-tools.cjs --repo . --target all
 ```
 
 单独配置时可用 `--target codex`、`codex-cli`、`cursor`、`claude-desktop`、
