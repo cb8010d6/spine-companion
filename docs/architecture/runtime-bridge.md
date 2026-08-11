@@ -11,6 +11,11 @@ features depend on a small application contract instead of importing native APIs
 throughout UI code. Browser preview uses HTTP providers and does not emulate
 unsupported desktop commands.
 
+The machine-readable shared HTTP and MCP surface is recorded in
+`src/shared/runtime-contract.json`. Contract tests keep the source-development
+bridge aligned with the packaged Rust runtime while explicitly allowing the
+packaged Avatar Studio MCP extensions and the development-only `/ws` adapter.
+
 | Capability | Native implementation |
 | --- | --- |
 | State and reminders | Rust state store and Tauri commands/events |
