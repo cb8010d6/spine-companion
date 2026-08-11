@@ -380,6 +380,8 @@ nav button.active .nav-icon {
   border-radius: 12px;
   width: 420px;
   max-width: 90%;
+  max-height: calc(100vh - 32px);
+  box-sizing: border-box;
   padding: 22px;
   box-shadow: var(--sc-shadow-panel);
 }
@@ -397,10 +399,13 @@ nav button.active .nav-icon {
   margin-bottom: 20px;
   line-height: 1.5;
   white-space: pre-wrap;
+  max-height: min(50vh, 360px);
+  overflow-y: auto;
 }
 
 .modal-actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
 }
