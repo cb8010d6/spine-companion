@@ -56,6 +56,8 @@ jobs:
   windows-package-smoke:
     name: Windows package smoke
     runs-on: windows-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
@@ -72,6 +74,18 @@ jobs:
           $version = (Get-Content package.json | ConvertFrom-Json).version
           bun run release:preflight -- --tag "v$version"
       - run: bunx tauri build --bundles nsis
+      - name: Download previous Windows installer
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download v0.2.6-rc.10 --repo "${{ github.repository }}" `
+            --pattern "Spine.Companion_0.2.6-rc.10_x64-setup.exe" `
+            --dir "$env:RUNNER_TEMP" --clobber
+          $previous = Join-Path $env:RUNNER_TEMP "Spine.Companion_0.2.6-rc.10_x64-setup.exe"
+          if (-not (Test-Path -LiteralPath $previous)) {
+            throw "Previous Windows installer was not downloaded: $previous"
+          }
       - name: Install, smoke-test, and uninstall package
         shell: pwsh
         run: |
@@ -79,4 +93,7 @@ jobs:
           if ($installer.Count -ne 1) {
             throw "Expected exactly one NSIS installer, found $($installer.Count)."
           }
-          ./scripts/test-windows-installer.ps1 -InstallerPath $installer[0].FullName
+          $previous = Join-Path $env:RUNNER_TEMP "Spine.Companion_0.2.6-rc.10_x64-setup.exe"
+          ./scripts/test-windows-installer.ps1 -InstallerPath $installer[0].FullName `
+            -PreviousInstallerPath $previous `
+            -PreviousInstallerSha256 "844049CC7F6478F6FEE6C0AF1AD50E7215F0D68DEF73293815837AF78A3292B1"
