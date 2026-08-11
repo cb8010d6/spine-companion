@@ -63,7 +63,7 @@ describe("release checksums", () => {
 });
 
 describe("release workflow contract", () => {
-  it("smoke-tests the packaged Windows binary without publishing the raw executable", async () => {
+  it("smoke-tests the installed Windows package without publishing the raw executable", async () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
     const workflow = await readFile(path.join(root, ".github", "workflows", "release.yml"), "utf8");
     const artifactUpload = workflow.slice(
@@ -71,9 +71,22 @@ describe("release workflow contract", () => {
       workflow.indexOf("\n  publish:")
     );
 
-    expect(workflow).toContain("bun scripts/check-packaged-mcp.mjs $exe");
+    expect(workflow).toContain("./scripts/test-windows-installer.ps1 -InstallerPath $installer[0].FullName");
     expect(artifactUpload).toContain("src-tauri/target/release/bundle/**/*.exe");
     expect(artifactUpload).not.toContain("src-tauri/target/release/spine-companion.exe");
+  });
+
+  it("runs the Windows installer lifecycle smoke during pull request CI", async () => {
+    const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+    const workflow = await readFile(path.join(root, ".github", "workflows", "ci.yml"), "utf8");
+    const smoke = await readFile(path.join(root, "scripts", "test-windows-installer.ps1"), "utf8");
+
+    expect(workflow).toContain("windows-package-smoke:");
+    expect(workflow).toContain("bunx tauri build --bundles nsis");
+    expect(workflow).toContain("./scripts/test-windows-installer.ps1 -InstallerPath $installer[0].FullName");
+    expect(smoke).toContain('Start-Process -FilePath $installer -ArgumentList @("/S", "/D=$installDir")');
+    expect(smoke).toContain('Start-Process -FilePath $uninstaller -ArgumentList "/S"');
+    expect(smoke).toContain("bun scripts/check-packaged-mcp.mjs $exe");
   });
 
   it("pins every third-party action to a full commit SHA", async () => {
