@@ -22,6 +22,8 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: 1.3.13
@@ -34,8 +36,32 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
       - run: bun install --frozen-lockfile
+      - name: Verify tag commit matches remote main
+        if: github.ref_type == 'tag'
+        id: release-commit
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          git fetch --force --no-tags origin "refs/tags/${TAG}:refs/tags/${TAG}"
+          tag_commit="$(git rev-parse "refs/tags/${TAG}^{commit}")"
+          main_commit="$(git ls-remote --refs origin refs/heads/main | awk 'NF { print $1; exit }')"
+          if [[ ! "$tag_commit" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "Tag did not resolve to a full commit: $tag_commit" >&2
+            exit 1
+          fi
+          if [[ ! "$main_commit" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "Remote main did not resolve to a full commit." >&2
+            exit 1
+          fi
+          echo "tag_commit=$tag_commit" >> "$GITHUB_OUTPUT"
+          echo "main_commit=$main_commit" >> "$GITHUB_OUTPUT"
+          if [[ "$tag_commit" != "$main_commit" ]]; then
+            echo "Tag $TAG resolves to $tag_commit, but remote main is $main_commit." >&2
+            exit 1
+          fi
       - name: Release preflight
-        run: bun run release:preflight -- --tag "${{ github.ref_name }}"
+        run: bun run release:preflight -- --tag "${{ github.ref_name }}" --tag-commit "${{ steps.release-commit.outputs.tag_commit }}" --main-commit "${{ steps.release-commit.outputs.main_commit }}"
       - run: bun run lint
       - run: bun run check:mcp
       - run: bun run test
@@ -130,6 +156,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: 1.3.13
@@ -151,6 +179,29 @@ jobs:
             echo "Release workflow must run from a version tag." >&2
             exit 1
           fi
+      - name: Verify tag commit matches remote main
+        id: release-commit
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          git fetch --force --no-tags origin "refs/tags/${TAG}:refs/tags/${TAG}"
+          tag_commit="$(git rev-parse "refs/tags/${TAG}^{commit}")"
+          main_commit="$(git ls-remote --refs origin refs/heads/main | awk 'NF { print $1; exit }')"
+          if [[ ! "$tag_commit" =~ ^[0-9a-fA-F]{40}$ || ! "$main_commit" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "Unable to resolve full tag and remote main commits." >&2
+            exit 1
+          fi
+          echo "tag_commit=$tag_commit" >> "$GITHUB_OUTPUT"
+          echo "main_commit=$main_commit" >> "$GITHUB_OUTPUT"
+          if [[ "$tag_commit" != "$main_commit" ]]; then
+            echo "Tag $TAG resolves to $tag_commit, but remote main is $main_commit." >&2
+            exit 1
+          fi
+      - name: Validate release artifact matrix
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: bun run release:preflight -- --tag "$TAG" --tag-commit "${{ steps.release-commit.outputs.tag_commit }}" --main-commit "${{ steps.release-commit.outputs.main_commit }}" --artifacts release-artifacts
       - name: Publish assets
         env:
           GH_TOKEN: ${{ github.token }}
