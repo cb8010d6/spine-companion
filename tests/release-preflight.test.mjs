@@ -92,6 +92,9 @@ describe("release workflow contract", () => {
     expect(smoke).toContain('$env:APPDATA = $appDataRoot');
     expect(smoke).toContain('Start-Process -FilePath $uninstaller -ArgumentList "/S"');
     expect(smoke).toContain("bun scripts/check-packaged-mcp.mjs $exe");
+    const packagedMcp = await readFile(path.join(root, "scripts", "check-packaged-mcp.mjs"), "utf8");
+    expect(packagedMcp).toContain("client.getServerVersion()?.version");
+    expect(packagedMcp).toContain("serverVersion !== expectedVersion");
   });
 
   it("pins every third-party action to a full commit SHA", async () => {

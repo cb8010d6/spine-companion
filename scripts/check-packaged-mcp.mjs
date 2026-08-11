@@ -5,6 +5,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 
 const exePath = path.resolve(process.argv[2] || process.env.SPINE_COMPANION_MCP_EXE || "");
 const api = process.env.COMPANION_API || "http://127.0.0.1:17388";
+const expectedVersion = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
 if (!process.argv[2] && !process.env.SPINE_COMPANION_MCP_EXE) {
   throw new Error("Pass the packaged Spine Companion executable path as the first argument or SPINE_COMPANION_MCP_EXE.");
@@ -34,6 +35,10 @@ let previousState;
 try {
   previousState = await readState();
   await client.connect(transport);
+  const serverVersion = client.getServerVersion()?.version;
+  if (serverVersion !== expectedVersion) {
+    throw new Error(`Packaged MCP version is ${serverVersion || "unknown"}; expected ${expectedVersion}.`);
+  }
   const tools = await client.listTools();
   const names = new Set(tools.tools.map((tool) => tool.name));
   for (const expected of ["companion_get_state", "companion_set_state", "companion_reminder", "companion_report_ai_phase"]) {
@@ -49,7 +54,7 @@ try {
     throw new Error(`Packaged MCP report was not applied: ${JSON.stringify(reported)}`);
   }
 
-  console.log(`Packaged MCP check passed: ${exePath}`);
+  console.log(`Packaged MCP check passed (${serverVersion}): ${exePath}`);
 } finally {
   if (previousState && client) {
     try {
