@@ -53,6 +53,11 @@ Tools exposed:
   `succeeded`, or `failed` into companion states. This is kept as a
   compatibility alias.
 
+The bridge also exposes companion_get_diagnostics for read-only API/current
+state/MCP metadata and companion_test_bridge for checking /health and /state.
+The latter returns machine-readable ok/reason fields and does not change state;
+full GPU, model, and cache diagnostics remain in Manager > Diagnostics.
+
 The companion desktop app or `bun run dev:api` must be running before these
 tools are useful.
 

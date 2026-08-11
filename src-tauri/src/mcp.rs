@@ -22,6 +22,24 @@ fn api_base() -> String {
         .to_string()
 }
 
+fn public_api_endpoint() -> String {
+    let base = api_base();
+    let Ok(url) = reqwest::Url::parse(&base) else {
+        return "configured loopback API".to_string();
+    };
+    let host = url.host_str().unwrap_or("127.0.0.1");
+    let host = if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    };
+    let port = url
+        .port()
+        .map(|value| format!(":{value}"))
+        .unwrap_or_default();
+    format!("{}://{}{}", url.scheme(), host, port)
+}
+
 fn text_result(value: Value, source: &SourceInfo) -> Value {
     json!({
         "content": [{
@@ -114,6 +132,10 @@ fn reminder_schema() -> Value {
     })
 }
 
+fn empty_schema() -> Value {
+    json!({ "type": "object", "properties": {}, "additionalProperties": false })
+}
+
 fn avatar_pack_schema() -> Value {
     json!({
         "type": "object",
@@ -169,6 +191,18 @@ fn tools() -> Value {
             "title": "Get companion state",
             "description": "Read the current Spine Companion state from the local companion API.",
             "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "companion_get_diagnostics",
+            "title": "Get MCP diagnostics",
+            "description": "Read API health, current state/source, and MCP connection metadata. Full GPU, model, and cache diagnostics remain in Manager > Diagnostics; no config paths or secrets are returned.",
+            "inputSchema": empty_schema()
+        },
+        {
+            "name": "companion_test_bridge",
+            "title": "Test companion bridge",
+            "description": "Verify that the local /health and /state endpoints are readable without changing companion state. Returns machine-readable ok and reason fields.",
+            "inputSchema": empty_schema()
         },
         {
             "name": "companion_set_state",
@@ -237,6 +271,80 @@ fn tools() -> Value {
             "inputSchema": avatar_pack_schema()
         }
     ])
+}
+
+struct BridgeProbe {
+    health_ok: bool,
+    state: Option<Value>,
+}
+
+impl BridgeProbe {
+    fn state_ok(&self) -> bool {
+        self.state.is_some()
+    }
+
+    fn ok(&self) -> bool {
+        self.health_ok && self.state_ok()
+    }
+
+    fn reason(&self) -> &'static str {
+        match (self.health_ok, self.state_ok()) {
+            (true, true) => "ok",
+            (false, true) => "health_unavailable",
+            (true, false) => "state_unavailable",
+            (false, false) => "bridge_unavailable",
+        }
+    }
+}
+
+async fn probe_bridge() -> BridgeProbe {
+    let (health, state) = tokio::join!(api_json("/health", None), api_json("/state", None));
+    let health_ok = health
+        .as_ref()
+        .is_ok_and(|value| value.get("ok").and_then(Value::as_bool) == Some(true));
+    let state = state.ok().and_then(|value| {
+        let state_id = value.get("state").and_then(Value::as_str)?;
+        let source = value.get("source").and_then(Value::as_str)?;
+        Some(json!({ "state": state_id, "source": source }))
+    });
+    BridgeProbe { health_ok, state }
+}
+
+fn bridge_result(probe: &BridgeProbe) -> Value {
+    let mut state_check = json!({ "ok": probe.state_ok() });
+    if let Some(state) = &probe.state {
+        state_check["state"] = state["state"].clone();
+        state_check["source"] = state["source"].clone();
+    }
+    json!({
+        "ok": probe.ok(),
+        "reason": probe.reason(),
+        "checks": {
+            "health": { "ok": probe.health_ok },
+            "state": state_check
+        },
+        "mutated": false
+    })
+}
+
+fn diagnostics_result(probe: &BridgeProbe, source: &SourceInfo) -> Value {
+    json!({
+        "ok": probe.ok(),
+        "reason": probe.reason(),
+        "api": {
+            "endpoint": public_api_endpoint(),
+            "health": { "ok": probe.health_ok }
+        },
+        "state": probe.state.clone().unwrap_or_else(|| json!({ "ok": false })),
+        "mcp": {
+            "server": "spine-companion",
+            "version": env!("CARGO_PKG_VERSION"),
+            "transport": "stdio",
+            "source": source.source,
+            "sourceLabel": source.label
+        },
+        "note": "Full GPU, model, and cache diagnostics are available in Manager > Diagnostics."
+    })
 }
 
 fn phase_to_state(phase: &str) -> &'static str {
@@ -361,6 +469,14 @@ async fn call_tool(name: &str, arguments: Value, source: &SourceInfo) -> Result<
         "companion_get_state" => api_json("/state", None)
             .await
             .map(|value| text_result(value, source)),
+        "companion_get_diagnostics" => {
+            let probe = probe_bridge().await;
+            Ok(text_result(diagnostics_result(&probe, source), source))
+        }
+        "companion_test_bridge" => {
+            let probe = probe_bridge().await;
+            Ok(text_result(bridge_result(&probe), source))
+        }
         "companion_set_state" => {
             let mut payload = arguments.as_object().cloned().unwrap_or_default();
             if !payload.contains_key("source") {
@@ -583,6 +699,32 @@ mod tests {
         assert_eq!(payload["state"], "working");
         assert_eq!(payload["source"], "opencode-mcp");
         assert_eq!(payload["autoReturnMs"], 2200);
+    }
+
+    #[test]
+    fn diagnostics_contract_is_read_only_and_sanitized() {
+        let source = SourceInfo {
+            source: "kimi-mcp".to_string(),
+            label: "Kimi".to_string(),
+        };
+        let probe = BridgeProbe {
+            health_ok: true,
+            state: Some(json!({ "state": "reviewing", "source": "kimi-mcp" })),
+        };
+        let diagnostics = diagnostics_result(&probe, &source);
+        assert_eq!(diagnostics["ok"], true);
+        assert_eq!(diagnostics["state"]["state"], "reviewing");
+        assert_eq!(diagnostics["state"]["source"], "kimi-mcp");
+        assert_eq!(diagnostics["mcp"]["transport"], "stdio");
+        assert_eq!(diagnostics["mcp"]["sourceLabel"], "Kimi");
+        assert!(diagnostics.get("gpu").is_none());
+        assert!(diagnostics.get("cache").is_none());
+        assert!(diagnostics.get("configPath").is_none());
+
+        let bridge = bridge_result(&probe);
+        assert_eq!(bridge["ok"], true);
+        assert_eq!(bridge["reason"], "ok");
+        assert_eq!(bridge["mutated"], false);
     }
 
     #[test]

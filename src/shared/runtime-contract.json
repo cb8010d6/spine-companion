@@ -20,6 +20,8 @@
   "mcp": {
     "core": [
       "companion_get_state",
+      "companion_get_diagnostics",
+      "companion_test_bridge",
       "companion_set_state",
       "companion_reminder",
       "companion_report_ai_phase",

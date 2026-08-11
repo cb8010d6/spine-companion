@@ -51,6 +51,11 @@ env = { COMPANION_API = "http://127.0.0.1:17388", COMPANION_SOURCE = "codex-mcp"
 - `companion_report_codex_phase`：把 `editing`、`reviewing`、`succeeded` 等 Codex
   阶段映射到 companion 状态。这个工具保留为兼容旧指令的别名。
 
+桥接服务还提供 companion_get_diagnostics，用于读取 API、当前状态和 MCP
+元数据；companion_test_bridge 用于检查 /health 和 /state。后者返回机器可读的
+ok/reason 字段且不修改状态，完整的 GPU、模型和缓存诊断仍在
+Manager > Diagnostics。
+
 MCP 本身不会自动推送 Codex 状态，它只是暴露工具。要让 AI 主动上报，运行：
 
 ```bash

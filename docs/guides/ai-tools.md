@@ -104,6 +104,16 @@ MCP does not automatically push state. The AI tool must have instructions to cal
 `companion_report_ai_phase` during work phases. `companion_report_codex_phase`
 remains as a compatibility alias for older Codex instructions.
 
+The bridge also exposes two read-only diagnostics tools:
+
+- companion_get_diagnostics returns the loopback API endpoint, /health result,
+  current state/source, and MCP server version/transport/source label. It does
+  not return configuration paths or secrets. Full GPU, model, and cache
+  diagnostics remain in Manager > Diagnostics.
+- companion_test_bridge actually reads /health and /state and returns
+  machine-readable ok, reason, checks, and mutated: false fields. It never
+  changes the companion state.
+
 For GitHub Copilot / VS Code, a repository-level
 `.github/copilot-instructions.md` is the most reliable way to make the agent
 call the configured MCP tool proactively.
