@@ -10,6 +10,17 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const AVATAR_PACK_VERSION: u32 = 1;
 
+pub const AVATAR_JOB_STORE_VERSION: u32 = 1;
+const AVATAR_JOB_MAX_COUNT: usize = 100;
+const AVATAR_JOB_MAX_HISTORY: usize = 32;
+const AVATAR_JOB_MAX_ID_BYTES: usize = 64;
+const AVATAR_JOB_MAX_PHASE_BYTES: usize = 64;
+const AVATAR_JOB_MAX_MESSAGE_BYTES: usize = 2048;
+const AVATAR_JOB_MAX_PATH_BYTES: usize = 2048;
+const AVATAR_JOB_MAX_MOTIONS: usize = 32;
+const AVATAR_JOB_MAX_MOTION_BYTES: usize = 64;
+const AVATAR_JOB_MAX_STORE_BYTES: u64 = 8 * 1024 * 1024;
+
 const STANDARD_LAYERS: &[&str] = &[
     "hair_back",
     "body",
@@ -219,6 +230,65 @@ pub struct AvatarRuntimeInstallResult {
     pub skel: String,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AvatarJobCreateInput {
+    pub job_id: String,
+    #[serde(default = "default_avatar_job_phase")]
+    pub phase: String,
+    #[serde(default)]
+    pub message: String,
+    #[serde(default)]
+    pub pack_path: Option<String>,
+    #[serde(default)]
+    pub motions: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AvatarJobUpdateInput {
+    pub job_id: String,
+    #[serde(default)]
+    pub phase: Option<String>,
+    #[serde(default)]
+    pub message: Option<String>,
+    #[serde(default)]
+    pub pack_path: Option<String>,
+    #[serde(default)]
+    pub motions: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AvatarJobHistoryEntry {
+    pub phase: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pack_path: Option<String>,
+    pub updated_at: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AvatarJob {
+    #[serde(default = "avatar_job_store_version")]
+    pub schema_version: u32,
+    pub job_id: String,
+    pub phase: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pack_path: Option<String>,
+    pub motions: Vec<String>,
+    pub created_at: u64,
+    pub updated_at: u64,
+    #[serde(default = "avatar_job_record_type")]
+    pub record_type: String,
+    #[serde(default = "default_resumable")]
+    pub resumable: bool,
+    #[serde(default)]
+    pub history: Vec<AvatarJobHistoryEntry>,
+}
+
 pub fn requirements() -> Value {
     json!({
         "manifestVersion": AVATAR_PACK_VERSION,
@@ -231,7 +301,14 @@ pub fn requirements() -> Value {
         "runtimeExports": [".skel", ".atlas", ".png"],
         "runtimeFields": ["spineVersion", "runtimeSkel", "runtimeAtlas", "runtimeReady", "attachments"],
         "runtimeSkel": "Required when exports/ contains more than one .skel file; it is relative to exports/.",
-        "limits": "Without Spine Editor or another legal export path, Spine Companion can validate and manage an intermediate avatar pack but cannot claim a finished runtime rig."
+        "limits": "Without Spine Editor or another legal export path, Spine Companion can validate and manage an intermediate avatar pack but cannot claim a finished runtime rig.",
+        "avatarJobs": {
+            "recordType": "planning-progress",
+            "storage": "avatar-jobs.json in the application user configuration directory",
+            "maxJobs": AVATAR_JOB_MAX_COUNT,
+            "maxHistoryEntriesPerJob": AVATAR_JOB_MAX_HISTORY,
+            "resumableMeaning": "A persisted record can provide context for explicit AI planning; it does not resume execution, auto-rig, or export Spine runtime files."
+        }
     })
 }
 
@@ -257,6 +334,340 @@ fn default_source() -> String {
 
 fn default_license_note() -> String {
     "User-owned local content".to_string()
+}
+
+fn default_avatar_job_phase() -> String {
+    "planning".to_string()
+}
+
+fn avatar_job_store_version() -> u32 {
+    AVATAR_JOB_STORE_VERSION
+}
+
+fn avatar_job_record_type() -> String {
+    "planning-progress".to_string()
+}
+
+fn default_resumable() -> bool {
+    true
+}
+
+fn avatar_job_path(config_dir: &Path) -> PathBuf {
+    config_dir.join("avatar-jobs.json")
+}
+
+fn current_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default()
+}
+
+fn validate_job_text(
+    value: &str,
+    label: &str,
+    max_bytes: usize,
+    required: bool,
+) -> Result<String, String> {
+    let value = value.trim();
+    if required && value.is_empty() {
+        return Err(format!("{label} must not be empty."));
+    }
+    if value.len() > max_bytes {
+        return Err(format!("{label} must be at most {max_bytes} bytes."));
+    }
+    if value
+        .chars()
+        .any(|character| character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
+    {
+        return Err(format!(
+            "{label} contains an unsupported control character."
+        ));
+    }
+    Ok(value.to_string())
+}
+
+fn validate_avatar_job_id(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    if value.len() > AVATAR_JOB_MAX_ID_BYTES || !is_safe_avatar_id(value) {
+        return Err("Avatar job ID must use 1-64 ASCII letters, digits, underscores, or hyphens and start with a letter or digit.".to_string());
+    }
+    Ok(value.to_string())
+}
+
+fn validate_avatar_job_pack_path(value: Option<String>) -> Result<Option<String>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let value = validate_job_text(
+        &value,
+        "Avatar job packPath",
+        AVATAR_JOB_MAX_PATH_BYTES,
+        true,
+    )?;
+    let path = PathBuf::from(&value);
+    if !path.is_absolute() {
+        return Err(
+            "Avatar job packPath must be an absolute local path when provided.".to_string(),
+        );
+    }
+    if path.exists() {
+        let canonical = path
+            .canonicalize()
+            .map_err(|error| format!("Cannot resolve Avatar job packPath: {error}"))?;
+        if !canonical.is_dir() {
+            return Err(
+                "Avatar job packPath must point to a directory when it exists.".to_string(),
+            );
+        }
+        return Ok(Some(canonical.to_string_lossy().to_string()));
+    }
+    Ok(Some(value))
+}
+
+fn validate_avatar_job_motions(values: Vec<String>) -> Result<Vec<String>, String> {
+    if values.len() > AVATAR_JOB_MAX_MOTIONS {
+        return Err(format!(
+            "Avatar job motions must contain at most {} items.",
+            AVATAR_JOB_MAX_MOTIONS
+        ));
+    }
+    let mut motions = Vec::with_capacity(values.len());
+    for value in values {
+        let value = validate_job_text(
+            &value,
+            "Avatar job motion",
+            AVATAR_JOB_MAX_MOTION_BYTES,
+            true,
+        )?;
+        if !motions.contains(&value) {
+            motions.push(value);
+        }
+    }
+    Ok(motions)
+}
+
+fn is_terminal_avatar_job_phase(phase: &str) -> bool {
+    matches!(
+        phase.trim().to_ascii_lowercase().as_str(),
+        "complete" | "completed" | "success" | "succeeded" | "failed" | "cancelled" | "canceled"
+    )
+}
+
+fn normalize_avatar_job(job: &mut AvatarJob) -> Result<(), String> {
+    job.schema_version = AVATAR_JOB_STORE_VERSION;
+    job.job_id = validate_avatar_job_id(&job.job_id)?;
+    job.phase = validate_job_text(
+        &job.phase,
+        "Avatar job phase",
+        AVATAR_JOB_MAX_PHASE_BYTES,
+        true,
+    )?;
+    job.message = validate_job_text(
+        &job.message,
+        "Avatar job message",
+        AVATAR_JOB_MAX_MESSAGE_BYTES,
+        false,
+    )?;
+    job.pack_path = validate_avatar_job_pack_path(job.pack_path.take())?;
+    job.motions = validate_avatar_job_motions(std::mem::take(&mut job.motions))?;
+    job.record_type = avatar_job_record_type();
+    job.resumable = !is_terminal_avatar_job_phase(&job.phase);
+    if job.history.len() > AVATAR_JOB_MAX_HISTORY {
+        let start = job.history.len() - AVATAR_JOB_MAX_HISTORY;
+        job.history = job.history.split_off(start);
+    }
+    for entry in &mut job.history {
+        entry.phase = validate_job_text(
+            &entry.phase,
+            "Avatar job history phase",
+            AVATAR_JOB_MAX_PHASE_BYTES,
+            true,
+        )?;
+        entry.message = validate_job_text(
+            &entry.message,
+            "Avatar job history message",
+            AVATAR_JOB_MAX_MESSAGE_BYTES,
+            false,
+        )?;
+        entry.pack_path = validate_avatar_job_pack_path(entry.pack_path.take())?;
+    }
+    Ok(())
+}
+
+pub fn load_avatar_jobs(config_dir: &Path) -> Result<Vec<AvatarJob>, String> {
+    let path = avatar_job_path(config_dir);
+    let metadata = match fs::metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(format!("Cannot inspect Avatar job store: {error}")),
+    };
+    if metadata.len() > AVATAR_JOB_MAX_STORE_BYTES {
+        return Err("Avatar job store exceeds the safety limit.".to_string());
+    }
+    let text = fs::read_to_string(&path)
+        .map_err(|error| format!("Cannot read Avatar job store: {error}"))?;
+    let mut jobs: Vec<AvatarJob> = serde_json::from_str(&text)
+        .map_err(|error| format!("Invalid Avatar job store: {error}"))?;
+    if jobs.len() > AVATAR_JOB_MAX_COUNT {
+        return Err("Avatar job store contains too many jobs.".to_string());
+    }
+    for job in &mut jobs {
+        normalize_avatar_job(job)?;
+    }
+    jobs.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+    Ok(jobs)
+}
+
+fn write_avatar_jobs(config_dir: &Path, jobs: &[AvatarJob]) -> Result<(), String> {
+    if jobs.len() > AVATAR_JOB_MAX_COUNT {
+        return Err("Avatar job store contains too many jobs.".to_string());
+    }
+    let bytes = serde_json::to_vec_pretty(jobs).map_err(|error| error.to_string())?;
+    if bytes.len() as u64 > AVATAR_JOB_MAX_STORE_BYTES {
+        return Err("Avatar job store exceeds the safety limit.".to_string());
+    }
+    fs::create_dir_all(config_dir).map_err(|error| error.to_string())?;
+    write_json_atomically(&avatar_job_path(config_dir), jobs)
+}
+
+fn trim_avatar_jobs(jobs: &mut Vec<AvatarJob>) {
+    while jobs.len() > AVATAR_JOB_MAX_COUNT {
+        let index = jobs
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, job)| (!is_terminal_avatar_job_phase(&job.phase), job.updated_at))
+            .map(|(index, _)| index)
+            .unwrap_or(0);
+        jobs.remove(index);
+    }
+}
+
+fn append_avatar_job_history(job: &mut AvatarJob) {
+    job.history.push(AvatarJobHistoryEntry {
+        phase: job.phase.clone(),
+        message: job.message.clone(),
+        pack_path: job.pack_path.clone(),
+        updated_at: job.updated_at,
+    });
+    if job.history.len() > AVATAR_JOB_MAX_HISTORY {
+        let start = job.history.len() - AVATAR_JOB_MAX_HISTORY;
+        job.history = job.history.split_off(start);
+    }
+}
+
+pub fn create_avatar_job(
+    config_dir: &Path,
+    input: AvatarJobCreateInput,
+) -> Result<AvatarJob, String> {
+    let job_id = validate_avatar_job_id(&input.job_id)?;
+    let phase = validate_job_text(
+        &input.phase,
+        "Avatar job phase",
+        AVATAR_JOB_MAX_PHASE_BYTES,
+        true,
+    )?;
+    let message = validate_job_text(
+        &input.message,
+        "Avatar job message",
+        AVATAR_JOB_MAX_MESSAGE_BYTES,
+        false,
+    )?;
+    let pack_path = validate_avatar_job_pack_path(input.pack_path)?;
+    let motions = validate_avatar_job_motions(input.motions)?;
+    let mut jobs = load_avatar_jobs(config_dir)?;
+    if jobs.iter().any(|job| job.job_id == job_id) {
+        return Err(format!(
+            "Avatar job '{job_id}' already exists; use companion_update_avatar_job to continue it."
+        ));
+    }
+    let now = current_timestamp();
+    let mut job = AvatarJob {
+        schema_version: AVATAR_JOB_STORE_VERSION,
+        job_id,
+        phase,
+        message,
+        pack_path,
+        motions,
+        created_at: now,
+        updated_at: now,
+        record_type: avatar_job_record_type(),
+        resumable: true,
+        history: Vec::new(),
+    };
+    job.resumable = !is_terminal_avatar_job_phase(&job.phase);
+    append_avatar_job_history(&mut job);
+    jobs.push(job.clone());
+    trim_avatar_jobs(&mut jobs);
+    write_avatar_jobs(config_dir, &jobs)?;
+    Ok(job)
+}
+
+pub fn update_avatar_job(
+    config_dir: &Path,
+    input: AvatarJobUpdateInput,
+) -> Result<AvatarJob, String> {
+    let job_id = validate_avatar_job_id(&input.job_id)?;
+    let phase = input
+        .phase
+        .map(|value| {
+            validate_job_text(&value, "Avatar job phase", AVATAR_JOB_MAX_PHASE_BYTES, true)
+        })
+        .transpose()?;
+    let message = input
+        .message
+        .map(|value| {
+            validate_job_text(
+                &value,
+                "Avatar job message",
+                AVATAR_JOB_MAX_MESSAGE_BYTES,
+                false,
+            )
+        })
+        .transpose()?;
+    let has_pack_path = input.pack_path.is_some();
+    let pack_path = input
+        .pack_path
+        .map(|value| validate_avatar_job_pack_path(Some(value)))
+        .transpose()?
+        .flatten();
+    let motions = input.motions.map(validate_avatar_job_motions).transpose()?;
+    if phase.is_none() && message.is_none() && pack_path.is_none() && motions.is_none() {
+        return Err(
+            "Avatar job update must include phase, message, packPath, or motions.".to_string(),
+        );
+    }
+    let mut jobs = load_avatar_jobs(config_dir)?;
+    let job = jobs
+        .iter_mut()
+        .find(|job| job.job_id == job_id)
+        .ok_or_else(|| format!("Avatar job '{job_id}' was not found."))?;
+    if let Some(phase) = phase {
+        job.phase = phase;
+    }
+    if let Some(message) = message {
+        job.message = message;
+    }
+    if has_pack_path {
+        job.pack_path = pack_path;
+    }
+    if let Some(motions) = motions {
+        job.motions = motions;
+    }
+    job.updated_at = current_timestamp().max(job.updated_at.saturating_add(1));
+    job.resumable = !is_terminal_avatar_job_phase(&job.phase);
+    append_avatar_job_history(job);
+    let result = job.clone();
+    write_avatar_jobs(config_dir, &jobs)?;
+    Ok(result)
+}
+
+pub fn get_avatar_job(config_dir: &Path, job_id: &str) -> Result<AvatarJob, String> {
+    let job_id = validate_avatar_job_id(job_id)?;
+    load_avatar_jobs(config_dir)?
+        .into_iter()
+        .find(|job| job.job_id == job_id)
+        .ok_or_else(|| format!("Avatar job '{job_id}' was not found."))
 }
 
 fn standard_manifest(
@@ -1692,6 +2103,73 @@ mod tests {
             "previous"
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn avatar_jobs_persist_updates_and_bound_history() {
+        let config = temp_pack("job-store");
+        let created = create_avatar_job(
+            &config,
+            AvatarJobCreateInput {
+                job_id: "amiya-demo".to_string(),
+                phase: "layer-split".to_string(),
+                message: "Planning editable layers".to_string(),
+                pack_path: Some(config.to_string_lossy().to_string()),
+                motions: vec!["idle".to_string(), "working".to_string()],
+            },
+        )
+        .unwrap();
+        assert!(created.resumable);
+        assert!(avatar_job_path(&config).is_file());
+
+        for index in 0..40 {
+            update_avatar_job(
+                &config,
+                AvatarJobUpdateInput {
+                    job_id: "amiya-demo".to_string(),
+                    phase: Some("motion-draft".to_string()),
+                    message: Some(format!("Draft update {index}")),
+                    pack_path: None,
+                    motions: None,
+                },
+            )
+            .unwrap();
+        }
+        let loaded = get_avatar_job(&config, "amiya-demo").unwrap();
+        assert_eq!(loaded.history.len(), AVATAR_JOB_MAX_HISTORY);
+        assert_eq!(load_avatar_jobs(&config).unwrap().len(), 1);
+        assert!(loaded.history.last().unwrap().message.contains("39"));
+        let _ = fs::remove_dir_all(config);
+    }
+
+    #[test]
+    fn avatar_jobs_reject_unsafe_ids_and_relative_pack_paths() {
+        let config = temp_pack("job-validation");
+        let result = create_avatar_job(
+            &config,
+            AvatarJobCreateInput {
+                job_id: "../escape".to_string(),
+                phase: "planning".to_string(),
+                message: String::new(),
+                pack_path: None,
+                motions: Vec::new(),
+            },
+        );
+        assert!(result.is_err());
+
+        let result = create_avatar_job(
+            &config,
+            AvatarJobCreateInput {
+                job_id: "safe-job".to_string(),
+                phase: "planning".to_string(),
+                message: String::new(),
+                pack_path: Some("relative/avatar-pack".to_string()),
+                motions: Vec::new(),
+            },
+        );
+        assert!(result.is_err());
+        assert!(!avatar_job_path(&config).exists());
+        let _ = fs::remove_dir_all(config);
     }
 
     #[test]

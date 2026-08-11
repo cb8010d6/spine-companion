@@ -29,6 +29,8 @@
       "companion_avatar_requirements",
       "companion_create_avatar_job",
       "companion_update_avatar_job",
+      "companion_list_avatar_jobs",
+      "companion_get_avatar_job",
       "companion_validate_avatar_pack",
       "companion_import_avatar_pack"
     ]
