@@ -11,6 +11,10 @@ function sourceMcpTools(source) {
     .map((match) => match[1]);
 }
 
+function pluginMcpTools(source) {
+  return sourceMcpTools(source);
+}
+
 function packagedMcpTools(source) {
   return [...source.matchAll(/"name":\s*"(companion_[a-z_]+)"/gu)]
     .map((match) => match[1]);
@@ -33,6 +37,7 @@ function expectRustRoute(source, method, path) {
 describe("runtime contract parity", () => {
   it("keeps the common MCP tools aligned and lists packaged extensions explicitly", () => {
     const sourceTools = sourceMcpTools(read("scripts/mcp-companion-server.mjs")).sort();
+    const pluginTools = pluginMcpTools(read("plugins/spine-companion-status/scripts/mcp-companion-server.mjs")).sort();
     const packagedTools = packagedMcpTools(read("src-tauri/src/mcp.rs")).sort();
     const core = [...runtimeContract.mcp.core].sort();
     const completePackaged = [
@@ -41,6 +46,7 @@ describe("runtime contract parity", () => {
     ].sort();
 
     expect(sourceTools).toEqual(core);
+    expect(pluginTools).toEqual(core);
     expect(packagedTools).toEqual(completePackaged);
   });
 
