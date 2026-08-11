@@ -7,7 +7,13 @@ mod server;
 mod source_registry;
 mod state;
 
-use config::*;
+use config::{
+    fallback_config, first_recoverable_model, load_runtime_config, merge_json,
+    normalize_bubble_background, normalize_drag_mode, normalize_frame_rate_mode,
+    normalize_gpu_mode, normalize_update_channel, read_json_if_exists, resolved_update_channel,
+    string_at, ui_settings_from_config, user_config_dir, validate_spine_asset_dir,
+    verify_local_model_config, write_local_model_config, UiSettings,
+};
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
 use state::{

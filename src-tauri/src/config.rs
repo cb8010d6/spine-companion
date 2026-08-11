@@ -771,6 +771,67 @@ mod tests {
     }
 
     #[test]
+    fn defaults_new_local_config_to_user_config_dir() {
+        let root = temp_root("default-local-path");
+        let user_config = root.join("user-config");
+        let old = std::env::var("SPINE_COMPANION_CONFIG_DIR").ok();
+        std::env::set_var("SPINE_COMPANION_CONFIG_DIR", &user_config);
+        assert_eq!(
+            default_local_config_path(&root),
+            user_config.join("companion.local.json")
+        );
+        match old {
+            Some(value) => std::env::set_var("SPINE_COMPANION_CONFIG_DIR", value),
+            None => std::env::remove_var("SPINE_COMPANION_CONFIG_DIR"),
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn recovers_first_valid_downloaded_catalog_model() {
+        let root = temp_root("recovery");
+        let invalid_dir = root.join("models").join("invalid-model");
+        let valid_dir = root.join("models").join("valid-model");
+        std::fs::create_dir_all(&invalid_dir).unwrap();
+        std::fs::create_dir_all(&valid_dir).unwrap();
+        std::fs::write(valid_dir.join("valid.skel"), b"").unwrap();
+        std::fs::write(valid_dir.join("valid.png"), b"").unwrap();
+        std::fs::write(valid_dir.join("valid.atlas"), "valid.png\nsize: 1,1\n").unwrap();
+        let config = serde_json::json!({
+            "models": {
+                "catalog": [
+                    { "id": "invalid-model", "skel": "invalid.skel" },
+                    { "id": "valid-model", "skel": "valid.skel" }
+                ]
+            }
+        });
+        let recovered = first_recoverable_model(&root, &config).unwrap();
+        assert_eq!(recovered.skel, "valid.skel");
+        assert_eq!(recovered.asset_dir, valid_dir.canonicalize().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn gpu_mode_defaults_to_hardware_and_allows_software() {
+        let defaults = ui_settings_from_config(&fallback_config());
+        assert_eq!(defaults.gpu_mode, "hardware");
+
+        let config = serde_json::json!({
+            "ui": {
+                "gpuMode": "software"
+            }
+        });
+        assert_eq!(ui_settings_from_config(&config).gpu_mode, "software");
+
+        let invalid = serde_json::json!({
+            "ui": {
+                "gpuMode": "auto"
+            }
+        });
+        assert_eq!(ui_settings_from_config(&invalid).gpu_mode, "hardware");
+    }
+
+    #[test]
     fn settings_normalization_and_update_channel_defaults_are_unchanged() {
         let defaults = ui_settings_from_config(&fallback_config());
         assert_eq!(defaults.gpu_mode, "hardware");
