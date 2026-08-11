@@ -4,9 +4,11 @@ pub(crate) mod spine_assets;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::fs;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const AVATAR_PACK_VERSION: u32 = 1;
 
@@ -20,6 +22,11 @@ const AVATAR_JOB_MAX_PATH_BYTES: usize = 2048;
 const AVATAR_JOB_MAX_MOTIONS: usize = 32;
 const AVATAR_JOB_MAX_MOTION_BYTES: usize = 64;
 const AVATAR_JOB_MAX_STORE_BYTES: u64 = 8 * 1024 * 1024;
+const AVATAR_JOB_MAX_BACKUPS: usize = 3;
+const AVATAR_JOB_LOCK_BYTES: u64 = 1024;
+const AVATAR_JOB_LOCK_TIMEOUT: Duration = Duration::from_secs(2);
+const AVATAR_JOB_LOCK_STALE_AFTER: Duration = Duration::from_secs(30);
+const AVATAR_JOB_LOCK_RETRY: Duration = Duration::from_millis(20);
 
 const STANDARD_LAYERS: &[&str] = &[
     "hair_back",
@@ -289,6 +296,31 @@ pub struct AvatarJob {
     pub history: Vec<AvatarJobHistoryEntry>,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AvatarJobLockMetadata {
+    owner: String,
+    created_at_ms: u64,
+}
+
+struct AvatarJobStoreLock {
+    path: PathBuf,
+    owner: String,
+}
+
+impl Drop for AvatarJobStoreLock {
+    fn drop(&mut self) {
+        let owner_matches =
+            read_bytes_bounded(&self.path, AVATAR_JOB_LOCK_BYTES, "Avatar job lock")
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<AvatarJobLockMetadata>(&bytes).ok())
+                .is_some_and(|metadata| metadata.owner == self.owner);
+        if owner_matches {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
 pub fn requirements() -> Value {
     json!({
         "manifestVersion": AVATAR_PACK_VERSION,
@@ -356,11 +388,121 @@ fn avatar_job_path(config_dir: &Path) -> PathBuf {
     config_dir.join("avatar-jobs.json")
 }
 
+fn avatar_job_lock_path(config_dir: &Path) -> PathBuf {
+    config_dir.join("avatar-jobs.lock")
+}
+
 fn current_timestamp() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .unwrap_or_default()
+}
+
+fn current_timestamp_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
+        .unwrap_or_default()
+}
+
+fn read_bytes_bounded(path: &Path, max_bytes: u64, label: &str) -> Result<Vec<u8>, String> {
+    let metadata =
+        fs::metadata(path).map_err(|error| format!("Cannot inspect {label}: {error}"))?;
+    if metadata.len() > max_bytes {
+        return Err(format!(
+            "{label} exceeds the {max_bytes}-byte safety limit."
+        ));
+    }
+    let file = File::open(path).map_err(|error| format!("Cannot read {label}: {error}"))?;
+    let mut bytes = Vec::new();
+    file.take(max_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("Cannot read {label}: {error}"))?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(format!(
+            "{label} exceeds the {max_bytes}-byte safety limit."
+        ));
+    }
+    Ok(bytes)
+}
+
+fn avatar_job_lock_is_stale(path: &Path, stale_after: Duration) -> bool {
+    let stale_ms = stale_after.as_millis().min(u64::MAX as u128) as u64;
+    if let Ok(bytes) = read_bytes_bounded(path, AVATAR_JOB_LOCK_BYTES, "Avatar job lock") {
+        if let Ok(metadata) = serde_json::from_slice::<AvatarJobLockMetadata>(&bytes) {
+            if current_timestamp_ms().saturating_sub(metadata.created_at_ms) > stale_ms {
+                return true;
+            }
+        }
+    }
+    fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| modified.elapsed().ok())
+        .is_some_and(|age| age > stale_after)
+}
+
+fn acquire_avatar_job_lock_with_limits(
+    config_dir: &Path,
+    timeout: Duration,
+    stale_after: Duration,
+) -> Result<AvatarJobStoreLock, String> {
+    fs::create_dir_all(config_dir).map_err(|error| error.to_string())?;
+    let path = avatar_job_lock_path(config_dir);
+    let owner = unique_suffix();
+    let deadline = Instant::now() + timeout;
+    loop {
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut file) => {
+                let metadata = AvatarJobLockMetadata {
+                    owner: owner.clone(),
+                    created_at_ms: current_timestamp_ms(),
+                };
+                let bytes = match serde_json::to_vec(&metadata) {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        let _ = fs::remove_file(&path);
+                        return Err(error.to_string());
+                    }
+                };
+                if let Err(error) = file.write_all(&bytes).and_then(|_| file.sync_all()) {
+                    let _ = fs::remove_file(&path);
+                    return Err(format!("Cannot initialize Avatar job lock: {error}"));
+                }
+                return Ok(AvatarJobStoreLock { path, owner });
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                if avatar_job_lock_is_stale(&path, stale_after) {
+                    match fs::remove_file(&path) {
+                        Ok(()) => continue,
+                        Err(remove_error)
+                            if remove_error.kind() == std::io::ErrorKind::NotFound =>
+                        {
+                            continue
+                        }
+                        Err(_) => {}
+                    }
+                }
+                if Instant::now() >= deadline {
+                    return Err(format!(
+                        "Avatar job store is busy; lock acquisition exceeded {} ms.",
+                        timeout.as_millis()
+                    ));
+                }
+                thread::sleep(AVATAR_JOB_LOCK_RETRY);
+            }
+            Err(error) => return Err(format!("Cannot acquire Avatar job lock: {error}")),
+        }
+    }
+}
+
+fn acquire_avatar_job_lock(config_dir: &Path) -> Result<AvatarJobStoreLock, String> {
+    acquire_avatar_job_lock_with_limits(
+        config_dir,
+        AVATAR_JOB_LOCK_TIMEOUT,
+        AVATAR_JOB_LOCK_STALE_AFTER,
+    )
 }
 
 fn validate_job_text(
@@ -387,6 +529,18 @@ fn validate_job_text(
     Ok(value.to_string())
 }
 
+fn validate_structured_job_text(
+    value: &str,
+    label: &str,
+    max_bytes: usize,
+    required: bool,
+) -> Result<String, String> {
+    if value.chars().any(char::is_control) {
+        return Err(format!("{label} must not contain control characters."));
+    }
+    validate_job_text(value, label, max_bytes, required)
+}
+
 fn validate_avatar_job_id(value: &str) -> Result<String, String> {
     let value = value.trim();
     if value.len() > AVATAR_JOB_MAX_ID_BYTES || !is_safe_avatar_id(value) {
@@ -399,7 +553,7 @@ fn validate_avatar_job_pack_path(value: Option<String>) -> Result<Option<String>
     let Some(value) = value else {
         return Ok(None);
     };
-    let value = validate_job_text(
+    let value = validate_structured_job_text(
         &value,
         "Avatar job packPath",
         AVATAR_JOB_MAX_PATH_BYTES,
@@ -434,7 +588,7 @@ fn validate_avatar_job_motions(values: Vec<String>) -> Result<Vec<String>, Strin
     }
     let mut motions = Vec::with_capacity(values.len());
     for value in values {
-        let value = validate_job_text(
+        let value = validate_structured_job_text(
             &value,
             "Avatar job motion",
             AVATAR_JOB_MAX_MOTION_BYTES,
@@ -457,7 +611,7 @@ fn is_terminal_avatar_job_phase(phase: &str) -> bool {
 fn normalize_avatar_job(job: &mut AvatarJob) -> Result<(), String> {
     job.schema_version = AVATAR_JOB_STORE_VERSION;
     job.job_id = validate_avatar_job_id(&job.job_id)?;
-    job.phase = validate_job_text(
+    job.phase = validate_structured_job_text(
         &job.phase,
         "Avatar job phase",
         AVATAR_JOB_MAX_PHASE_BYTES,
@@ -478,7 +632,7 @@ fn normalize_avatar_job(job: &mut AvatarJob) -> Result<(), String> {
         job.history = job.history.split_off(start);
     }
     for entry in &mut job.history {
-        entry.phase = validate_job_text(
+        entry.phase = validate_structured_job_text(
             &entry.phase,
             "Avatar job history phase",
             AVATAR_JOB_MAX_PHASE_BYTES,
@@ -495,20 +649,9 @@ fn normalize_avatar_job(job: &mut AvatarJob) -> Result<(), String> {
     Ok(())
 }
 
-pub fn load_avatar_jobs(config_dir: &Path) -> Result<Vec<AvatarJob>, String> {
-    let path = avatar_job_path(config_dir);
-    let metadata = match fs::metadata(&path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(format!("Cannot inspect Avatar job store: {error}")),
-    };
-    if metadata.len() > AVATAR_JOB_MAX_STORE_BYTES {
-        return Err("Avatar job store exceeds the safety limit.".to_string());
-    }
-    let text = fs::read_to_string(&path)
-        .map_err(|error| format!("Cannot read Avatar job store: {error}"))?;
-    let mut jobs: Vec<AvatarJob> = serde_json::from_str(&text)
-        .map_err(|error| format!("Invalid Avatar job store: {error}"))?;
+fn parse_avatar_jobs(bytes: &[u8], label: &str) -> Result<Vec<AvatarJob>, String> {
+    let mut jobs: Vec<AvatarJob> =
+        serde_json::from_slice(bytes).map_err(|error| format!("Invalid {label}: {error}"))?;
     if jobs.len() > AVATAR_JOB_MAX_COUNT {
         return Err("Avatar job store contains too many jobs.".to_string());
     }
@@ -519,7 +662,82 @@ pub fn load_avatar_jobs(config_dir: &Path) -> Result<Vec<AvatarJob>, String> {
     Ok(jobs)
 }
 
-fn write_avatar_jobs(config_dir: &Path, jobs: &[AvatarJob]) -> Result<(), String> {
+fn read_avatar_jobs_file(path: &Path, label: &str) -> Result<Vec<AvatarJob>, String> {
+    let bytes = read_bytes_bounded(path, AVATAR_JOB_MAX_STORE_BYTES, label)?;
+    parse_avatar_jobs(&bytes, label)
+}
+
+fn avatar_job_files_with_prefix(
+    config_dir: &Path,
+    prefixes: &[&str],
+) -> Result<Vec<PathBuf>, String> {
+    let mut paths = Vec::new();
+    for entry in fs::read_dir(config_dir)
+        .map_err(|error| format!("Cannot inspect Avatar job recovery files: {error}"))?
+    {
+        let entry = entry
+            .map_err(|error| format!("Cannot inspect an Avatar job recovery file: {error}"))?;
+        if !entry
+            .file_type()
+            .map_err(|error| format!("Cannot inspect an Avatar job recovery file: {error}"))?
+            .is_file()
+        {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        if prefixes.iter().any(|prefix| name.starts_with(prefix)) {
+            paths.push(entry.path());
+        }
+    }
+    paths.sort_by_key(|path| {
+        let modified = fs::metadata(path)
+            .and_then(|metadata| metadata.modified())
+            .unwrap_or(UNIX_EPOCH);
+        (modified, path.file_name().map(|name| name.to_os_string()))
+    });
+    Ok(paths)
+}
+
+fn avatar_job_backup_candidates(config_dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut paths = avatar_job_files_with_prefix(
+        config_dir,
+        &["avatar-jobs.backup-", "avatar-jobs.json.backup-"],
+    )?;
+    paths.reverse();
+    paths.truncate(AVATAR_JOB_MAX_BACKUPS * 2);
+    Ok(paths)
+}
+
+fn prune_avatar_job_files(config_dir: &Path, prefixes: &[&str], keep: usize) -> Result<(), String> {
+    let paths = avatar_job_files_with_prefix(config_dir, prefixes)?;
+    let remove_count = paths.len().saturating_sub(keep);
+    for path in paths.into_iter().take(remove_count) {
+        fs::remove_file(&path).map_err(|error| {
+            format!(
+                "Cannot prune Avatar job recovery file {}: {error}",
+                path.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn write_bytes_atomically(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let temp = path.with_extension(format!("tmp-{}", unique_suffix()));
+    let result = (|| {
+        let mut file = File::create(&temp).map_err(|error| error.to_string())?;
+        file.write_all(bytes).map_err(|error| error.to_string())?;
+        file.sync_all().map_err(|error| error.to_string())?;
+        drop(file);
+        replace_file_atomically(&temp, path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    result
+}
+
+fn write_avatar_jobs_locked(config_dir: &Path, jobs: &[AvatarJob]) -> Result<(), String> {
     if jobs.len() > AVATAR_JOB_MAX_COUNT {
         return Err("Avatar job store contains too many jobs.".to_string());
     }
@@ -528,7 +746,88 @@ fn write_avatar_jobs(config_dir: &Path, jobs: &[AvatarJob]) -> Result<(), String
         return Err("Avatar job store exceeds the safety limit.".to_string());
     }
     fs::create_dir_all(config_dir).map_err(|error| error.to_string())?;
-    write_json_atomically(&avatar_job_path(config_dir), jobs)
+    prune_avatar_job_files(
+        config_dir,
+        &["avatar-jobs.backup-", "avatar-jobs.json.backup-"],
+        AVATAR_JOB_MAX_BACKUPS.saturating_sub(1),
+    )?;
+    let backup = config_dir.join(format!(
+        "avatar-jobs.backup-{}-{}.json",
+        current_timestamp_ms(),
+        unique_suffix()
+    ));
+    write_bytes_atomically(&backup, &bytes)
+        .map_err(|error| format!("Cannot write Avatar job backup: {error}"))?;
+    if let Err(error) = write_bytes_atomically(&avatar_job_path(config_dir), &bytes) {
+        let _ = fs::remove_file(&backup);
+        return Err(format!("Cannot write Avatar job store: {error}"));
+    }
+    Ok(())
+}
+
+fn recover_avatar_jobs(
+    config_dir: &Path,
+    main_error: &str,
+    main_exists: bool,
+) -> Result<Vec<AvatarJob>, String> {
+    let backups = avatar_job_backup_candidates(config_dir)?;
+    let mut invalid_backups = 0;
+    for backup in backups {
+        let Ok(jobs) = read_avatar_jobs_file(&backup, "Avatar job backup") else {
+            invalid_backups += 1;
+            continue;
+        };
+        if main_exists {
+            prune_avatar_job_files(
+                config_dir,
+                &["avatar-jobs.corrupt-"],
+                AVATAR_JOB_MAX_BACKUPS.saturating_sub(1),
+            )?;
+            let quarantine = config_dir.join(format!(
+                "avatar-jobs.corrupt-{}-{}.json",
+                current_timestamp_ms(),
+                unique_suffix()
+            ));
+            fs::rename(avatar_job_path(config_dir), &quarantine)
+                .map_err(|error| format!("Cannot isolate the damaged Avatar job store: {error}"))?;
+        }
+        write_avatar_jobs_locked(config_dir, &jobs).map_err(|error| {
+            format!("Avatar job backup was valid but restoring it failed: {error}")
+        })?;
+        return Ok(jobs);
+    }
+    Err(format!(
+        "{main_error}; no valid Avatar job backup was available ({invalid_backups} invalid backup files checked). The damaged store was preserved."
+    ))
+}
+
+fn load_avatar_jobs_locked(config_dir: &Path) -> Result<Vec<AvatarJob>, String> {
+    let path = avatar_job_path(config_dir);
+    let main_exists = match fs::symlink_metadata(&path) {
+        Ok(_) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(format!("Cannot inspect Avatar job store: {error}")),
+    };
+    if main_exists {
+        match read_avatar_jobs_file(&path, "Avatar job store") {
+            Ok(jobs) => return Ok(jobs),
+            Err(error) => return recover_avatar_jobs(config_dir, &error, true),
+        }
+    }
+    let backups = avatar_job_backup_candidates(config_dir)?;
+    if backups.is_empty() {
+        return Ok(Vec::new());
+    }
+    recover_avatar_jobs(
+        config_dir,
+        "Avatar job store is missing after an interrupted write",
+        false,
+    )
+}
+
+pub fn load_avatar_jobs(config_dir: &Path) -> Result<Vec<AvatarJob>, String> {
+    let _lock = acquire_avatar_job_lock(config_dir)?;
+    load_avatar_jobs_locked(config_dir)
 }
 
 fn trim_avatar_jobs(jobs: &mut Vec<AvatarJob>) {
@@ -561,7 +860,7 @@ pub fn create_avatar_job(
     input: AvatarJobCreateInput,
 ) -> Result<AvatarJob, String> {
     let job_id = validate_avatar_job_id(&input.job_id)?;
-    let phase = validate_job_text(
+    let phase = validate_structured_job_text(
         &input.phase,
         "Avatar job phase",
         AVATAR_JOB_MAX_PHASE_BYTES,
@@ -575,7 +874,8 @@ pub fn create_avatar_job(
     )?;
     let pack_path = validate_avatar_job_pack_path(input.pack_path)?;
     let motions = validate_avatar_job_motions(input.motions)?;
-    let mut jobs = load_avatar_jobs(config_dir)?;
+    let _lock = acquire_avatar_job_lock(config_dir)?;
+    let mut jobs = load_avatar_jobs_locked(config_dir)?;
     if jobs.iter().any(|job| job.job_id == job_id) {
         return Err(format!(
             "Avatar job '{job_id}' already exists; use companion_update_avatar_job to continue it."
@@ -599,7 +899,7 @@ pub fn create_avatar_job(
     append_avatar_job_history(&mut job);
     jobs.push(job.clone());
     trim_avatar_jobs(&mut jobs);
-    write_avatar_jobs(config_dir, &jobs)?;
+    write_avatar_jobs_locked(config_dir, &jobs)?;
     Ok(job)
 }
 
@@ -611,7 +911,12 @@ pub fn update_avatar_job(
     let phase = input
         .phase
         .map(|value| {
-            validate_job_text(&value, "Avatar job phase", AVATAR_JOB_MAX_PHASE_BYTES, true)
+            validate_structured_job_text(
+                &value,
+                "Avatar job phase",
+                AVATAR_JOB_MAX_PHASE_BYTES,
+                true,
+            )
         })
         .transpose()?;
     let message = input
@@ -637,7 +942,8 @@ pub fn update_avatar_job(
             "Avatar job update must include phase, message, packPath, or motions.".to_string(),
         );
     }
-    let mut jobs = load_avatar_jobs(config_dir)?;
+    let _lock = acquire_avatar_job_lock(config_dir)?;
+    let mut jobs = load_avatar_jobs_locked(config_dir)?;
     let job = jobs
         .iter_mut()
         .find(|job| job.job_id == job_id)
@@ -658,7 +964,7 @@ pub fn update_avatar_job(
     job.resumable = !is_terminal_avatar_job_phase(&job.phase);
     append_avatar_job_history(job);
     let result = job.clone();
-    write_avatar_jobs(config_dir, &jobs)?;
+    write_avatar_jobs_locked(config_dir, &jobs)?;
     Ok(result)
 }
 
@@ -1942,6 +2248,7 @@ fn unique_suffix() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Barrier};
 
     fn temp_pack(name: &str) -> PathBuf {
         let root =
@@ -2138,6 +2445,7 @@ mod tests {
         let loaded = get_avatar_job(&config, "amiya-demo").unwrap();
         assert_eq!(loaded.history.len(), AVATAR_JOB_MAX_HISTORY);
         assert_eq!(load_avatar_jobs(&config).unwrap().len(), 1);
+        assert!(avatar_job_backup_candidates(&config).unwrap().len() <= AVATAR_JOB_MAX_BACKUPS);
         assert!(loaded.history.last().unwrap().message.contains("39"));
         let _ = fs::remove_dir_all(config);
     }
@@ -2169,6 +2477,189 @@ mod tests {
         );
         assert!(result.is_err());
         assert!(!avatar_job_path(&config).exists());
+        let _ = fs::remove_dir_all(config);
+    }
+
+    #[test]
+    fn concurrent_avatar_job_creates_preserve_every_job() {
+        let config = temp_pack("job-concurrency");
+        let workers = 24;
+        let barrier = Arc::new(Barrier::new(workers));
+        let handles = (0..workers)
+            .map(|index| {
+                let config = config.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    create_avatar_job(
+                        &config,
+                        AvatarJobCreateInput {
+                            job_id: format!("concurrent-{index}"),
+                            phase: "planning".to_string(),
+                            message: String::new(),
+                            pack_path: None,
+                            motions: Vec::new(),
+                        },
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        for handle in handles {
+            handle.join().unwrap().unwrap();
+        }
+        assert_eq!(load_avatar_jobs(&config).unwrap().len(), workers);
+        let _ = fs::remove_dir_all(config);
+    }
+
+    #[test]
+    fn corrupt_avatar_job_store_recovers_a_valid_backup() {
+        let config = temp_pack("job-recovery");
+        create_avatar_job(
+            &config,
+            AvatarJobCreateInput {
+                job_id: "recover-me".to_string(),
+                phase: "planning".to_string(),
+                message: "Keep this task".to_string(),
+                pack_path: None,
+                motions: Vec::new(),
+            },
+        )
+        .unwrap();
+        fs::copy(
+            avatar_job_path(&config),
+            config.join("avatar-jobs.backup-1.json"),
+        )
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(10));
+        fs::write(config.join("avatar-jobs.backup-2.json"), b"invalid backup").unwrap();
+        fs::write(avatar_job_path(&config), b"{broken").unwrap();
+        let jobs = load_avatar_jobs(&config).unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].job_id, "recover-me");
+        assert!(fs::read_dir(&config).unwrap().any(|entry| entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("avatar-jobs.corrupt-")));
+        let _ = fs::remove_dir_all(config);
+    }
+
+    #[test]
+    fn corrupt_avatar_job_store_without_backup_is_preserved_and_reported() {
+        let config = temp_pack("job-no-recovery");
+        fs::write(avatar_job_path(&config), b"{broken").unwrap();
+        let result = load_avatar_jobs(&config);
+        assert!(result.is_err());
+        assert_eq!(fs::read(avatar_job_path(&config)).unwrap(), b"{broken");
+        assert!(!fs::read_dir(&config).unwrap().any(|entry| entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("avatar-jobs.corrupt-")));
+        let _ = fs::remove_dir_all(config);
+    }
+
+    #[test]
+    fn avatar_job_store_reads_are_bounded_by_actual_bytes() {
+        let config = temp_pack("job-bounded-read");
+        let oversized = vec![b' '; AVATAR_JOB_MAX_STORE_BYTES as usize + 1];
+        fs::write(avatar_job_path(&config), oversized).unwrap();
+        let error = load_avatar_jobs(&config).unwrap_err();
+        assert!(error.contains("exceeds"));
+        let _ = fs::remove_dir_all(config);
+    }
+
+    #[test]
+    fn stale_avatar_job_lock_is_recovered_but_live_lock_times_out() {
+        let config = temp_pack("job-lock-recovery");
+        fs::write(
+            avatar_job_lock_path(&config),
+            serde_json::to_vec(&AvatarJobLockMetadata {
+                owner: "dead-process".to_string(),
+                created_at_ms: 0,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let lock = acquire_avatar_job_lock_with_limits(
+            &config,
+            Duration::from_millis(100),
+            Duration::from_millis(10),
+        )
+        .unwrap();
+        drop(lock);
+        assert!(!avatar_job_lock_path(&config).exists());
+
+        fs::write(
+            avatar_job_lock_path(&config),
+            serde_json::to_vec(&AvatarJobLockMetadata {
+                owner: "live-process".to_string(),
+                created_at_ms: current_timestamp_ms(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let started = Instant::now();
+        let error = acquire_avatar_job_lock_with_limits(
+            &config,
+            Duration::from_millis(80),
+            Duration::from_secs(30),
+        )
+        .err()
+        .expect("a live lock should time out");
+        assert!(error.contains("busy"));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        fs::remove_file(avatar_job_lock_path(&config)).unwrap();
+        let _ = fs::remove_dir_all(config);
+    }
+
+    #[test]
+    fn avatar_job_structured_fields_reject_all_control_characters() {
+        let config = temp_pack("job-controls");
+        let invalid_phase = create_avatar_job(
+            &config,
+            AvatarJobCreateInput {
+                job_id: "invalid-phase".to_string(),
+                phase: "layer\nsplit".to_string(),
+                message: String::new(),
+                pack_path: None,
+                motions: Vec::new(),
+            },
+        );
+        assert!(invalid_phase.is_err());
+        let invalid_motion = create_avatar_job(
+            &config,
+            AvatarJobCreateInput {
+                job_id: "invalid-motion".to_string(),
+                phase: "planning".to_string(),
+                message: String::new(),
+                pack_path: None,
+                motions: vec!["idle\tloop".to_string()],
+            },
+        );
+        assert!(invalid_motion.is_err());
+        let invalid_path = create_avatar_job(
+            &config,
+            AvatarJobCreateInput {
+                job_id: "invalid-path".to_string(),
+                phase: "planning".to_string(),
+                message: String::new(),
+                pack_path: Some(format!("{}\nchild", config.display())),
+                motions: Vec::new(),
+            },
+        );
+        assert!(invalid_path.is_err());
+        let allowed_message = create_avatar_job(
+            &config,
+            AvatarJobCreateInput {
+                job_id: "message-lines".to_string(),
+                phase: "planning".to_string(),
+                message: "line one\n\tline two".to_string(),
+                pack_path: None,
+                motions: Vec::new(),
+            },
+        );
+        assert!(allowed_message.is_ok());
         let _ = fs::remove_dir_all(config);
     }
 

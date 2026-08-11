@@ -131,7 +131,7 @@ fn avatar_job_create_schema() -> Value {
             "jobId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$" },
             "phase": { "type": "string", "maxLength": 64 },
             "message": { "type": "string", "maxLength": 2048 },
-            "packPath": { "type": "string" },
+            "packPath": { "type": "string", "maxLength": 2048 },
             "motions": { "type": "array", "maxItems": 32, "items": { "type": "string", "maxLength": 64 } }
         },
         "required": ["jobId"]
@@ -145,7 +145,7 @@ fn avatar_job_update_schema() -> Value {
             "jobId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$" },
             "phase": { "type": "string", "maxLength": 64 },
             "message": { "type": "string", "maxLength": 2048 },
-            "packPath": { "type": "string" },
+            "packPath": { "type": "string", "maxLength": 2048 },
             "motions": { "type": "array", "maxItems": 32, "items": { "type": "string", "maxLength": 64 } }
         },
         "required": ["jobId"]
@@ -286,82 +286,65 @@ fn mcp_config_dir() -> std::path::PathBuf {
     crate::user_config_dir().unwrap_or_else(std::env::temp_dir)
 }
 
+fn required_string_argument(arguments: &Value, key: &str) -> Result<String, String> {
+    match arguments.get(key) {
+        Some(Value::String(value)) => Ok(value.clone()),
+        Some(_) => Err(format!("Avatar job {key} must be a string.")),
+        None => Err(format!("Avatar job {key} is required.")),
+    }
+}
+
+fn optional_string_argument(arguments: &Value, key: &str) -> Result<Option<String>, String> {
+    match arguments.get(key) {
+        Some(Value::String(value)) => Ok(Some(value.clone())),
+        Some(_) => Err(format!("Avatar job {key} must be a string when provided.")),
+        None => Ok(None),
+    }
+}
+
+fn optional_string_array_argument(
+    arguments: &Value,
+    key: &str,
+) -> Result<Option<Vec<String>>, String> {
+    match arguments.get(key) {
+        Some(Value::Array(values)) => values
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(ToString::to_string)
+                    .ok_or_else(|| format!("Avatar job {key} must contain only strings."))
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(Some),
+        Some(_) => Err(format!(
+            "Avatar job {key} must be an array of strings when provided."
+        )),
+        None => Ok(None),
+    }
+}
+
 fn avatar_job_create_input(arguments: &Value) -> Result<avatar::AvatarJobCreateInput, String> {
-    let motions = arguments
-        .get("motions")
-        .map(|value| {
-            value
-                .as_array()
-                .ok_or_else(|| "Avatar job motions must be an array of strings.".to_string())?
-                .iter()
-                .map(|value| {
-                    value.as_str().map(ToString::to_string).ok_or_else(|| {
-                        "Avatar job motions must be an array of strings.".to_string()
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()
-        })
-        .transpose()?
-        .unwrap_or_default();
+    let phase = optional_string_argument(arguments, "phase")?;
+    let message = optional_string_argument(arguments, "message")?;
+    let pack_path = optional_string_argument(arguments, "packPath")?;
+    let motions = optional_string_array_argument(arguments, "motions")?;
     Ok(avatar::AvatarJobCreateInput {
-        job_id: arguments
-            .get("jobId")
-            .and_then(Value::as_str)
-            .ok_or_else(|| "Avatar job jobId is required.".to_string())?
-            .to_string(),
-        phase: arguments
-            .get("phase")
-            .and_then(Value::as_str)
-            .unwrap_or("planning")
-            .to_string(),
-        message: arguments
-            .get("message")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string(),
-        pack_path: arguments
-            .get("packPath")
-            .and_then(Value::as_str)
-            .map(ToString::to_string),
-        motions,
+        job_id: required_string_argument(arguments, "jobId")?,
+        phase: phase.unwrap_or_else(|| "planning".to_string()),
+        message: message.unwrap_or_default(),
+        pack_path,
+        motions: motions.unwrap_or_default(),
     })
 }
 
 fn avatar_job_update_input(arguments: &Value) -> Result<avatar::AvatarJobUpdateInput, String> {
-    let motions = arguments
-        .get("motions")
-        .map(|value| {
-            value
-                .as_array()
-                .ok_or_else(|| "Avatar job motions must be an array of strings.".to_string())?
-                .iter()
-                .map(|value| {
-                    value.as_str().map(ToString::to_string).ok_or_else(|| {
-                        "Avatar job motions must be an array of strings.".to_string()
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()
-        })
-        .transpose()?;
     Ok(avatar::AvatarJobUpdateInput {
-        job_id: arguments
-            .get("jobId")
-            .and_then(Value::as_str)
-            .ok_or_else(|| "Avatar job jobId is required.".to_string())?
-            .to_string(),
-        phase: arguments
-            .get("phase")
-            .and_then(Value::as_str)
-            .map(ToString::to_string),
-        message: arguments
-            .get("message")
-            .and_then(Value::as_str)
-            .map(ToString::to_string),
-        pack_path: arguments
-            .get("packPath")
-            .and_then(Value::as_str)
-            .map(ToString::to_string),
-        motions,
+        job_id: required_string_argument(arguments, "jobId")?,
+        phase: optional_string_argument(arguments, "phase")?,
+        message: optional_string_argument(arguments, "message")?,
+        pack_path: optional_string_argument(arguments, "packPath")?,
+        motions: optional_string_array_argument(arguments, "motions")?,
     })
 }
 
@@ -420,11 +403,8 @@ async fn call_tool(name: &str, arguments: Value, source: &SourceInfo) -> Result<
             ))
         }
         "companion_get_avatar_job" => {
-            let job_id = arguments
-                .get("jobId")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "Avatar job jobId is required.".to_string())?;
-            let job = avatar::get_avatar_job(&mcp_config_dir(), job_id)?;
+            let job_id = required_string_argument(&arguments, "jobId")?;
+            let job = avatar::get_avatar_job(&mcp_config_dir(), &job_id)?;
             Ok(text_result(
                 avatar_job_result(json!({ "job": job })),
                 source,
@@ -648,5 +628,33 @@ mod tests {
     fn avatar_job_arguments_require_an_identifier() {
         assert!(avatar_job_create_input(&json!({})).is_err());
         assert!(avatar_job_update_input(&json!({})).is_err());
+    }
+
+    #[test]
+    fn avatar_job_optional_arguments_reject_wrong_types() {
+        for arguments in [
+            json!({ "jobId": "job", "phase": 1 }),
+            json!({ "jobId": "job", "message": false }),
+            json!({ "jobId": "job", "packPath": [] }),
+            json!({ "jobId": "job", "motions": "idle" }),
+            json!({ "jobId": "job", "motions": ["idle", 1] }),
+        ] {
+            assert!(avatar_job_create_input(&arguments).is_err());
+            assert!(avatar_job_update_input(&arguments).is_err());
+        }
+        assert!(avatar_job_create_input(&json!({ "jobId": 1 })).is_err());
+        assert!(avatar_job_update_input(&json!({ "jobId": 1 })).is_err());
+    }
+
+    #[test]
+    fn avatar_job_schema_bounds_pack_paths() {
+        assert_eq!(
+            avatar_job_create_schema()["properties"]["packPath"]["maxLength"],
+            2048
+        );
+        assert_eq!(
+            avatar_job_update_schema()["properties"]["packPath"]["maxLength"],
+            2048
+        );
     }
 }
