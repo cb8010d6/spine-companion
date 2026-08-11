@@ -124,16 +124,41 @@ fn avatar_pack_schema() -> Value {
     })
 }
 
-fn avatar_job_schema() -> Value {
+fn avatar_job_create_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
-            "jobId": { "type": "string" },
-            "phase": { "type": "string" },
-            "message": { "type": "string" },
-            "packPath": { "type": "string" },
-            "motions": { "type": "array", "items": { "type": "string" } }
-        }
+            "jobId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$" },
+            "phase": { "type": "string", "maxLength": 64 },
+            "message": { "type": "string", "maxLength": 2048 },
+            "packPath": { "type": "string", "maxLength": 2048 },
+            "motions": { "type": "array", "maxItems": 32, "items": { "type": "string", "maxLength": 64 } }
+        },
+        "required": ["jobId"]
+    })
+}
+
+fn avatar_job_update_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "jobId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$" },
+            "phase": { "type": "string", "maxLength": 64 },
+            "message": { "type": "string", "maxLength": 2048 },
+            "packPath": { "type": "string", "maxLength": 2048 },
+            "motions": { "type": "array", "maxItems": 32, "items": { "type": "string", "maxLength": 64 } }
+        },
+        "required": ["jobId"]
+    })
+}
+
+fn avatar_job_get_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "jobId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$" }
+        },
+        "required": ["jobId"]
     })
 }
 
@@ -178,14 +203,26 @@ fn tools() -> Value {
         {
             "name": "companion_create_avatar_job",
             "title": "Create avatar job",
-            "description": "Create a structured Avatar Studio planning job for AI-assisted layer, rig, motion and export work.",
-            "inputSchema": avatar_job_schema()
+            "description": "Create a bounded Avatar Studio planning/progress record for AI-assisted layer, rig, motion and export work. This does not auto-rig or export Spine files.",
+            "inputSchema": avatar_job_create_schema()
         },
         {
             "name": "companion_update_avatar_job",
             "title": "Update avatar job",
-            "description": "Report Avatar Studio job progress. This records planning/progress only and does not claim a finished rig.",
-            "inputSchema": avatar_job_schema()
+            "description": "Update a bounded Avatar Studio planning/progress record. Reading it later can provide context for an AI tool, but it does not resume execution or claim a finished rig.",
+            "inputSchema": avatar_job_update_schema()
+        },
+        {
+            "name": "companion_list_avatar_jobs",
+            "title": "List avatar jobs",
+            "description": "List persisted Avatar Studio planning/progress records. Records survive restart but do not represent automatic rigging or Spine export jobs.",
+            "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "companion_get_avatar_job",
+            "title": "Get avatar job",
+            "description": "Read one persisted Avatar Studio planning/progress record so an AI tool can continue planning explicitly. This does not resume execution.",
+            "inputSchema": avatar_job_get_schema()
         },
         {
             "name": "companion_validate_avatar_pack",
@@ -249,6 +286,76 @@ fn mcp_config_dir() -> std::path::PathBuf {
     crate::user_config_dir().unwrap_or_else(std::env::temp_dir)
 }
 
+fn required_string_argument(arguments: &Value, key: &str) -> Result<String, String> {
+    match arguments.get(key) {
+        Some(Value::String(value)) => Ok(value.clone()),
+        Some(_) => Err(format!("Avatar job {key} must be a string.")),
+        None => Err(format!("Avatar job {key} is required.")),
+    }
+}
+
+fn optional_string_argument(arguments: &Value, key: &str) -> Result<Option<String>, String> {
+    match arguments.get(key) {
+        Some(Value::String(value)) => Ok(Some(value.clone())),
+        Some(_) => Err(format!("Avatar job {key} must be a string when provided.")),
+        None => Ok(None),
+    }
+}
+
+fn optional_string_array_argument(
+    arguments: &Value,
+    key: &str,
+) -> Result<Option<Vec<String>>, String> {
+    match arguments.get(key) {
+        Some(Value::Array(values)) => values
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(ToString::to_string)
+                    .ok_or_else(|| format!("Avatar job {key} must contain only strings."))
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(Some),
+        Some(_) => Err(format!(
+            "Avatar job {key} must be an array of strings when provided."
+        )),
+        None => Ok(None),
+    }
+}
+
+fn avatar_job_create_input(arguments: &Value) -> Result<avatar::AvatarJobCreateInput, String> {
+    let phase = optional_string_argument(arguments, "phase")?;
+    let message = optional_string_argument(arguments, "message")?;
+    let pack_path = optional_string_argument(arguments, "packPath")?;
+    let motions = optional_string_array_argument(arguments, "motions")?;
+    Ok(avatar::AvatarJobCreateInput {
+        job_id: required_string_argument(arguments, "jobId")?,
+        phase: phase.unwrap_or_else(|| "planning".to_string()),
+        message: message.unwrap_or_default(),
+        pack_path,
+        motions: motions.unwrap_or_default(),
+    })
+}
+
+fn avatar_job_update_input(arguments: &Value) -> Result<avatar::AvatarJobUpdateInput, String> {
+    Ok(avatar::AvatarJobUpdateInput {
+        job_id: required_string_argument(arguments, "jobId")?,
+        phase: optional_string_argument(arguments, "phase")?,
+        message: optional_string_argument(arguments, "message")?,
+        pack_path: optional_string_argument(arguments, "packPath")?,
+        motions: optional_string_array_argument(arguments, "motions")?,
+    })
+}
+
+fn avatar_job_result(value: Value) -> Value {
+    json!({
+        "recordType": "planning-progress",
+        "note": "Avatar Jobs are bounded planning/progress records only. They do not auto-rig, resume execution, or export Spine runtime files.",
+        "value": value
+    })
+}
+
 async fn call_tool(name: &str, arguments: Value, source: &SourceInfo) -> Result<Value, String> {
     match name {
         "companion_get_state" => api_json("/state", None)
@@ -273,31 +380,36 @@ async fn call_tool(name: &str, arguments: Value, source: &SourceInfo) -> Result<
         }
         "companion_avatar_requirements" => Ok(text_result(avatar::requirements(), source)),
         "companion_create_avatar_job" => {
-            let job_id = arguments
-                .get("jobId")
-                .and_then(|value| value.as_str())
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or("avatar-job");
+            let job =
+                avatar::create_avatar_job(&mcp_config_dir(), avatar_job_create_input(&arguments)?)?;
             Ok(text_result(
-                json!({
-                    "jobId": job_id,
-                    "created": true,
-                    "requirements": avatar::requirements(),
-                    "message": "Avatar job created. Produce a local avatar pack and validate it before import."
-                }),
+                avatar_job_result(json!({ "created": true, "job": job })),
                 source,
             ))
         }
-        "companion_update_avatar_job" => Ok(text_result(
-            json!({
-                "jobId": arguments.get("jobId").and_then(|value| value.as_str()).unwrap_or("avatar-job"),
-                "phase": arguments.get("phase").and_then(|value| value.as_str()).unwrap_or("working"),
-                "message": arguments.get("message").and_then(|value| value.as_str()).unwrap_or("Avatar job updated."),
-                "packPath": arguments.get("packPath").and_then(|value| value.as_str()).unwrap_or(""),
-                "note": "Progress recorded for the AI tool. Validate/import the avatar pack when files exist."
-            }),
-            source,
-        )),
+        "companion_update_avatar_job" => {
+            let job =
+                avatar::update_avatar_job(&mcp_config_dir(), avatar_job_update_input(&arguments)?)?;
+            Ok(text_result(
+                avatar_job_result(json!({ "updated": true, "job": job })),
+                source,
+            ))
+        }
+        "companion_list_avatar_jobs" => {
+            let jobs = avatar::load_avatar_jobs(&mcp_config_dir())?;
+            Ok(text_result(
+                avatar_job_result(json!({ "jobs": jobs })),
+                source,
+            ))
+        }
+        "companion_get_avatar_job" => {
+            let job_id = required_string_argument(&arguments, "jobId")?;
+            let job = avatar::get_avatar_job(&mcp_config_dir(), &job_id)?;
+            Ok(text_result(
+                avatar_job_result(json!({ "job": job })),
+                source,
+            ))
+        }
         "companion_validate_avatar_pack" => {
             let path = arguments
                 .get("path")
@@ -478,6 +590,71 @@ mod tests {
         assert_eq!(
             mcp_config_dir(),
             crate::user_config_dir().unwrap_or_else(std::env::temp_dir)
+        );
+    }
+
+    #[test]
+    fn avatar_job_tools_are_persistent_planning_contracts() {
+        let tools = tools().as_array().unwrap().clone();
+        for name in [
+            "companion_create_avatar_job",
+            "companion_update_avatar_job",
+            "companion_list_avatar_jobs",
+            "companion_get_avatar_job",
+        ] {
+            let tool = tools
+                .iter()
+                .find(|tool| tool["name"] == name)
+                .unwrap_or_else(|| panic!("missing tool {name}"));
+            assert!(tool["description"].as_str().unwrap().contains("planning"));
+        }
+        assert_eq!(
+            tools
+                .iter()
+                .find(|tool| tool["name"] == "companion_create_avatar_job")
+                .unwrap()["inputSchema"]["required"][0],
+            "jobId"
+        );
+        assert_eq!(
+            tools
+                .iter()
+                .find(|tool| tool["name"] == "companion_get_avatar_job")
+                .unwrap()["inputSchema"]["required"][0],
+            "jobId"
+        );
+    }
+
+    #[test]
+    fn avatar_job_arguments_require_an_identifier() {
+        assert!(avatar_job_create_input(&json!({})).is_err());
+        assert!(avatar_job_update_input(&json!({})).is_err());
+    }
+
+    #[test]
+    fn avatar_job_optional_arguments_reject_wrong_types() {
+        for arguments in [
+            json!({ "jobId": "job", "phase": 1 }),
+            json!({ "jobId": "job", "message": false }),
+            json!({ "jobId": "job", "packPath": [] }),
+            json!({ "jobId": "job", "motions": "idle" }),
+            json!({ "jobId": "job", "motions": ["idle", 1] }),
+        ] {
+            assert!(avatar_job_create_input(&arguments).is_err());
+            assert!(avatar_job_update_input(&arguments).is_err());
+        }
+        assert!(avatar_job_create_input(&json!({ "jobId": 1 })).is_err());
+        assert!(avatar_job_update_input(&json!({ "jobId": 1 })).is_err());
+    }
+
+    #[test]
+    fn avatar_job_schema_bounds_pack_paths() {
+        assert_eq!(
+            avatar_job_create_schema()["properties"]["packPath"]["maxLength"],
+            2048
+        );
+        assert_eq!(
+            avatar_job_update_schema()["properties"]["packPath"]["maxLength"],
+            2048
         );
     }
 }

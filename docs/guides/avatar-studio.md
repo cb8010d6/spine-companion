@@ -64,6 +64,8 @@ AI tool:
 - `companion_avatar_requirements`
 - `companion_create_avatar_job`
 - `companion_update_avatar_job`
+- `companion_list_avatar_jobs`
+- `companion_get_avatar_job`
 - `companion_validate_avatar_pack`
 - `companion_import_avatar_pack`
 
@@ -71,6 +73,15 @@ Codex should report progress in visible phases: character prompt, layer split,
 rig draft, motion draft, Spine export, validation, and import. If Spine Editor is
 not installed, Codex may still create an avatar pack, but it must not claim that
 the final `.skel/.atlas/.png` runtime export is complete.
+
+Avatar Jobs are persisted as bounded planning/progress records under the
+application user configuration directory. They survive application restarts and
+keep a short update history so an AI tool can inspect a job and continue planning
+explicitly. `resumable` means that the record can provide context; it does not
+start work, invoke an AI tool, auto-rig a character, or export Spine files.
+Job IDs and optional `packPath` values are validated, and old records/history are
+bounded to keep the store safe. A job record must still be validated and imported
+as a local avatar pack before it can affect the companion model.
 
 ## Spine Editor Dependency
 

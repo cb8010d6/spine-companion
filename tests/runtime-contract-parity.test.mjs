@@ -44,6 +44,20 @@ describe("runtime contract parity", () => {
     expect(packagedTools).toEqual(completePackaged);
   });
 
+  it("exposes avatar job persistence as a planning-only contract", () => {
+    expect(runtimeContract.mcp.packagedExtensions).toEqual(expect.arrayContaining([
+      "companion_create_avatar_job",
+      "companion_update_avatar_job",
+      "companion_list_avatar_jobs",
+      "companion_get_avatar_job"
+    ]));
+    const packaged = read("src-tauri/src/mcp.rs");
+    expect(packaged).toContain('"name": "companion_list_avatar_jobs"');
+    expect(packaged).toContain('"name": "companion_get_avatar_job"');
+    expect(packaged).toContain("planning/progress");
+    expect(packaged).toContain("does not resume execution");
+  });
+
   it("keeps the shared HTTP routes in both implementations", () => {
     const javascript = read("src/backend/state-server.cjs");
     const rust = read("src-tauri/src/server.rs");
