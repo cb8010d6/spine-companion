@@ -86,48 +86,15 @@ jobs:
         run: bun run release:preflight -- --tag "${{ github.ref_name }}"
       - name: Package Tauri app
         run: bunx tauri build --bundles ${{ matrix.bundles }}
-      - name: Start packaged API and run Windows MCP smoke
+      - name: Install, smoke-test, and uninstall Windows package
         if: runner.os == 'Windows'
         shell: pwsh
-        env:
-          COMPANION_API: http://127.0.0.1:17388
         run: |
-          $exe = (Resolve-Path "src-tauri/target/release/spine-companion.exe").Path
-          $stdout = Join-Path $env:RUNNER_TEMP "spine-companion-api.stdout.log"
-          $stderr = Join-Path $env:RUNNER_TEMP "spine-companion-api.stderr.log"
-          $process = $null
-          function Stop-ProcessTree([int] $processId) {
-            foreach ($child in @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $processId")) {
-              Stop-ProcessTree $child.ProcessId
-            }
-            Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
+          $installer = @(Get-ChildItem "src-tauri/target/release/bundle/nsis" -Filter "*-setup.exe")
+          if ($installer.Count -ne 1) {
+            throw "Expected exactly one NSIS installer, found $($installer.Count)."
           }
-          try {
-            $process = Start-Process -FilePath $exe -WorkingDirectory (Split-Path $exe) -WindowStyle Hidden -PassThru `
-              -RedirectStandardOutput $stdout -RedirectStandardError $stderr
-            $deadline = [DateTime]::UtcNow.AddSeconds(45)
-            $health = $null
-            do {
-              if ($process.HasExited) {
-                throw "Packaged executable exited before the API became healthy. See $stderr"
-              }
-              try {
-                $health = Invoke-RestMethod -Uri "$env:COMPANION_API/health" -TimeoutSec 2
-              } catch {
-                $health = $null
-              }
-              if ($health -and $health.ok -eq $true) { break }
-              Start-Sleep -Seconds 1
-            } while ([DateTime]::UtcNow -lt $deadline)
-            if (-not ($health -and $health.ok -eq $true)) {
-              throw "Packaged API did not become healthy within 45 seconds. See $stderr"
-            }
-            bun scripts/check-packaged-mcp.mjs $exe
-          } finally {
-            if ($process) {
-              Stop-ProcessTree $process.Id
-            }
-          }
+          ./scripts/test-windows-installer.ps1 -InstallerPath $installer[0].FullName
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: spine-companion-tauri-${{ matrix.artifact }}
