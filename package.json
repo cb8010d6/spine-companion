@@ -34,6 +34,8 @@
     "tauri:dev": "tauri dev",
     "tauri:build": "bun scripts/tauri-build.cjs",
     "tauri:portable:assets": "bun scripts/package-tauri-portable.cjs",
+    "release:preflight": "bun scripts/release-preflight.mjs",
+    "release:checksums": "bun scripts/generate-sha256sums.mjs",
     "catalog:generate:illustrations": "bun scripts/generate-ark-catalog.mjs --source catalog/ark-illustrations-source.json --output catalog/illustrations.json",
     "catalog:generate:enemies": "bun scripts/generate-ark-catalog.mjs --source catalog/ark-enemies-source.json --output catalog/enemies.json",
     "catalog:audit": "bun scripts/audit-model-catalog.mjs --sample-rate 0.01"

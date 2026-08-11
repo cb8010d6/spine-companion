@@ -20,7 +20,7 @@ flowchart LR
 
 ```toml
 [mcp_servers.spine_companion]
-command = "C:/Program Files/Spine Companion/spine-companion.exe"
+command = "<install-dir>/spine-companion.exe"
 args = ["--mcp"]
 env = { COMPANION_API = "http://127.0.0.1:17388", COMPANION_SOURCE = "codex-mcp", COMPANION_SOURCE_LABEL = "Codex" }
 ```
@@ -28,15 +28,15 @@ env = { COMPANION_API = "http://127.0.0.1:17388", COMPANION_SOURCE = "codex-mcp"
 源码开发兜底：
 
 ```bash
-npm run mcp:install:codex
+bun run mcp:install:codex
 ```
 
 这会写入：
 
 ```toml
 [mcp_servers.spine_companion]
-command = "node"
-args = ["C:/path/to/spine-companion/scripts/mcp-companion-server.mjs"]
+command = "bun"
+args = ["<repo-root>/scripts/mcp-companion-server.mjs"]
 env = { COMPANION_API = "http://127.0.0.1:17388", COMPANION_SOURCE = "codex-mcp", COMPANION_SOURCE_LABEL = "Codex" }
 ```
 
@@ -54,8 +54,8 @@ env = { COMPANION_API = "http://127.0.0.1:17388", COMPANION_SOURCE = "codex-mcp"
 MCP 本身不会自动推送 Codex 状态，它只是暴露工具。要让 AI 主动上报，运行：
 
 ```bash
-npm run skill:install
-npm run ai:configure -- --target all
+bun run skill:install
+bun run ai:configure -- --target all
 ```
 
-桌面应用或 `npm run dev:api` 必须运行，MCP 工具才有 API 可调用。
+桌面应用或 `bun run dev:api` 必须运行，MCP 工具才有 API 可调用。

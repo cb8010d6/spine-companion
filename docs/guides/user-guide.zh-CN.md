@@ -53,7 +53,8 @@ curl -X POST http://127.0.0.1:17388/state -H "Content-Type: application/json" -d
 curl -X POST http://127.0.0.1:17388/reminders -H "Content-Type: application/json" -d "{\"text\":\"Stretch\",\"inSeconds\":60}"
 ```
 
-提醒会持久化到用户配置目录，重启应用后仍可恢复未触发的提醒。
+状态、提醒和最近历史只保存在当前应用会话中，应用退出后会重置。模型文件、设置和 AI 配置
+备份保存在用户数据中，设计上会跨应用重启或升级保留。
 
 ## AI 工具配置
 

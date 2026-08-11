@@ -16,7 +16,7 @@ Use this skill to connect AI tools to a local Spine Companion app.
 3. Run the bundled configurator:
 
 ```bash
-node scripts/configure-ai-tools.cjs --repo C:\path\to\spine-companion --target all
+node scripts/configure-ai-tools.cjs --repo . --target all
 ```
 
 Use `--target codex`, `codex-cli`, `cursor`, `claude-desktop`, `claude-code`,

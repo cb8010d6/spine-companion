@@ -30,7 +30,7 @@ Kimi 接入指 Moonshot AI 官方的 **Kimi Code CLI**。Manager 会写入官方
 {
   "mcpServers": {
     "spine_companion": {
-      "command": "C:/Program Files/Spine Companion/spine-companion.exe",
+      "command": "<install-dir>/spine-companion.exe",
       "args": ["--mcp"],
       "env": {
         "COMPANION_API": "http://127.0.0.1:17388",
@@ -54,7 +54,7 @@ OpenCode 使用官方的 `mcp` 配置形态，`command` 是数组。
   "mcp": {
     "spine_companion": {
       "type": "local",
-      "command": ["C:/Program Files/Spine Companion/spine-companion.exe", "--mcp"],
+      "command": ["<install-dir>/spine-companion.exe", "--mcp"],
       "enabled": true,
       "environment": {
         "COMPANION_API": "http://127.0.0.1:17388",
@@ -73,7 +73,7 @@ OpenCode 使用官方的 `mcp` 配置形态，`command` 是数组。
   "mcpServers": {
     "spine_companion": {
       "command": "node",
-      "args": ["C:/path/to/spine-companion/scripts/mcp-companion-server.mjs"],
+      "args": ["<repo-root>/scripts/mcp-companion-server.mjs"],
       "env": {
         "COMPANION_API": "http://127.0.0.1:17388",
         "COMPANION_SOURCE": "my-tool-mcp",

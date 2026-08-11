@@ -2,214 +2,99 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-Spine Companion 是一个面向 Spine 3.8 模型的开源桌面陪伴应用。桌面运行时统一为
-Tauri。渲染器基于 `pixi.js@6.5.10` 和
-`pixi-spine@3.1.2`，可以直接渲染 `.skel/.atlas/.png`，并提供透明背景、窗口置顶、
-拖拽、缩放、点击互动、状态切换、本地状态 API、MCP 桥接、进度气泡、托盘控制、
-简单提醒和工具化的 Manager 窗口。
+Spine Companion 把 Spine 3.8 角色变成安静的桌面陪伴：用动画、提醒和本地 AI 工具状态，
+让你随时看到工作的节奏。
 
-## 素材策略
+## 下载
 
-本仓库不包含明日方舟、Ark-Models 或任何其他受版权保护的模型素材。只有在你有权使用
-相关素材时，才应把它们作为本地测试材料。本仓库只保留代码、示例和配置说明。
+从 [GitHub Releases](https://github.com/cb8010d6/spine-companion/releases) 下载当前版本。
+Windows 安装包是稳定目标；macOS 和 Linux 安装包是未签名预览版，适合评估使用。
 
-本地素材配置写入 `companion.local.json`，该文件已被 git 忽略。
+同一 Release 中的 `SHA256SUMS.txt` 可用于校验下载文件。
 
-## 快速开始
+## 首次使用角色，无需终端
 
-### 使用 Release 构建
+1. 安装 Spine Companion，从桌面或开始菜单启动。
+2. 打开 **Manager > Library**，选择兼容角色并点击 **Download and use**。
+3. 在 **Manager > Settings** 调整大小和位置，再从托盘菜单显示桌宠。
 
-1. 从 GitHub Release 下载对应平台的安装包。Windows 是主要支持平台；rc.5 中未签名的
-   macOS 和 Linux 包属于实验预览。
-2. 推荐把 `companion.local.json` 放到当前用户的配置目录：
+Library 会把下载的模型放入用户数据目录。首次使用不需要编辑 JSON 文件，也不需要运行命令。
 
-```text
-%APPDATA%\spine-companion\companion.local.json
-```
+## Manager 连接 AI：Codex
 
-也可以把它放在 exe 同目录：
+1. 打开 **Manager > AI Integrations**，选择 **Codex**。
+2. 查看待写入的 MCP 配置并确认。Manager 会写入已安装应用的可执行文件入口，并在修改
+   Codex 配置前创建备份。
+3. 重启 Codex 或打开新会话；Codex 上报工作阶段时保持 Spine Companion 运行。
 
-```json
-{
-  "spine": {
-    "assetDir": "C:\\path\\to\\spine_model_folder",
-    "skel": "model.skel"
-  }
-}
-```
+该集成使用本地 stdio MCP 入口，通过 companion 的本地 HTTP API 工作。详细 MCP 字段、
+开发兜底和排障步骤见 [Codex MCP 指南](docs/guides/codex-mcp.zh-CN.md)。
 
-3. 双击启动应用。托盘菜单可以打开配置目录、显示状态面板、打开 Manager 窗口、缩放、
-   切换状态以及退出。
+## 功能
 
-### 从源码运行
+- 透明、置顶的 Spine 渲染，支持拖动、点击、缩放和状态动画。
+- Manager Library、Installed、下载、诊断、设置和更新检查。
+- 本地提醒、进度气泡、托盘控制和最近状态历史。
+- 支持 Codex 等 MCP AI 工具，并提供配置备份和恢复。
+- 为开发和自动化提供浏览器预览及本地 HTTP/SSE 集成。
+- Avatar Studio 支持试用和恢复本地角色变更。
+
+## 平台矩阵
+
+| 平台 | 支持目标 | Release 安装包 |
+| --- | --- | --- |
+| Windows 10/11 x64 | Stable target | NSIS `.exe` |
+| macOS Apple Silicon | Unsigned Preview | `.dmg` |
+| macOS Intel | Unsigned Preview | `.dmg` |
+| Linux x64 | Unsigned Preview | `.AppImage`、`.deb` |
+
+预览包可能受桌面环境、显卡驱动、窗口合成或 Gatekeeper 影响。它们用于评估，不是稳定
+支持目标。
+
+## 模型兼容性与权利提示
+
+Spine Companion 加载 Spine 3.8 兼容模型目录，其中应包含 skeleton、atlas 以及 atlas
+引用的贴图。动作覆盖取决于模型实际包含的动画名称和元数据。
+
+本仓库和 Release 不包含明日方舟、Ark-Models 或其他受版权保护的模型文件。只有在你拥有
+使用权限时才下载或使用模型，并遵循上游许可证和署名要求。Library 列出模型不代表你拥有
+再分发权。
+
+## 文档
+
+- [用户指南](docs/guides/user-guide.zh-CN.md)
+- [部署、升级与排障](docs/guides/deployment.zh-CN.md)
+- [AI 工具集成](docs/guides/ai-tools.zh-CN.md)
+- [Codex MCP 集成](docs/guides/codex-mcp.zh-CN.md)
+- [架构概览](docs/architecture/overview.zh-CN.md)
+- [运行时 Bridge 契约](docs/architecture/runtime-bridge.zh-CN.md)
+- [发布说明](docs/releases/README.zh-CN.md)
+
+## 开发
+
+源码开发需要 Bun 1.3.13 或更新版本，以及 Rust stable。常用流程：
 
 ```bash
 bun install
-bun run setup:assets -- "C:\path\to\amiya_spine"
 bun run dev
 ```
 
-`bun run dev` 和 `bun run tauri:dev` 都会启动 Tauri 应用。
-
-部署、启动、MCP 和排障步骤见 [docs/guides/deployment.zh-CN.md](docs/guides/deployment.zh-CN.md)。
-偏 UI 的使用说明见 [docs/guides/user-guide.zh-CN.md](docs/guides/user-guide.zh-CN.md)。
-计划中的 AI 辅助形象制作流程见 [docs/guides/avatar-studio.zh-CN.md](docs/guides/avatar-studio.zh-CN.md)。
-
-渲染器预览地址：
-
-```text
-http://127.0.0.1:17389?api=http://127.0.0.1:17388
-```
-
-如果只想在浏览器中预览 API 和渲染器，不启动桌面应用：
+提交变更前运行：
 
 ```bash
-bun run dev:renderer
-bun run dev:api
+bun run test
+bun run check
+bun run check:mcp
+bun run build
 ```
 
-这里的 MVP 指最小可用纵向切片：桌面壳、实时 Spine 渲染、状态切换、本地状态 API、
-提醒和 MCP 桥接。它不是一个 spritesheet 导出工具。
+原生打包和模型设置说明见[部署指南](docs/guides/deployment.zh-CN.md)。仓库协作流程和审查要求
+见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
-## 本地状态 API
+## 安全与许可证
 
-默认 API 地址是 `http://127.0.0.1:17388`。
+报告漏洞前请阅读 [SECURITY.md](SECURITY.md)。不要在公开 issue 中提交密钥、私有模型文件
+或未脱敏的诊断报告。
 
-```bash
-curl http://127.0.0.1:17388/state
-curl -X POST http://127.0.0.1:17388/state -H "Content-Type: application/json" -d "{\"state\":\"working\",\"source\":\"curl\"}"
-curl -X POST http://127.0.0.1:17388/reminders -H "Content-Type: application/json" -d "{\"text\":\"stand up\",\"inSeconds\":30}"
-```
-
-状态事件也可以通过以下方式订阅：
-
-- SSE: `GET /events`
-- WebSocket: `ws://127.0.0.1:17388/ws`
-
-## Codex MCP 桥接
-
-MCP server 允许 Codex 通过本地 API 读取和更新 companion 状态。
-
-```bash
-bun run mcp:install:codex
-```
-
-这个命令会向 `~/.codex/config.toml` 追加一个 `spine_companion` MCP server 配置。
-安装后需要重启 Codex，或打开一个新的 session。
-
-可用 MCP 工具：
-
-- `companion_get_state`
-- `companion_set_state`
-- `companion_reminder`
-- `companion_report_codex_phase`
-
-Codex 使用 MCP bridge 时，companion 应用或本地 API 必须保持运行。
-
-安装可复用的状态汇报 skill，并配置常见 AI 工具：
-
-```bash
-bun run skill:install
-bun run ai:configure -- --target all
-```
-
-支持的目标包括 Codex Desktop、Codex CLI、Cursor、Claude Desktop、Claude Code 和
-Claude CLI。不支持 MCP 工具的环境可以复制 [docs/guides/ai-tools.zh-CN.md](docs/guides/ai-tools.zh-CN.md)
-里的 JSON 片段。
-
-## Codex 插件一键安装
-
-仓库内提供了 repo-local Codex 插件：
-
-```text
-plugins/spine-companion-status
-```
-
-在支持插件市场文件的 Codex 环境中，可通过 `.agents/plugins/marketplace.json`
-安装 `Spine Companion Status`。插件会提供同名 skill 和 `spine_companion` MCP
-桥接配置，默认使用 Bun 启动本地桥接服务。
-
-## 状态与动画
-
-| 状态 | Spine 动画 |
-| --- | --- |
-| `idle` | `Relax` |
-| `working` | `Relax` |
-| `running` | `Move` |
-| `reminder` | `Interact` |
-| `waiting` | `Sit` |
-| `failed` | `Sleep` |
-| `sleeping` | `Sleep` |
-| `reviewing` | `Special`，可配置 `review` 片段 |
-| `success` | `Special`，可配置 `success` 片段 |
-
-动画切换使用 Spine runtime 的 `stateData.setMix` 和按转场配置的 `mixDuration`。渲染器在
-启动时会采样所有已映射状态动画，并使用稳定的显示帧，让 `Sit`、`Sleep`、`Move` 和
-`Special` 保持一致的尺寸范围。`Special` 片段在 `companion.config.json` 中配置。
-
-## Provider 层
-
-渲染器支持这些状态来源：
-
-- Tauri 的 `window.companion` bridge，桌面应用使用。
-- 本地 HTTP 轮询，浏览器预览和简单集成使用。
-- JSON 轮询，适合写入状态文件的脚本。
-- WebSocket，适合 push 风格的桥接服务。
-
-MCP bridge 的设计形态见 [docs/architecture/overview.zh-CN.md](docs/architecture/overview.zh-CN.md)。
-
-## 桌面控制
-
-Windows 托盘菜单可以显示或隐藏状态面板、切换窗口置顶、显示或隐藏进度气泡、缩放模型、
-重置尺寸、切换状态以及退出。拖拽透明舞台会移动窗口；水平拖拽会临时切换到 `running`
-状态，并根据方向镜像模型。
-
-Manager 提供可搜索的模型库、已安装模型操作、下载状态、可热应用的缩放和偏移设置、
-诊断、更新检查和最近状态历史。内置的 Ark-Models catalog 条目只会下载到本地配置目录；
-本仓库和公开 release 都不包含模型素材文件。
-
-## FAQ
-
-**为什么应用显示 missing asset？**
-打开 Manager > Diagnostics，确认当前模型目录包含 `.skel`、`.atlas` 和 `.png` 文件。
-如果模型是通过 Library 下载的，可以尝试在 Installed 中重新设为 active。
-
-**为什么 Codex 一直停在 idle？**
-MCP bridge 只有在 companion 应用或本地 API 运行时才可用。运行
-`bun run mcp:install:codex`，重启 Codex，然后检查 Manager > Diagnostics。
-
-**应该使用哪个 runtime？**
-使用 Tauri release 构建。Electron 已在 v0.2.6-rc.5 退役，不再发布、测试或作为第二套
-桌面后端保留。
-
-## 开源说明
-
-- 不要提交受版权保护模型的 `.skel`、`.atlas` 或贴图文件。
-- 本地模型路径应保存在 `companion.local.json` 或环境变量中。
-- 使用 `companion.config.example.json` 作为公开配置模板。
-- `assets/` 下的占位目录只用于说明素材放置方式。
-
-## 平台支持
-
-| 平台 | rc.5 状态 | 安装包 |
-| --- | --- | --- |
-| Windows 10/11 x64 | 主要支持 | NSIS `.exe` |
-| macOS Apple Silicon | 实验性、未签名 | `.dmg` |
-| macOS Intel | 实验性、未签名 | `.dmg` |
-| Linux x64 | 实验性 | `.AppImage`、`.deb` |
-
-macOS/Linux 与 Windows 使用同一套 Tauri 应用和 renderer，但透明窗口、托盘、鼠标穿透、
-Wayland/X11 和 GPU 驱动行为可能不同。反馈平台问题时请附上 Diagnostics 导出的报告。
-
-## macOS Release 签名
-
-GitHub Actions 可以构建未签名的 macOS 产物，但 Apple Silicon 用户可能会遇到 Gatekeeper
-提示，例如 “damaged” 或 “cannot be opened”。如果要提供公开 macOS 下载，请配置以下仓库
-secrets，让 Tauri 构建执行签名和 notarize：
-
-- `MACOS_CERTIFICATE`
-- `MACOS_CERTIFICATE_PASSWORD`
-- `APPLE_API_KEY`
-- `APPLE_API_KEY_ID`
-- `APPLE_API_ISSUER`
-- `APPLE_TEAM_ID`
+Spine Companion 使用 [MIT License](LICENSE) 发布。第三方声明单独收录在
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
