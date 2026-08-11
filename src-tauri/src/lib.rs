@@ -1022,6 +1022,15 @@ fn first_recoverable_model(
     None
 }
 
+fn public_server_config(origin: &str) -> serde_json::Value {
+    let origin = origin.trim_end_matches('/');
+    serde_json::json!({
+        "origin": origin,
+        "stateUrl": format!("{origin}/state"),
+        "eventsUrl": format!("{origin}/events")
+    })
+}
+
 fn load_runtime_config() -> RuntimeConfig {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -1116,12 +1125,7 @@ fn load_runtime_config() -> RuntimeConfig {
 
     let public = serde_json::json!({
         "window": config["window"].clone(),
-        "server": {
-            "origin": origin,
-            "stateUrl": format!("{}/state", origin),
-            "eventsUrl": format!("{}/events", origin),
-            "websocketUrl": format!("ws://{}:{}/ws", host, port)
-        },
+        "server": public_server_config(&origin),
         "spine": {
             "assetDir": asset_dir.clone(),
             "skel": skel.clone(),
@@ -5171,6 +5175,7 @@ pub fn run() {
                 port_for_server,
             )) {
                 eprintln!("Failed to start API server: {}", e);
+                return Err(e);
             }
 
             let app_handle = app.handle().clone();
@@ -5411,6 +5416,13 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn packaged_server_config_advertises_sse_without_websocket() {
+        let server = public_server_config("http://127.0.0.1:17388");
+        assert_eq!(server["eventsUrl"], "http://127.0.0.1:17388/events");
+        assert!(server.get("websocketUrl").is_none());
+    }
 
     #[test]
     fn model_import_activation_is_explicitly_overridable() {

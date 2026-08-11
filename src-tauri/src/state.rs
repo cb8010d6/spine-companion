@@ -157,6 +157,7 @@ pub struct CreateReminderInput {
 
 pub type StateStore = Arc<RwLock<CompanionState>>;
 pub type StateBroadcast = broadcast::Sender<CompanionState>;
+/// v0.2.6 reminders intentionally live only for the current runtime session.
 pub type ReminderStore = Arc<RwLock<Vec<Reminder>>>;
 pub type ReminderBroadcast = broadcast::Sender<Vec<Reminder>>;
 
@@ -489,5 +490,27 @@ mod tests {
         assert!(list_reminders(&reminders).await[0].fired);
         let fired = reminder_rx.recv().await.unwrap();
         assert!(fired[0].fired);
+    }
+
+    #[tokio::test]
+    async fn reminder_store_is_scoped_to_one_runtime_session() {
+        let (store, tx) = create_state_store("idle");
+        let reminders = create_reminder_store();
+        let reminder_tx = create_reminder_broadcast();
+        create_reminder(
+            &store,
+            &tx,
+            &reminders,
+            &reminder_tx,
+            CreateReminderInput {
+                text: Some("Session only".to_string()),
+                delay_ms: Some(60_000),
+                ..Default::default()
+            },
+        )
+        .await;
+
+        assert_eq!(list_reminders(&reminders).await.len(), 1);
+        assert!(list_reminders(&create_reminder_store()).await.is_empty());
     }
 }
