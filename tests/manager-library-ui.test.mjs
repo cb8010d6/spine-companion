@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
   MANAGER_FRAME_RATE_MODES,
   catalogSourcesForSelection,
+  managerInitialView,
   mergeRemoteCatalogs,
   resolveLibraryCatalogSource
 } from "../src/renderer/manager.js";
@@ -26,6 +27,11 @@ describe("manager all-enabled-sources library view", () => {
 
   it("exposes only the supported fixed frame-rate modes", () => {
     expect(MANAGER_FRAME_RATE_MODES).toEqual(["display", "60", "30"]);
+  });
+
+  it("opens Library first when no model is active", () => {
+    expect(managerInitialView({ spine: {} })).toBe("library");
+    expect(managerInitialView({ spine: { modelId: "local-model", assetDir: "C:/models/local-model", skel: "model.skel" } })).toBe("dashboard");
   });
 
   it("preserves the aggregate selection while excluding disabled sources", () => {

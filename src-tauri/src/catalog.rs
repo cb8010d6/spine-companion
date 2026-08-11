@@ -136,6 +136,21 @@ fn default_true() -> bool {
 }
 
 impl CatalogModel {
+    pub fn requires_acknowledgement(&self) -> bool {
+        self.license.trim().eq_ignore_ascii_case("NOASSERTION")
+            || !self.license_warning.trim().is_empty()
+    }
+
+    pub fn require_acknowledgement(&self, acknowledgement: bool) -> Result<(), String> {
+        if self.requires_acknowledgement() && !acknowledgement {
+            return Err(format!(
+                "Model {} requires explicit acknowledgement of its unverified license metadata before download or preview.",
+                self.id
+            ));
+        }
+        Ok(())
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         validate_identifier(&self.id, "Model id")?;
         validate_nonempty(&self.name, "Model name")?;
@@ -1003,6 +1018,21 @@ mod tests {
             category: "operator".to_string(),
             compatibility_profile: "companion".to_string(),
         }
+    }
+
+    #[test]
+    fn unverified_catalog_models_require_explicit_acknowledgement() {
+        let mut noassertion = model("noassertion", "No assertion", "3.8.99");
+        noassertion.license = "NOASSERTION".to_string();
+        assert!(noassertion.require_acknowledgement(false).is_err());
+        assert!(noassertion.require_acknowledgement(true).is_ok());
+
+        let mut warning = model("warning", "Warning", "3.8.99");
+        warning.license_warning = "Review upstream rights.".to_string();
+        assert!(warning.require_acknowledgement(false).is_err());
+
+        let verified = model("verified", "Verified", "3.8.99");
+        assert!(verified.require_acknowledgement(false).is_ok());
     }
 
     #[test]

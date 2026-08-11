@@ -94,10 +94,10 @@ export async function initTauriBridge() {
     emitScale: (payload) => _tauriInvoke("emit_scale_event", { input: payload }),
     importModel: (input) => _tauriInvoke("import_model", { input }),
     installModel: (input) => _tauriInvoke("import_model", { input: { ...input, activate: false } }),
-    importCatalogModel: (sourceId, modelId, activate = true) => _tauriInvoke("import_catalog_model", { sourceId, modelId, activate }),
-    installCatalogModel: (sourceId, modelId) => _tauriInvoke("import_catalog_model", { sourceId, modelId, activate: false }),
+    importCatalogModel: (sourceId, modelId, activate = true, acknowledgement = false) => _tauriInvoke("import_catalog_model", { sourceId, modelId, activate, acknowledgement }),
+    installCatalogModel: (sourceId, modelId, acknowledgement = false) => _tauriInvoke("import_catalog_model", { sourceId, modelId, activate: false, acknowledgement }),
     cancelModelDownload: (id) => _tauriInvoke("cancel_model_download", { id }),
-    prepareModelPreview: (sourceId, modelId) => _tauriInvoke("prepare_model_preview", { sourceId, modelId }),
+    prepareModelPreview: (sourceId, modelId, acknowledgement = false) => _tauriInvoke("prepare_model_preview", { sourceId, modelId, acknowledgement }),
     onState: (callback) => {
       // Listen for state updates from the Rust backend
       let unlisten = null;

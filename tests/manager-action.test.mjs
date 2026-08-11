@@ -25,13 +25,12 @@ describe("manager button actions", () => {
 
   it("uses the same manager feedback in onboarding", async () => {
     const node = createOnboarding({
-      onDownload: () => {},
       onManager: async () => {
         throw new Error("No bridge");
       }
     });
     const managerButton = [...node.querySelectorAll("button")]
-      .find((button) => button.textContent === "Open Manager");
+      .find((button) => button.textContent === "Open Manager Library");
 
     managerButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     expect(managerButton.textContent).toBe("Opening Manager...");

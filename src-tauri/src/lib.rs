@@ -504,52 +504,26 @@ fn fallback_config() -> serde_json::Value {
                 {
                     "id": "ark-models",
                     "label": "Operators",
-                    "catalogUrl": "https://raw.githubusercontent.com/cb8010d6/spine-companion/v0.2.6-rc.7.1/catalog/catalog.json",
+                    "catalogUrl": "https://raw.githubusercontent.com/cb8010d6/spine-companion/v0.2.6-rc.10/catalog/catalog.json",
                     "kind": "official",
                     "enabled": true
                 },
                 {
                     "id": "ark-illustrations",
                     "label": "Dynamic illustrations",
-                    "catalogUrl": "https://raw.githubusercontent.com/cb8010d6/spine-companion/v0.2.6-rc.7.1/catalog/illustrations.json",
+                    "catalogUrl": "https://raw.githubusercontent.com/cb8010d6/spine-companion/v0.2.6-rc.10/catalog/illustrations.json",
                     "kind": "official",
                     "enabled": true
                 },
                 {
                     "id": "ark-enemies",
                     "label": "Enemies",
-                    "catalogUrl": "https://raw.githubusercontent.com/cb8010d6/spine-companion/v0.2.6-rc.7.1/catalog/enemies.json",
+                    "catalogUrl": "https://raw.githubusercontent.com/cb8010d6/spine-companion/v0.2.6-rc.10/catalog/enemies.json",
                     "kind": "official",
                     "enabled": true
                 }
             ],
-            "catalog": [
-                {
-                    "id": "ark-1001-amiya2-sale-16",
-                    "name": "Amiya Guard Skin #16",
-                    "source": "Ark-Models",
-                    "sourceId": "ark-models",
-                    "catalogSourceId": "ark-models",
-                    "catalogVisible": false,
-                    "licenseNote": "Downloaded from isHarryh/Ark-Models for local use only. Do not commit or redistribute the asset files in this repository.",
-                    "repositoryUrl": "https://github.com/isHarryh/Ark-Models/tree/2f3187f780108847d7327946e1906fc6b80bead3/models/1001_amiya2_sale%2316",
-                    "skel": "build_char_1001_amiya2_sale#16.skel",
-                    "files": [
-                        {
-                            "name": "build_char_1001_amiya2_sale#16.atlas",
-                            "url": "https://raw.githubusercontent.com/isHarryh/Ark-Models/2f3187f780108847d7327946e1906fc6b80bead3/models/1001_amiya2_sale%2316/build_char_1001_amiya2_sale%2316.atlas"
-                        },
-                        {
-                            "name": "build_char_1001_amiya2_sale#16.png",
-                            "url": "https://raw.githubusercontent.com/isHarryh/Ark-Models/2f3187f780108847d7327946e1906fc6b80bead3/models/1001_amiya2_sale%2316/build_char_1001_amiya2_sale%2316.png"
-                        },
-                        {
-                            "name": "build_char_1001_amiya2_sale#16.skel",
-                            "url": "https://raw.githubusercontent.com/isHarryh/Ark-Models/2f3187f780108847d7327946e1906fc6b80bead3/models/1001_amiya2_sale%2316/build_char_1001_amiya2_sale%2316.skel"
-                        }
-                    ]
-                }
-            ]
+            "catalog": []
         },
         "state": { "initial": "idle", "pollMs": 1000, "sources": [{ "type": "local-http" }] },
         "specialSegments": {
@@ -1682,8 +1656,10 @@ async fn import_catalog_model(
     source_id: String,
     model_id: String,
     activate: Option<bool>,
+    acknowledgement: bool,
 ) -> Result<ImportModelResult, String> {
     let entry = resolve_catalog_model(&data, &source_id, &model_id)?;
+    entry.model.require_acknowledgement(acknowledgement)?;
     let id = entry.model.id.clone();
     let mut value = serde_json::to_value(&entry.model).map_err(|error| error.to_string())?;
     if let Some(object) = value.as_object_mut() {
@@ -1714,9 +1690,11 @@ async fn prepare_model_preview(
     data: State<'_, AppData>,
     source_id: String,
     model_id: String,
+    acknowledgement: bool,
 ) -> Result<serde_json::Value, String> {
     require_manager_window(&window)?;
     let entry = resolve_catalog_model(&data, &source_id, &model_id)?;
+    entry.model.require_acknowledgement(acknowledgement)?;
     let id = entry.model.id.clone();
     let skel = entry.model.skel.clone();
     let preview_root = data.config_dir.join("preview-assets");
@@ -5488,7 +5466,7 @@ mod tests {
         assert!(operators["catalogUrl"]
             .as_str()
             .unwrap()
-            .contains("/v0.2.6-rc.7.1/"));
+            .contains("/v0.2.6-rc.10/"));
     }
 
     #[test]

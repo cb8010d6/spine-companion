@@ -7,6 +7,10 @@ const previewIntegrations = [
   { id: "custom", name: "Custom MCP Client", source: "ai-mcp", sourceLabel: "AI", configFormat: "templateOnly", installed: false, configFound: false, configured: false, instructionsFound: false, status: "Template only", note: "For future and unsupported MCP clients" }
 ];
 
+const previewArkRevision = "2f3187f780108847d7327946e1906fc6b80bead3";
+const previewArkRepository = `https://github.com/isHarryh/Ark-Models/tree/${previewArkRevision}`;
+const previewArkLicenseWarning = "Upstream license and redistribution rights are not verified by this catalog.";
+
 export function installManagerPreviewBridge() {
   const params = new URLSearchParams(window.location.search);
   if (!import.meta.env.DEV || !["integrations", "manager"].includes(params.get("preview"))) return false;
@@ -21,16 +25,16 @@ export function installManagerPreviewBridge() {
       { id: "ark-illustrations", label: "Dynamic illustrations / 动态立绘", catalogUrl: "https://example.invalid/illustrations.json", kind: "official", enabled: true },
       { id: "ark-enemies", label: "Enemies / 敌人", catalogUrl: "https://example.invalid/enemies.json", kind: "official", enabled: true }
     ], catalog: [
-      { id: "ark-1001-amiya2-sale-16", name: "Amiya Guard Skin #16", source: "Ark-Models", spineVersion: "Spine 3.8", licenseNote: "Third-party source; review before download.", repositoryUrl: "https://github.com/isHarryh/Ark-Models" },
+      { id: "ark-1001-amiya2-sale-16", name: "Amiya Guard Skin #16", source: "Ark-Models", author: "isHarryh/Ark-Models contributors", license: "NOASSERTION", licenseWarning: previewArkLicenseWarning, spineVersion: "Spine 3.8", licenseNote: "Third-party source; review before download.", repositoryUrl: previewArkRepository },
       { id: "sample-local-avatar", name: "Sample Local Avatar", source: "Local preview", spineVersion: "Spine 3.8" }
     ] },
     spine: {}
   };
   let previewInstalledModels = [{ id: "sample-local-avatar", name: "Sample Local Avatar", source: "Local preview", skel: "sample.skel" }];
   const previewCatalogEntries = [
-    { catalogSourceId: "ark-models", model: { id: "ark-models-002-amiya", name: "Amiya", category: "operator", compatibilityProfile: "companion", source: "Ark-Models", author: "isHarryh/Ark-Models contributors", license: "NOASSERTION", licenseNote: "Third-party source; review before download.", repositoryUrl: "https://github.com/isHarryh/Ark-Models", skel: "model.skel", files: [], spine: { min: "3.8.99", max: "3.8.99" } } },
-    { catalogSourceId: "ark-illustrations", model: { id: "ark-illustrations-amiya", name: "Amiya Dynamic Illustration", category: "illustration", compatibilityProfile: "idle-only", source: "Ark-Models", author: "isHarryh/Ark-Models contributors", license: "NOASSERTION", licenseNote: "Third-party source; review before download.", repositoryUrl: "https://github.com/isHarryh/Ark-Models", skel: "model.skel", files: [], spine: { min: "3.8.99", max: "3.8.99" } } },
-    { catalogSourceId: "ark-enemies", model: { id: "ark-enemies-gopro", name: "Gopro", category: "enemy", compatibilityProfile: "experimental", source: "Ark-Models", author: "isHarryh/Ark-Models contributors", license: "NOASSERTION", licenseNote: "Third-party source; review before download.", repositoryUrl: "https://github.com/isHarryh/Ark-Models", skel: "model.skel", files: [], spine: { min: "3.8.99", max: "3.8.99" } } }
+    { catalogSourceId: "ark-models", model: { id: "ark-models-002-amiya", name: "Amiya", category: "operator", compatibilityProfile: "companion", source: "Ark-Models", author: "isHarryh/Ark-Models contributors", license: "NOASSERTION", licenseWarning: previewArkLicenseWarning, licenseNote: "Third-party source; review before download.", repositoryUrl: previewArkRepository, skel: "model.skel", files: [], spine: { min: "3.8.99", max: "3.8.99" } } },
+    { catalogSourceId: "ark-illustrations", model: { id: "ark-illustrations-amiya", name: "Amiya Dynamic Illustration", category: "illustration", compatibilityProfile: "idle-only", source: "Ark-Models", author: "isHarryh/Ark-Models contributors", license: "NOASSERTION", licenseWarning: previewArkLicenseWarning, licenseNote: "Third-party source; review before download.", repositoryUrl: previewArkRepository, skel: "model.skel", files: [], spine: { min: "3.8.99", max: "3.8.99" } } },
+    { catalogSourceId: "ark-enemies", model: { id: "ark-enemies-gopro", name: "Gopro", category: "enemy", compatibilityProfile: "experimental", source: "Ark-Models", author: "isHarryh/Ark-Models contributors", license: "NOASSERTION", licenseWarning: previewArkLicenseWarning, licenseNote: "Third-party source; review before download.", repositoryUrl: previewArkRepository, skel: "model.skel", files: [], spine: { min: "3.8.99", max: "3.8.99" } } }
   ];
   const installPreviewModel = (entry, activated = false) => {
     const model = entry?.model || entry || {};
@@ -87,9 +91,9 @@ export function installManagerPreviewBridge() {
       return { models: matches, page: 1, pageSize: request.pageSize || 24, total: matches.length, totalPages: matches.length ? 1 : 0 };
     },
     installModel: async (input) => installPreviewModel(input, false),
-    importCatalogModel: async (sourceId, modelId, activate = true) => installPreviewModel(previewCatalogEntries.find((entry) => entry.catalogSourceId === sourceId && entry.model.id === modelId), activate),
-    installCatalogModel: async (sourceId, modelId) => installPreviewModel(previewCatalogEntries.find((entry) => entry.catalogSourceId === sourceId && entry.model.id === modelId), false),
-    prepareModelPreview: async (sourceId, modelId) => ({ id: modelId, skel: "model.skel", assetUrl: "", cached: false, sourceId }),
+    importCatalogModel: async (sourceId, modelId, activate = true, acknowledgement = false) => installPreviewModel(previewCatalogEntries.find((entry) => entry.catalogSourceId === sourceId && entry.model.id === modelId), activate, acknowledgement),
+    installCatalogModel: async (sourceId, modelId, acknowledgement = false) => installPreviewModel(previewCatalogEntries.find((entry) => entry.catalogSourceId === sourceId && entry.model.id === modelId), false, acknowledgement),
+    prepareModelPreview: async (sourceId, modelId, acknowledgement = false) => ({ id: modelId, skel: "model.skel", assetUrl: "", cached: false, sourceId, acknowledgement }),
     getCurrentModel: async () => ({ id: "sample-local-avatar", name: "Sample Local Avatar" }),
     setActiveModel: async (id) => ({ id }),
     beginModelTrial: async (id) => ({ id }),
