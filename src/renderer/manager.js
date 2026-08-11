@@ -2477,7 +2477,7 @@ async function renderView(viewName) {
     const failedSources = (result?.sources || []).filter((status) => status.state === "failed");
     const allSelectedSourcesFailed = selectedSources.length > 0
       && selectedSources.every((source) => failedSources.some((status) => status.sourceId === source.id));
-    if (allSelectedSourcesFailed && !(result?.models || []).length) {
+    if (!cachedResult.hasCachedCatalog && allSelectedSourcesFailed && !(result?.models || []).length) {
       showManagerError({
         title: t("manager.library.catalogLoadFailed"),
         error: failedSources.map((status) => status.error).filter(Boolean).join("\n") || t("manager.library.catalogLoadFailed"),

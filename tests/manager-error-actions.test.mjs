@@ -30,6 +30,7 @@ describe("Manager actionable error recovery", () => {
     expect(managerSource).toContain("manager.actions.openDiagnostics");
     expect(managerSource).toContain("retry: () => renderView(\"library\")");
     expect(managerSource).toContain("retry: () => activateModel(id, { incremental })");
+    expect(managerSource).toContain("!cachedResult.hasCachedCatalog && allSelectedSourcesFailed");
     expect(managerSource).toContain("exportDiagnosticsFromManager");
     expect(managerSource).toContain("copyDiagnosticsFromManager");
     expect(managerSource).toContain("exportLogsFromManager");
