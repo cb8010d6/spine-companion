@@ -343,6 +343,33 @@ fn diagnostics_result(probe: &BridgeProbe, source: &SourceInfo) -> Value {
     })
 }
 
+pub fn run_read_only_cli(command: &str, json_output: bool) -> Result<bool, String> {
+    let runtime = tokio::runtime::Runtime::new().map_err(|error| error.to_string())?;
+    let probe = runtime.block_on(probe_bridge());
+    let value = match command {
+        "status" => bridge_result(&probe),
+        "doctor" => diagnostics_result(&probe, &source_from_env_or_client(Some("CLI"))),
+        _ => return Err(format!("Unknown read-only command: {command}")),
+    };
+
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&value).map_err(|error| error.to_string())?
+        );
+    } else {
+        println!(
+            "Spine Companion {command}: {} ({})",
+            if probe.ok() { "ok" } else { "unavailable" },
+            probe.reason()
+        );
+        if !probe.ok() {
+            println!("Start Spine Companion, then check Manager > Diagnostics.");
+        }
+    }
+    Ok(probe.ok())
+}
+
 fn phase_to_state(phase: &str) -> &'static str {
     match phase {
         "thinking" | "editing" => "working",

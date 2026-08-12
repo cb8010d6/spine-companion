@@ -425,6 +425,17 @@ Confirm Spine Companion is running, then open **Manager > Diagnostics** and
 check the local API status. A port conflict or a security product blocking the
 application can prevent startup. Do not expose the local API beyond localhost.
 
+The installed executable also provides read-only checks that do not open a
+window or change companion state:
+
+```powershell
+& "<install-dir>/Spine Companion.exe" --status --json
+& "<install-dir>/Spine Companion.exe" --doctor --json
+```
+
+They return exit code `0` when the local bridge is healthy, `2` when the bridge
+is unavailable, and `1` for an invalid command or internal error.
+
 ### State or reminders disappeared after restart
 
 This is expected: state, reminders, and recent history are session-only. Model

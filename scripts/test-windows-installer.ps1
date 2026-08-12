@@ -141,6 +141,24 @@ try {
     throw "Installed API did not become healthy within 45 seconds. See $stderr"
   }
 
+  $statusOutput = & $exe --status --json | Out-String
+  if ($LASTEXITCODE -ne 0) {
+    throw "Installed read-only status command failed with exit code $LASTEXITCODE."
+  }
+  $status = $statusOutput | ConvertFrom-Json
+  if (-not ($status.ok -eq $true -and $status.mutated -eq $false)) {
+    throw "Installed read-only status command returned an invalid result."
+  }
+
+  $doctorOutput = & $exe --doctor --json | Out-String
+  if ($LASTEXITCODE -ne 0) {
+    throw "Installed read-only doctor command failed with exit code $LASTEXITCODE."
+  }
+  $doctor = $doctorOutput | ConvertFrom-Json
+  if (-not ($doctor.ok -eq $true -and $doctor.mcp.version -match '^0\.2\.6')) {
+    throw "Installed read-only doctor command returned an invalid health result or package version."
+  }
+
   & bun scripts/check-packaged-mcp.mjs $exe
   if ($LASTEXITCODE -ne 0) {
     throw "Packaged MCP smoke failed with exit code $LASTEXITCODE."
