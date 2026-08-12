@@ -1,9 +1,58 @@
-import policy from "./notification-policy.cjs";
+import { isAiSource, normalizeSource, sourceDisplayName } from "./source-registry.js";
 
-export const defaultMessageForState = policy.defaultMessageForState;
-export const isAiSource = policy.isAiSource;
-export const isCompletionState = policy.isCompletionState;
-export const notificationForState = policy.notificationForState;
-export const normalizeSource = policy.normalizeSource;
-export const shouldNotifyState = policy.shouldNotifyState;
-export const sourceDisplayName = policy.sourceDisplayName;
+export { isAiSource, normalizeSource, sourceDisplayName };
+
+export function isCompletionState(state) {
+  const id = typeof state === "string" ? state : state?.state;
+  return id === "success" || id === "failed";
+}
+
+export function shouldNotifyState(state = {}) {
+  if (state.state === "reminder") return true;
+  if (!isCompletionState(state)) return false;
+  return state.notify === true || isAiSource(state.source);
+}
+
+export function defaultMessageForState(id, source) {
+  if (!isAiSource(source)) return "";
+  const messages = {
+    working: "Working on it",
+    reviewing: "Reviewing changes",
+    running: "Running checks",
+    waiting: "Waiting",
+    success: "Task complete",
+    failed: "Task failed",
+    reminder: "Reminder"
+  };
+  return messages[id] || "";
+}
+
+export function notificationForState(state = {}) {
+  const id = state.state || "idle";
+  const source = sourceDisplayName(state.source);
+  if (id === "reminder") {
+    return {
+      kind: "reminder",
+      title: "Spine Companion Reminder",
+      body: String(state.message || "Reminder"),
+      state: id
+    };
+  }
+  if (id === "success") {
+    return {
+      kind: "completion",
+      title: `${source} task complete`,
+      body: String(state.message || "Finished successfully"),
+      state: id
+    };
+  }
+  if (id === "failed") {
+    return {
+      kind: "completion",
+      title: `${source} task failed`,
+      body: String(state.message || "Needs attention"),
+      state: id
+    };
+  }
+  return null;
+}

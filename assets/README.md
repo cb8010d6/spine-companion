@@ -8,7 +8,7 @@ For local testing, place a Spine 3.8 compatible model folder outside the reposit
 or under ignored `local-assets/`, then run:
 
 ```bash
-npm run setup:assets -- "C:\path\to\amiya_spine"
+bun run setup:assets -- <model-folder>
 ```
 
 The folder should contain the `.skel`, `.atlas`, and `.png` files referenced by

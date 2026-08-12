@@ -29,20 +29,11 @@ Actions 的 release matrix 会分别执行。
 ## 2. 最简单的 Release 启动
 
 1. 从 GitHub Release 下载 Windows NSIS、macOS DMG、Linux AppImage 或 DEB。
-   Windows 是主要支持平台，rc.5 的 macOS/Linux 包属于实验预览。
-2. 打开右下角托盘菜单，选择 `Open Config Folder`，在打开的目录里创建 `companion.local.json`。
-3. 写入并修改路径：
-
-```json
-{
-  "spine": {
-    "assetDir": "C:\\path\\to\\spine_model_folder",
-    "skel": "model.skel"
-  }
-}
-```
-
-4. 双击启动。如果没有显示模型，托盘菜单再次选择 `Open Config Folder` 检查配置文件位置。
+   Windows 是稳定目标；macOS 和 Linux 包是未签名预览版。
+2. 启动应用，打开 **Manager > Library**，选择角色并点击 **Download and use**。
+   如果使用有授权的本地模型，点击 **导入本地 .skel**，再到 **Library > 已安装** 管理。
+3. 打开 **Manager > Settings** 调整大小和位置。如果没有显示模型，打开
+   **Manager > Diagnostics**，确认模型目录包含兼容的 skeleton、atlas 以及引用的贴图。
 
 Release 版也会读取：
 
@@ -52,13 +43,51 @@ Release 版也会读取：
 
 安装目录同级的 `companion.local.json` 也会读取，但用户配置目录更稳定，覆盖安装不会影响。
 
-## 3. 从源码运行
+### 配置层与唯一写入位置
+
+打包后的 Tauri 运行时把用户配置目录中的文件作为唯一可写的 canonical 配置：
+
+```text
+<用户配置目录>/companion.local.json
+```
+
+仓库根目录、当前工作目录和 exe 所在目录中的 `companion.local.json` 只作为只读
+legacy 兼容层读取。它们会先于用户配置加载，因此用户配置始终拥有最高优先级。
+模型激活、显示设置以及 Manager 的其他修改只写入 canonical 文件，不会覆盖 legacy 文件。
+
+相对路径形式的 `spine.assetDir` 会按照提供该字段的配置层所在目录解析。打开
+**Manager > Diagnostics** 可以看到唯一写入路径和实际加载的配置层，便于排查覆盖来源；
+诊断还会显示正在生效的环境变量名称，但不会显示变量值、配置内容或 secrets。
+
+浏览器/源码适配器 `src/backend/config.cjs` 也保持相同优先级，方便开发调试；它只是开发适配器，
+不是另一套打包运行时。
+
+## 3. 升级、卸载与保留数据
+
+升级或卸载前先退出 Spine Companion；如果模型或配置重要，可通过 `Open Config Folder`
+备份整个目录。安装目录和用户数据目录是分开的。
+
+升级时直接安装新版本即可。用户配置、下载的模型、预览缓存、日志和 AI 集成备份保存在
+用户数据中；应用版本和 renderer 会被替换。升级后如果模型没有激活，打开
+**Manager > Library > 已安装** 再次设为 active。
+
+卸载时使用操作系统的正常卸载入口。它会移除已安装应用，但不要求删除用户数据目录。
+确认不再需要模型、设置、日志或备份后，再手动删除该目录。
+
+### 恢复 AI 配置
+
+Manager 写入 AI 工具配置前会创建备份。打开 **Manager > AI Integrations**，选择已配置的
+工具，在可恢复时点击 **Restore Previous Config**。恢复会为当前被替换的文件再创建安全副本，
+并要求重启对应 AI 工具。如果目标文件在 Manager 写入后被手动修改，恢复会停止，避免覆盖
+更新后的内容。
+
+## 4. 从源码运行
 
 ```bash
 git clone https://github.com/cb8010d6/spine-companion.git
 cd spine-companion
 bun install
-bun run setup:assets -- "C:\path\to\spine_model_folder"
+bun run setup:assets -- <model-folder>
 bun run dev
 ```
 
@@ -87,7 +116,7 @@ bun run dev:renderer
 http://127.0.0.1:17389?api=http://127.0.0.1:17388
 ```
 
-## 4. 状态 API
+## 5. 状态 API
 
 默认地址：
 
@@ -125,9 +154,11 @@ curl -X POST http://127.0.0.1:17388/reminders ^
 事件流：
 
 - SSE: `GET /events`
-- WebSocket: `ws://127.0.0.1:17388/ws`
 
-## 5. AI / MCP 集成
+打包应用的 API 契约是 HTTP 加 SSE。状态、提醒和最近历史只保存在当前应用会话内存中，
+应用退出后会重置。
+
+## 6. AI / MCP 集成
 
 安装后的 Tauri 版本优先打开 **Manager > AI Integrations**，在那里检测并配置
 已安装的 AI 工具。Manager 会写入稳定的应用可执行文件路径，并在修改配置前创建备份。
@@ -136,7 +167,7 @@ curl -X POST http://127.0.0.1:17388/reminders ^
 
 ```toml
 [mcp_servers.spine_companion]
-command = "C:/Program Files/Spine Companion/spine-companion.exe"
+command = "<install-dir>/spine-companion.exe"
 args = ["--mcp"]
 env = { COMPANION_API = "http://127.0.0.1:17388", COMPANION_SOURCE = "codex-mcp", COMPANION_SOURCE_LABEL = "Codex" }
 ```
@@ -155,7 +186,17 @@ bun run skill:install
 bun run ai:configure -- --target all
 ```
 
-## 6. Codex 插件一键安装
+MCP 工具包括：
+
+- `companion_get_state`
+- `companion_set_state`
+- `companion_reminder`
+- `companion_report_ai_phase`
+- `companion_report_codex_phase`
+- `companion_get_diagnostics`
+- `companion_test_bridge`
+
+## 7. Codex 插件一键安装
 
 仓库包含 repo-local 插件：
 
@@ -172,7 +213,7 @@ plugins/spine-companion-status
 
 插件仍然需要桌面应用或 `bun run dev:api` 正在运行，否则 MCP 工具无法连接本地 API。
 
-## 7. 构建与发布
+## 8. 构建与发布
 
 检查：
 
@@ -208,17 +249,30 @@ release/Spine Companion Portable.zip
 
 这个脚本会下载 Ark-Models 测试素材到 portable 文件夹的 `models/` 目录。它只适合本地自用或你确认授权后的分发；公开开源 release 不应内置这些素材。
 
-## 8. 排错
+## 9. 排错
 
-- 模型缺失：重新运行 `bun run setup:assets -- "C:\path\to\spine_model_folder"`。
+安装后的可执行文件提供只读检查，不会打开窗口或修改桌宠状态：
+
+```powershell
+& "<install-dir>/Spine Companion.exe" --status --json
+& "<install-dir>/Spine Companion.exe" --doctor --json
+```
+
+本地 Bridge 健康时退出码为 `0`，Bridge 不可用时为 `2`，命令无效或发生内部错误时为 `1`。
+
+- 模型缺失：重新选择 **Manager > Library > 已安装** 中的模型，或使用源码流程指定模型目录。
 - 端口冲突：设置 `COMPANION_PORT`，并同步更新 MCP 的 `COMPANION_API`。
 - Codex 看不到 MCP 工具：确认 `~/.codex/config.toml` 有 `[mcp_servers.spine_companion]`，然后重启 Codex。
+- AI 集成失败：在 **Manager > AI Integrations** 使用 **Restore Previous Config**，确认目标文件
+  没有被其他程序更新，再重新配置。
+- 状态或提醒在重启后消失：这是预期行为；它们和最近历史只属于当前应用会话。模型、设置和
+  AI 配置备份才是会保留的用户数据。
 - macOS arm64 无法打开：GitHub Actions 生成的未签名 macOS 包可能被 Gatekeeper 拦截，Apple Silicon 上更常见。只对你信任来源下载的包使用下面方法：
-  - 方法 1：把 `Spine Companion.app` 拖到 `/Applications`，右键点 App，选择“打开”，弹窗里再次点“打开”。
+  - 方法 1：把 `Spine Companion.app` 拖到系统 Applications 文件夹，右键点 App，选择“打开”，弹窗里再次点“打开”。
   - 方法 2：打开 Terminal 执行：
     ```bash
-    xattr -dr com.apple.quarantine "/Applications/Spine Companion.app"
-    open "/Applications/Spine Companion.app"
+    xattr -dr com.apple.quarantine "<path-to-Spine Companion.app>"
+    open "<path-to-Spine Companion.app>"
     ```
   - 正式签名和公证暂时不做。后续公开发布时，再在 GitHub secrets 配置 `MACOS_CERTIFICATE`、`MACOS_CERTIFICATE_PASSWORD`、`APPLE_API_KEY`、`APPLE_API_KEY_ID`、`APPLE_API_ISSUER`、`APPLE_TEAM_ID`。
 - 动画大小不一致：调整 `companion.config.json` 中的 `spine.scale`、`spine.framePadding`、`spine.stageBottomInset`、`spine.fitStates`、`spine.mixDurationMs`。

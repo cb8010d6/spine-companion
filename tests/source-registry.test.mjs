@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
 const {
@@ -34,5 +35,13 @@ describe("source registry", () => {
 
   it("keeps ESM wrapper aligned", () => {
     expect(esmRegistry.sourceDisplayName("mimocode-mcp")).toBe(sourceDisplayName("mimocode-mcp"));
+  });
+
+  it("keeps browser ESM entry points free of CommonJS imports", async () => {
+    const files = await Promise.all([
+      readFile(new URL("../src/shared/source-registry.js", import.meta.url), "utf8"),
+      readFile(new URL("../src/shared/notification-policy.js", import.meta.url), "utf8")
+    ]);
+    expect(files.every((source) => !source.includes(".cjs"))).toBe(true);
   });
 });

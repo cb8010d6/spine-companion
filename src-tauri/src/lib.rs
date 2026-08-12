@@ -1,11 +1,19 @@
 mod ai_integrations;
 mod avatar;
 mod catalog;
+mod config;
 mod mcp;
 mod server;
 mod source_registry;
 mod state;
 
+use config::{
+    fallback_config, first_recoverable_model, load_runtime_config, merge_json,
+    normalize_bubble_background, normalize_drag_mode, normalize_frame_rate_mode,
+    normalize_gpu_mode, normalize_update_channel, read_json_if_exists, resolved_update_channel,
+    string_at, ui_settings_from_config, user_config_dir, validate_spine_asset_dir,
+    verify_local_model_config, write_local_model_config, UiSettings,
+};
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
 use state::{
@@ -149,26 +157,6 @@ impl Default for RendererHealth {
             status_changed_at: now_ms(),
         }
     }
-}
-
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct UiSettings {
-    hud_visible: bool,
-    bubble_visible: bool,
-    bubble_shadow: bool,
-    bubble_background: String,
-    bubble_hold_ms: u64,
-    drag_mode: String,
-    frame_rate_mode: String,
-    auto_reveal_on_mcp: bool,
-    system_notifications: bool,
-    update_auto_check: bool,
-    update_channel: String,
-    max_device_pixel_ratio: f64,
-    hitbox_padding: f64,
-    gpu_mode: String,
-    debug_hitbox: bool,
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -462,316 +450,6 @@ struct ModelPresentationInput {
     fit_mode: String,
 }
 
-fn fallback_config() -> serde_json::Value {
-    serde_json::json!({
-        "window": { "width": 360, "height": 460, "alwaysOnTop": true, "transparent": true },
-        "server": { "host": "127.0.0.1", "port": 17388 },
-        "spine": {
-            "assetDir": "",
-            "skel": "amiya.skel",
-            "scale": 0.86,
-            "offsetX": 0,
-            "offsetY": -18,
-            "fitMode": "legacy",
-            "mixDurationMs": 520,
-            "boundsSamples": 10,
-            "framePadding": 1.08,
-            "maxViewportFill": 0.72,
-            "stageBottomInset": 154,
-            "fitStates": ["idle", "working", "running", "waiting", "reviewing", "success", "reminder"]
-        },
-        "ui": {
-            "theme": "system",
-            "hudVisible": false,
-            "bubbleVisible": true,
-            "bubbleShadow": true,
-            "bubbleBackground": "solid",
-            "bubbleHoldMs": 8000,
-            "dragMode": "smooth",
-            "frameRateMode": "display",
-            "autoRevealOnMcp": true,
-            "systemNotifications": true,
-            "updateAutoCheck": true,
-            "updateChannel": "auto",
-            "maxDevicePixelRatio": 2,
-            "hitboxPadding": 8,
-            "gpuMode": "hardware",
-            "debugHitbox": false
-        },
-        "models": {
-            "presentations": {},
-            "sources": [
-                {
-                    "id": "ark-models",
-                    "label": "Operators",
-                    "catalogUrl": "https://raw.githubusercontent.com/cb8010d6/spine-companion/v0.2.6-rc.7.1/catalog/catalog.json",
-                    "kind": "official",
-                    "enabled": true
-                },
-                {
-                    "id": "ark-illustrations",
-                    "label": "Dynamic illustrations",
-                    "catalogUrl": "https://raw.githubusercontent.com/cb8010d6/spine-companion/v0.2.6-rc.7.1/catalog/illustrations.json",
-                    "kind": "official",
-                    "enabled": true
-                },
-                {
-                    "id": "ark-enemies",
-                    "label": "Enemies",
-                    "catalogUrl": "https://raw.githubusercontent.com/cb8010d6/spine-companion/v0.2.6-rc.7.1/catalog/enemies.json",
-                    "kind": "official",
-                    "enabled": true
-                }
-            ],
-            "catalog": [
-                {
-                    "id": "ark-1001-amiya2-sale-16",
-                    "name": "Amiya Guard Skin #16",
-                    "source": "Ark-Models",
-                    "sourceId": "ark-models",
-                    "catalogSourceId": "ark-models",
-                    "catalogVisible": false,
-                    "licenseNote": "Downloaded from isHarryh/Ark-Models for local use only. Do not commit or redistribute the asset files in this repository.",
-                    "repositoryUrl": "https://github.com/isHarryh/Ark-Models/tree/2f3187f780108847d7327946e1906fc6b80bead3/models/1001_amiya2_sale%2316",
-                    "skel": "build_char_1001_amiya2_sale#16.skel",
-                    "files": [
-                        {
-                            "name": "build_char_1001_amiya2_sale#16.atlas",
-                            "url": "https://raw.githubusercontent.com/isHarryh/Ark-Models/2f3187f780108847d7327946e1906fc6b80bead3/models/1001_amiya2_sale%2316/build_char_1001_amiya2_sale%2316.atlas"
-                        },
-                        {
-                            "name": "build_char_1001_amiya2_sale#16.png",
-                            "url": "https://raw.githubusercontent.com/isHarryh/Ark-Models/2f3187f780108847d7327946e1906fc6b80bead3/models/1001_amiya2_sale%2316/build_char_1001_amiya2_sale%2316.png"
-                        },
-                        {
-                            "name": "build_char_1001_amiya2_sale#16.skel",
-                            "url": "https://raw.githubusercontent.com/isHarryh/Ark-Models/2f3187f780108847d7327946e1906fc6b80bead3/models/1001_amiya2_sale%2316/build_char_1001_amiya2_sale%2316.skel"
-                        }
-                    ]
-                }
-            ]
-        },
-        "state": { "initial": "idle", "pollMs": 1000, "sources": [{ "type": "local-http" }] },
-        "specialSegments": {
-            "review": { "from": 2.6, "to": 4.35, "loop": true },
-            "success": { "from": 4.4, "to": 14.433, "loop": false },
-            "successLoop": { "from": 9.2, "to": 14.433, "loop": true, "mixDurationMs": 420 },
-            "special": { "from": 0, "to": 14.433, "loop": true }
-        }
-    })
-}
-
-fn merge_json(base: &mut serde_json::Value, patch: serde_json::Value) {
-    match (base, patch) {
-        (serde_json::Value::Object(base), serde_json::Value::Object(patch)) => {
-            for (key, value) in patch {
-                merge_json(base.entry(key).or_insert(serde_json::Value::Null), value);
-            }
-        }
-        (base, patch) => *base = patch,
-    }
-}
-
-fn read_json_if_exists(path: &Path) -> Option<serde_json::Value> {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|text| serde_json::from_str(&text).ok())
-}
-
-pub(crate) fn user_config_dir() -> Option<PathBuf> {
-    if let Ok(value) = std::env::var("SPINE_COMPANION_CONFIG_DIR") {
-        return Some(PathBuf::from(value));
-    }
-    #[cfg(target_os = "windows")]
-    if let Ok(value) = std::env::var("APPDATA") {
-        return Some(PathBuf::from(value).join("spine-companion"));
-    }
-    #[cfg(target_os = "macos")]
-    if let Ok(value) = std::env::var("HOME") {
-        return Some(PathBuf::from(value).join("Library/Application Support/spine-companion"));
-    }
-    if let Ok(value) = std::env::var("XDG_CONFIG_HOME") {
-        return Some(PathBuf::from(value).join("spine-companion"));
-    }
-    std::env::var("HOME")
-        .ok()
-        .map(|home| PathBuf::from(home).join(".config/spine-companion"))
-}
-
-fn local_config_candidates(root: &Path) -> Vec<PathBuf> {
-    let mut candidates = vec![root.join("companion.local.json")];
-    if let Ok(cwd) = std::env::current_dir() {
-        candidates.push(cwd.join("companion.local.json"));
-    }
-    if let Some(dir) = user_config_dir() {
-        candidates.push(dir.join("companion.local.json"));
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            candidates.push(dir.join("companion.local.json"));
-        }
-    }
-    candidates
-}
-
-fn default_local_config_path(root: &Path) -> PathBuf {
-    user_config_dir()
-        .unwrap_or_else(|| root.to_path_buf())
-        .join("companion.local.json")
-}
-
-fn string_at<'a>(value: &'a serde_json::Value, path: &[&str]) -> Option<&'a str> {
-    let mut current = value;
-    for key in path {
-        current = current.get(*key)?;
-    }
-    current.as_str()
-}
-
-fn number_at(value: &serde_json::Value, path: &[&str], fallback: u16) -> u16 {
-    let mut current = value;
-    for key in path {
-        if let Some(next) = current.get(*key) {
-            current = next;
-        } else {
-            return fallback;
-        }
-    }
-    current.as_u64().map(|n| n as u16).unwrap_or(fallback)
-}
-
-fn bool_at(value: &serde_json::Value, path: &[&str], fallback: bool) -> bool {
-    let mut current = value;
-    for key in path {
-        if let Some(next) = current.get(*key) {
-            current = next;
-        } else {
-            return fallback;
-        }
-    }
-    current.as_bool().unwrap_or(fallback)
-}
-
-fn u64_at(value: &serde_json::Value, path: &[&str], fallback: u64) -> u64 {
-    let mut current = value;
-    for key in path {
-        if let Some(next) = current.get(*key) {
-            current = next;
-        } else {
-            return fallback;
-        }
-    }
-    current.as_u64().unwrap_or(fallback)
-}
-
-fn f64_at(value: &serde_json::Value, path: &[&str], fallback: f64) -> f64 {
-    let mut current = value;
-    for key in path {
-        if let Some(next) = current.get(*key) {
-            current = next;
-        } else {
-            return fallback;
-        }
-    }
-    current.as_f64().unwrap_or(fallback)
-}
-
-fn resolve_asset_dir(root: &Path, value: &str) -> String {
-    if value.is_empty() {
-        return String::new();
-    }
-    let path = PathBuf::from(value);
-    if path.is_absolute() {
-        path.to_string_lossy().to_string()
-    } else {
-        root.join(path).to_string_lossy().to_string()
-    }
-}
-
-fn validate_spine_asset_dir(asset_dir: &Path, skel: &str) -> Result<(), String> {
-    avatar::spine_assets::validate_spine_asset_dir(asset_dir, skel).map(|_| ())
-}
-
-fn ui_settings_from_config(config: &serde_json::Value) -> UiSettings {
-    let background = string_at(config, &["ui", "bubbleBackground"])
-        .unwrap_or("solid")
-        .to_string();
-    let drag_mode = string_at(config, &["ui", "dragMode"])
-        .unwrap_or("smooth")
-        .to_string();
-    let frame_rate_mode = string_at(config, &["ui", "frameRateMode"])
-        .unwrap_or("display")
-        .to_string();
-    let gpu_mode = string_at(config, &["ui", "gpuMode"])
-        .unwrap_or("hardware")
-        .to_string();
-    UiSettings {
-        hud_visible: bool_at(config, &["ui", "hudVisible"], false),
-        bubble_visible: bool_at(config, &["ui", "bubbleVisible"], true),
-        bubble_shadow: bool_at(config, &["ui", "bubbleShadow"], true),
-        bubble_background: normalize_bubble_background(&background),
-        bubble_hold_ms: u64_at(config, &["ui", "bubbleHoldMs"], 8000),
-        drag_mode: normalize_drag_mode(&drag_mode),
-        frame_rate_mode: normalize_frame_rate_mode(&frame_rate_mode),
-        auto_reveal_on_mcp: bool_at(config, &["ui", "autoRevealOnMcp"], true),
-        system_notifications: bool_at(config, &["ui", "systemNotifications"], true),
-        update_auto_check: bool_at(config, &["ui", "updateAutoCheck"], true),
-        update_channel: normalize_update_channel(
-            string_at(config, &["ui", "updateChannel"]).unwrap_or("auto"),
-        ),
-        max_device_pixel_ratio: f64_at(config, &["ui", "maxDevicePixelRatio"], 2.0).clamp(1.0, 3.0),
-        hitbox_padding: f64_at(config, &["ui", "hitboxPadding"], 8.0).clamp(0.0, 48.0),
-        gpu_mode: normalize_gpu_mode(&gpu_mode),
-        debug_hitbox: bool_at(config, &["ui", "debugHitbox"], false),
-    }
-}
-
-fn normalize_bubble_background(value: &str) -> String {
-    match value {
-        "soft" | "clear" | "light" => value.to_string(),
-        _ => "solid".to_string(),
-    }
-}
-
-fn normalize_drag_mode(value: &str) -> String {
-    if value == "smooth" {
-        "smooth".to_string()
-    } else {
-        "compatible".to_string()
-    }
-}
-
-fn normalize_frame_rate_mode(value: &str) -> String {
-    match value {
-        "60" | "30" => value.to_string(),
-        _ => "display".to_string(),
-    }
-}
-
-fn normalize_gpu_mode(value: &str) -> String {
-    if value == "software" {
-        "software".to_string()
-    } else {
-        "hardware".to_string()
-    }
-}
-
-fn normalize_update_channel(value: &str) -> String {
-    match value {
-        "stable" | "prerelease" => value.to_string(),
-        _ => "auto".to_string(),
-    }
-}
-
-fn resolved_update_channel(configured: &str, current_version: &str) -> &'static str {
-    match configured {
-        "stable" => "stable",
-        "prerelease" => "prerelease",
-        _ if is_prerelease_version(current_version) => "prerelease",
-        _ => "stable",
-    }
-}
-
 #[cfg(target_os = "windows")]
 fn configure_webview_gpu_mode(settings: &UiSettings) {
     if settings.gpu_mode != "software" {
@@ -977,202 +655,13 @@ fn open_external(target: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-#[derive(Clone)]
-struct RuntimeConfig {
-    public: serde_json::Value,
-    host: String,
-    port: u16,
-    initial_state: String,
-    asset_root: Option<PathBuf>,
-    ui_settings: UiSettings,
-    config_dir: PathBuf,
-    local_config_path: PathBuf,
-}
-
-#[derive(Clone, Debug)]
-struct RecoveredModel {
-    asset_dir: PathBuf,
-    skel: String,
-}
-
-fn first_recoverable_model(
-    config_dir: &Path,
-    config: &serde_json::Value,
-) -> Option<RecoveredModel> {
-    let catalog = config
-        .get("models")
-        .and_then(|models| models.get("catalog"))
-        .and_then(|catalog| catalog.as_array())?;
-    for model in catalog {
-        let Some(id) = model.get("id").and_then(|value| value.as_str()) else {
-            continue;
-        };
-        let Some(skel) = model.get("skel").and_then(|value| value.as_str()) else {
-            continue;
-        };
-        let asset_dir = config_dir.join("models").join(id);
-        if validate_spine_asset_dir(&asset_dir, skel).is_ok() {
-            let canonical = asset_dir.canonicalize().unwrap_or(asset_dir);
-            return Some(RecoveredModel {
-                asset_dir: canonical,
-                skel: skel.to_string(),
-            });
-        }
-    }
-    None
-}
-
-fn load_runtime_config() -> RuntimeConfig {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-    let mut config = fallback_config();
-    if let Some(committed) = read_json_if_exists(&root.join("companion.config.json")) {
-        merge_json(&mut config, committed);
-    }
-    let mut resolved_local_config_path = String::new();
-    let mut asset_base_dir = root.clone();
-    for candidate in local_config_candidates(&root) {
-        if let Some(local) = read_json_if_exists(&candidate) {
-            merge_json(&mut config, local);
-            resolved_local_config_path = candidate.to_string_lossy().to_string();
-            if let Some(parent) = candidate.parent() {
-                asset_base_dir = parent.to_path_buf();
-            }
-        }
-    }
-    ensure_official_model_sources(&mut config);
-    let config_dir_path = user_config_dir().unwrap_or_else(|| root.clone());
-    let local_config_path = if resolved_local_config_path.is_empty() {
-        default_local_config_path(&root)
-    } else {
-        PathBuf::from(&resolved_local_config_path)
-    };
-    if let Ok(asset_dir) = std::env::var("SPINE_ASSET_DIR") {
-        config["spine"]["assetDir"] = serde_json::Value::String(asset_dir);
-    }
-    if let Ok(skel) = std::env::var("SPINE_SKEL") {
-        config["spine"]["skel"] = serde_json::Value::String(skel);
-    }
-    if let Ok(port) = std::env::var("COMPANION_PORT") {
-        if let Ok(port) = port.parse::<u16>() {
-            config["server"]["port"] = serde_json::Value::Number(port.into());
-        }
-    }
-
-    let host = string_at(&config, &["server", "host"])
-        .unwrap_or("127.0.0.1")
-        .to_string();
-    let port = number_at(&config, &["server", "port"], 17388);
-    let origin = format!("http://{}:{}", host, port);
-    let raw_asset_dir = string_at(&config, &["spine", "assetDir"]).unwrap_or("");
-    let mut asset_dir = resolve_asset_dir(&asset_base_dir, raw_asset_dir);
-    config["spine"]["assetDir"] = serde_json::Value::String(asset_dir.clone());
-    let mut skel = string_at(&config, &["spine", "skel"])
-        .unwrap_or("amiya.skel")
-        .to_string();
-    if asset_dir.is_empty() {
-        if let Some(recovered) = first_recoverable_model(&config_dir_path, &config) {
-            if write_local_model_config(&local_config_path, &recovered.asset_dir, &recovered.skel)
-                .and_then(|_| {
-                    verify_local_model_config(
-                        &local_config_path,
-                        &recovered.asset_dir,
-                        &recovered.skel,
-                    )
-                })
-                .is_ok()
-            {
-                asset_dir = recovered.asset_dir.to_string_lossy().to_string();
-                skel = recovered.skel;
-                config["spine"]["assetDir"] = serde_json::Value::String(asset_dir.clone());
-                config["spine"]["skel"] = serde_json::Value::String(skel.clone());
-                resolved_local_config_path = local_config_path.to_string_lossy().to_string();
-            }
-        }
-    }
-    let active_model_metadata = model_by_skel(&config, &skel).or_else(|| {
-        if asset_dir.is_empty() {
-            None
-        } else {
-            std::fs::read_to_string(PathBuf::from(&asset_dir).join(".companion-model.json"))
-                .ok()
-                .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-        }
-    });
-    let model_category = active_model_metadata
-        .as_ref()
-        .and_then(|model| model.get("category"))
-        .and_then(|value| value.as_str())
-        .unwrap_or("operator");
-    let compatibility_profile = active_model_metadata
-        .as_ref()
-        .and_then(|model| model.get("compatibilityProfile"))
-        .and_then(|value| value.as_str())
-        .unwrap_or("companion");
-    let config_dir = config_dir_path.to_string_lossy().to_string();
-    let ui_settings = ui_settings_from_config(&config);
-
-    let public = serde_json::json!({
-        "window": config["window"].clone(),
-        "server": {
-            "origin": origin,
-            "stateUrl": format!("{}/state", origin),
-            "eventsUrl": format!("{}/events", origin),
-            "websocketUrl": format!("ws://{}:{}/ws", host, port)
-        },
-        "spine": {
-            "assetDir": asset_dir.clone(),
-            "skel": skel.clone(),
-            "assetUrl": format!("{}/assets/spine/{}", origin, url_encode_path_segment(&skel)),
-            "assetDirConfigured": !asset_dir.is_empty(),
-            "scale": config["spine"]["scale"].clone(),
-            "offsetX": config["spine"]["offsetX"].clone(),
-            "offsetY": config["spine"]["offsetY"].clone(),
-            "fitMode": config["spine"]["fitMode"].clone(),
-            "presentationDefaults": {
-                "scale": config["spine"]["scale"].clone(),
-                "offsetX": config["spine"]["offsetX"].clone(),
-                "offsetY": config["spine"]["offsetY"].clone(),
-                "fitMode": config["spine"]["fitMode"].clone()
-            },
-            "mixDurationMs": config["spine"]["mixDurationMs"].clone(),
-            "boundsSamples": config["spine"]["boundsSamples"].clone(),
-            "framePadding": config["spine"]["framePadding"].clone(),
-            "maxViewportFill": config["spine"]["maxViewportFill"].clone(),
-            "stageBottomInset": config["spine"]["stageBottomInset"].clone(),
-            "fitStates": config["spine"]["fitStates"].clone(),
-            "modelCategory": model_category,
-            "compatibilityProfile": compatibility_profile
-        },
-        "ui": config["ui"].clone(),
-        "models": config["models"].clone(),
-        "paths": {
-            "configDir": config_dir,
-            "localConfigPath": local_config_path.to_string_lossy().to_string(),
-            "hasLocalConfig": !resolved_local_config_path.is_empty()
-        },
-        "state": config["state"].clone(),
-        "specialSegments": config["specialSegments"].clone()
-    });
-
-    RuntimeConfig {
-        public,
-        host,
-        port,
-        initial_state: string_at(&config, &["state", "initial"])
-            .unwrap_or("idle")
-            .to_string(),
-        asset_root: if asset_dir.is_empty() {
-            None
-        } else {
-            Some(PathBuf::from(asset_dir))
-        },
-        ui_settings,
-        config_dir: config_dir_path,
-        local_config_path,
-    }
+fn public_server_config(origin: &str) -> serde_json::Value {
+    let origin = origin.trim_end_matches('/');
+    serde_json::json!({
+        "origin": origin,
+        "stateUrl": format!("{origin}/state"),
+        "eventsUrl": format!("{origin}/events")
+    })
 }
 
 #[tauri::command]
@@ -1678,8 +1167,10 @@ async fn import_catalog_model(
     source_id: String,
     model_id: String,
     activate: Option<bool>,
+    acknowledgement: bool,
 ) -> Result<ImportModelResult, String> {
     let entry = resolve_catalog_model(&data, &source_id, &model_id)?;
+    entry.model.require_acknowledgement(acknowledgement)?;
     let id = entry.model.id.clone();
     let mut value = serde_json::to_value(&entry.model).map_err(|error| error.to_string())?;
     if let Some(object) = value.as_object_mut() {
@@ -1710,9 +1201,11 @@ async fn prepare_model_preview(
     data: State<'_, AppData>,
     source_id: String,
     model_id: String,
+    acknowledgement: bool,
 ) -> Result<serde_json::Value, String> {
     require_manager_window(&window)?;
     let entry = resolve_catalog_model(&data, &source_id, &model_id)?;
+    entry.model.require_acknowledgement(acknowledgement)?;
     let id = entry.model.id.clone();
     let skel = entry.model.skel.clone();
     let preview_root = data.config_dir.join("preview-assets");
@@ -2151,39 +1644,6 @@ fn verify_git_blob_sha(bytes: &[u8], expected: &str) -> Result<(), String> {
     }
 }
 
-fn ensure_official_model_sources(config: &mut serde_json::Value) {
-    let defaults = fallback_config();
-    let Some(default_sources) = defaults
-        .get("models")
-        .and_then(|models| models.get("sources"))
-        .and_then(|sources| sources.as_array())
-    else {
-        return;
-    };
-    let Some(sources) = config
-        .get_mut("models")
-        .and_then(|models| models.get_mut("sources"))
-        .and_then(|sources| sources.as_array_mut())
-    else {
-        return;
-    };
-    for source in default_sources {
-        let id = source.get("id").and_then(|value| value.as_str());
-        if let Some(current) = sources
-            .iter_mut()
-            .find(|current| current.get("id").and_then(|value| value.as_str()) == id)
-        {
-            let enabled = current.get("enabled").cloned();
-            *current = source.clone();
-            if let Some(enabled) = enabled {
-                current["enabled"] = enabled;
-            }
-        } else {
-            sources.push(source.clone());
-        }
-    }
-}
-
 async fn remove_dir_if_exists(path: &Path) -> Result<(), String> {
     match tokio::fs::remove_dir_all(path).await {
         Ok(_) => Ok(()),
@@ -2280,41 +1740,6 @@ async fn replace_model_dir(temp_dir: &Path, final_dir: &Path) -> Result<(), Stri
         ));
     }
     remove_dir_if_exists(&backup_dir).await?;
-    Ok(())
-}
-
-fn verify_local_model_config(
-    path: &Path,
-    expected_asset_dir: &Path,
-    expected_skel: &str,
-) -> Result<(), String> {
-    let config = read_json_if_exists(path)
-        .ok_or_else(|| format!("{} was not written", path.to_string_lossy()))?;
-    let spine = config
-        .get("spine")
-        .ok_or_else(|| "spine config section is missing".to_string())?;
-    let asset_dir = spine
-        .get("assetDir")
-        .and_then(|value| value.as_str())
-        .ok_or_else(|| "spine.assetDir is missing".to_string())?;
-    let skel = spine
-        .get("skel")
-        .and_then(|value| value.as_str())
-        .ok_or_else(|| "spine.skel is missing".to_string())?;
-    if skel != expected_skel {
-        return Err(format!(
-            "spine.skel is {}, expected {}",
-            skel, expected_skel
-        ));
-    }
-    let written = PathBuf::from(asset_dir);
-    if written != expected_asset_dir {
-        return Err(format!(
-            "spine.assetDir is {}, expected {}",
-            asset_dir,
-            expected_asset_dir.to_string_lossy()
-        ));
-    }
     Ok(())
 }
 
@@ -2551,10 +1976,17 @@ async fn get_diagnostics(data: State<'_, AppData>) -> Result<serde_json::Value, 
                 .join("EBWebView")
         })
         .unwrap_or_else(|| data.config_dir.join("EBWebView"));
+    let config_paths = public
+        .get("paths")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
 
     Ok(serde_json::json!({
         "apiOk": state_ok,
         "localConfigExists": local_config_exists,
+        "localConfigPath": config_paths.get("localConfigPath").cloned().unwrap_or_default(),
+        "canonicalConfigPath": config_paths.get("canonicalConfigPath").cloned().unwrap_or_default(),
+        "configPaths": config_paths,
         "assetDirExists": asset_dir_exists,
         "hasSkel": has_skel,
         "hasAtlas": has_atlas,
@@ -3603,6 +3035,15 @@ async fn test_ai_integration(
     tool_id: String,
 ) -> Result<serde_json::Value, String> {
     require_manager_window(&window)?;
+    let integration = ai_integrations::list_ai_integrations_with_state(&data.config_dir)?
+        .into_iter()
+        .find(|integration| integration.id == tool_id)
+        .ok_or_else(|| format!("Unknown AI integration: {tool_id}"))?;
+    validate_ai_integration_self_test(
+        &integration.name,
+        integration.configured,
+        integration.needs_restart,
+    )?;
     let revision = {
         let _guard = data
             .ai_integration_lock
@@ -3626,10 +3067,30 @@ async fn test_ai_integration(
     match (result, persisted) {
         (Ok(value), Ok(_)) => Ok(value),
         (Ok(_), Err(error)) => Err(format!(
-            "Connection test passed, but its result could not be saved: {error}"
+            "MCP self-test passed, but its result could not be saved: {error}"
         )),
         (Err(error), _) => Err(error),
     }
+}
+
+fn validate_ai_integration_self_test(
+    name: &str,
+    configured: bool,
+    needs_restart: bool,
+) -> Result<(), String> {
+    if !configured {
+        return Err(format!(
+            "Configure {} before running the Spine Companion MCP self-test.",
+            name
+        ));
+    }
+    if needs_restart {
+        return Err(format!(
+            "Confirm that {} was restarted before running the Spine Companion MCP self-test.",
+            name
+        ));
+    }
+    Ok(())
 }
 
 async fn test_ai_integration_inner(
@@ -3700,7 +3161,7 @@ async fn test_ai_integration_inner(
             "name": "companion_report_ai_phase",
             "arguments": {
                 "phase": "thinking",
-                "message": format!("Connection test from {source_label}"),
+                "message": format!("[Spine Companion self-test] {source_label}"),
                 "autoReturnMs": 2200
             }
         }
@@ -4986,44 +4447,6 @@ fn select_release_asset(assets: &[serde_json::Value]) -> Option<serde_json::Valu
         .map(|(_, asset)| asset.clone())
 }
 
-fn write_local_model_config(path: &Path, asset_dir: &Path, skel: &str) -> Result<(), String> {
-    let mut config = read_json_if_exists(path).unwrap_or_else(|| serde_json::json!({}));
-    merge_json(
-        &mut config,
-        serde_json::json!({
-            "spine": {
-                "assetDir": asset_dir.to_string_lossy().to_string(),
-                "skel": skel
-            }
-        }),
-    );
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-    let text = serde_json::to_string_pretty(&config).map_err(|error| error.to_string())?;
-    let suffix = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-    let temporary = path.with_extension(format!("tmp-{}-{suffix}", std::process::id()));
-    let backup = path.with_extension(format!("previous-{}-{suffix}", std::process::id()));
-    std::fs::write(&temporary, format!("{}\n", text)).map_err(|error| error.to_string())?;
-    let had_previous = path.exists();
-    if had_previous {
-        let _ = std::fs::remove_file(&backup);
-        std::fs::rename(path, &backup).map_err(|error| error.to_string())?;
-    }
-    if let Err(error) = std::fs::rename(&temporary, path) {
-        if had_previous {
-            let _ = std::fs::rename(&backup, path);
-        }
-        let _ = std::fs::remove_file(&temporary);
-        return Err(error.to_string());
-    }
-    let _ = std::fs::remove_file(&backup);
-    Ok(())
-}
-
 fn current_mcp_exe_path() -> Result<PathBuf, String> {
     std::env::current_exe().map_err(|error| error.to_string())
 }
@@ -5060,10 +4483,22 @@ fn now_ms() -> u64 {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    if std::env::args().any(|arg| arg == "--mcp") {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|arg| arg == "--mcp") {
         if let Err(error) = mcp::run_stdio() {
             eprintln!("Spine Companion MCP server failed: {}", error);
             std::process::exit(1);
+        }
+        return;
+    }
+    if let Some(command) = read_only_cli_command(&args) {
+        match mcp::run_read_only_cli(command, args.iter().any(|arg| arg == "--json")) {
+            Ok(true) => {}
+            Ok(false) => std::process::exit(2),
+            Err(error) => {
+                eprintln!("Spine Companion {command} failed: {error}");
+                std::process::exit(1);
+            }
         }
         return;
     }
@@ -5154,6 +4589,9 @@ pub fn run() {
                     });
                 });
             }
+            // Subscribe before binding so a state posted as soon as the API is
+            // reachable cannot be lost during renderer setup.
+            let mut rx = tx.subscribe();
             // Bind the local API server before the hidden window is revealed.
             // The renderer loads Spine assets from this server on startup, so
             // racing the first PIXI load against server startup can leave the
@@ -5171,13 +4609,25 @@ pub fn run() {
                 port_for_server,
             )) {
                 eprintln!("Failed to start API server: {}", e);
+                return Err(e);
             }
 
             let app_handle = app.handle().clone();
-            let mut rx = tx.subscribe();
             tauri::async_runtime::spawn(async move {
-                while let Ok(state) = rx.recv().await {
+                loop {
+                    let state = match rx.recv().await {
+                        Ok(state) => state,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    };
                     let data = app_handle.state::<AppData>();
+                    if let Ok(_guard) = data.ai_integration_lock.lock() {
+                        let _ = ai_integrations::record_source_report(
+                            &data.config_dir,
+                            &state.source,
+                            &state.message,
+                        );
+                    }
                     if let Ok(mut history) = data.history.lock() {
                         history.push(state.clone());
                         while history.len() > 50 {
@@ -5197,7 +4647,12 @@ pub fn run() {
             let app_handle = app.handle().clone();
             let mut reminder_rx = reminder_tx.subscribe();
             tauri::async_runtime::spawn(async move {
-                while let Ok(reminders) = reminder_rx.recv().await {
+                loop {
+                    let reminders = match reminder_rx.recv().await {
+                        Ok(reminders) => reminders,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    };
                     let _ = app_handle.emit("companion:reminders", reminders);
                 }
             });
@@ -5408,9 +4863,26 @@ pub fn run() {
         .expect("error while running tauri application");
 }
 
+fn read_only_cli_command(args: &[String]) -> Option<&'static str> {
+    if args.iter().any(|arg| arg == "--doctor") {
+        Some("doctor")
+    } else if args.iter().any(|arg| arg == "--status") {
+        Some("status")
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn packaged_server_config_advertises_sse_without_websocket() {
+        let server = public_server_config("http://127.0.0.1:17388");
+        assert_eq!(server["eventsUrl"], "http://127.0.0.1:17388/events");
+        assert!(server.get("websocketUrl").is_none());
+    }
 
     #[test]
     fn model_import_activation_is_explicitly_overridable() {
@@ -5433,50 +4905,6 @@ mod tests {
         assert!(
             verify_git_blob_sha(b"changed", "ce013625030ba8dba906f756967f9e9ca394464a").is_err()
         );
-    }
-
-    #[test]
-    fn adds_new_official_catalogs_without_removing_user_sources() {
-        let mut config = serde_json::json!({
-            "models": { "sources": [
-                {
-                    "id": "custom",
-                    "label": "Custom",
-                    "catalogUrl": "https://example.com/catalog.json",
-                    "kind": "customCdn",
-                    "enabled": true
-                },
-                {
-                    "id": "ark-models",
-                    "label": "Old operators label",
-                    "catalogUrl": "https://raw.githubusercontent.com/cb8010d6/spine-companion/main/catalog/catalog.json",
-                    "kind": "official",
-                    "enabled": false
-                }
-            ] }
-        });
-        ensure_official_model_sources(&mut config);
-        let ids = config["models"]["sources"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|source| source["id"].as_str())
-            .collect::<Vec<_>>();
-        assert!(ids.contains(&"custom"));
-        assert!(ids.contains(&"ark-models"));
-        assert!(ids.contains(&"ark-illustrations"));
-        assert!(ids.contains(&"ark-enemies"));
-        let operators = config["models"]["sources"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|source| source["id"] == "ark-models")
-            .unwrap();
-        assert_eq!(operators["enabled"], false);
-        assert!(operators["catalogUrl"]
-            .as_str()
-            .unwrap()
-            .contains("/v0.2.6-rc.7.1/"));
     }
 
     #[test]
@@ -5588,15 +5016,6 @@ mod tests {
         assert_eq!(physical_drag_delta(-40.0, 2.0), -80);
         assert_eq!(physical_drag_delta(f64::NAN, 1.5), 0);
         assert_eq!(physical_drag_delta(80.0, f64::NAN), 80);
-    }
-
-    #[test]
-    fn frame_rate_modes_are_explicit_and_default_to_display() {
-        assert_eq!(normalize_frame_rate_mode("display"), "display");
-        assert_eq!(normalize_frame_rate_mode("60"), "60");
-        assert_eq!(normalize_frame_rate_mode("30"), "30");
-        assert_eq!(normalize_frame_rate_mode("165"), "display");
-        assert_eq!(normalize_drag_mode("compatible"), "compatible");
     }
 
     #[test]
@@ -5879,30 +5298,6 @@ mod tests {
     }
 
     #[test]
-    fn verifies_written_local_model_config() {
-        let suffix = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_millis())
-            .unwrap_or(0);
-        let root = std::env::temp_dir().join(format!("spine-companion-config-test-{}", suffix));
-        let config_path = root.join("companion.local.json");
-        let asset_dir = root.join("models").join("ark-1001-amiya2-sale-16");
-        std::fs::create_dir_all(&asset_dir).unwrap();
-        write_local_model_config(&config_path, &asset_dir, "amiya.skel").unwrap();
-        verify_local_model_config(&config_path, &asset_dir, "amiya.skel").unwrap();
-        let public = read_json_if_exists(&config_path).unwrap();
-        let expected_asset_dir = asset_dir.to_string_lossy().to_string();
-        assert_eq!(
-            public
-                .get("spine")
-                .and_then(|spine| spine.get("assetDir"))
-                .and_then(|value| value.as_str()),
-            Some(expected_asset_dir.as_str())
-        );
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
     fn preview_cache_pruning_keeps_current_model_and_limits_completed_entries() {
         let suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -5949,55 +5344,6 @@ mod tests {
     }
 
     #[test]
-    fn defaults_new_local_config_to_user_config_dir() {
-        let suffix = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_millis())
-            .unwrap_or(0);
-        let root = std::env::temp_dir().join(format!("spine-companion-root-test-{}", suffix));
-        let user_config = root.join("user-config");
-        let old = std::env::var("SPINE_COMPANION_CONFIG_DIR").ok();
-        std::env::set_var("SPINE_COMPANION_CONFIG_DIR", &user_config);
-        assert_eq!(
-            default_local_config_path(&root),
-            user_config.join("companion.local.json")
-        );
-        match old {
-            Some(value) => std::env::set_var("SPINE_COMPANION_CONFIG_DIR", value),
-            None => std::env::remove_var("SPINE_COMPANION_CONFIG_DIR"),
-        }
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn recovers_first_valid_downloaded_catalog_model() {
-        let suffix = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_millis())
-            .unwrap_or(0);
-        let root = std::env::temp_dir().join(format!("spine-companion-recovery-test-{}", suffix));
-        let invalid_dir = root.join("models").join("invalid-model");
-        let valid_dir = root.join("models").join("valid-model");
-        std::fs::create_dir_all(&invalid_dir).unwrap();
-        std::fs::create_dir_all(&valid_dir).unwrap();
-        std::fs::write(valid_dir.join("valid.skel"), b"").unwrap();
-        std::fs::write(valid_dir.join("valid.png"), b"").unwrap();
-        std::fs::write(valid_dir.join("valid.atlas"), "valid.png\nsize: 1,1\n").unwrap();
-        let config = serde_json::json!({
-            "models": {
-                "catalog": [
-                    { "id": "invalid-model", "skel": "invalid.skel" },
-                    { "id": "valid-model", "skel": "valid.skel" }
-                ]
-            }
-        });
-        let recovered = first_recoverable_model(&root, &config).unwrap();
-        assert_eq!(recovered.skel, "valid.skel");
-        assert_eq!(recovered.asset_dir, valid_dir.canonicalize().unwrap());
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
     fn compares_semver_like_versions() {
         assert_eq!(compare_versions("0.2.2", "0.2.1"), 1);
         assert_eq!(compare_versions("v0.2.1", "0.2.1"), 0);
@@ -6005,26 +5351,6 @@ mod tests {
         assert_eq!(compare_versions("0.2.3-alpha.2", "0.2.3-alpha.1"), 1);
         assert_eq!(compare_versions("0.2.3-alpha.1", "0.2.2"), 1);
         assert_eq!(compare_versions("0.2.3", "0.2.3-alpha.2"), 1);
-    }
-
-    #[test]
-    fn gpu_mode_defaults_to_hardware_and_allows_software() {
-        let defaults = ui_settings_from_config(&fallback_config());
-        assert_eq!(defaults.gpu_mode, "hardware");
-
-        let config = serde_json::json!({
-            "ui": {
-                "gpuMode": "software"
-            }
-        });
-        assert_eq!(ui_settings_from_config(&config).gpu_mode, "software");
-
-        let invalid = serde_json::json!({
-            "ui": {
-                "gpuMode": "auto"
-            }
-        });
-        assert_eq!(ui_settings_from_config(&invalid).gpu_mode, "hardware");
     }
 
     #[test]
@@ -6055,9 +5381,26 @@ mod tests {
     }
 
     #[test]
-    fn automatic_update_channel_matches_the_installed_version() {
-        assert_eq!(resolved_update_channel("auto", "0.2.6-rc.1"), "prerelease");
-        assert_eq!(resolved_update_channel("auto", "0.2.6"), "stable");
-        assert_eq!(resolved_update_channel("stable", "0.2.6-rc.1"), "stable");
+    fn ai_integration_self_test_requires_configured_restarted_client() {
+        assert!(validate_ai_integration_self_test("Codex", true, false).is_ok());
+        assert!(validate_ai_integration_self_test("Codex", false, false)
+            .unwrap_err()
+            .contains("Configure Codex"));
+        assert!(validate_ai_integration_self_test("Codex", true, true)
+            .unwrap_err()
+            .contains("Confirm that Codex was restarted"));
+    }
+
+    #[test]
+    fn selects_read_only_cli_without_starting_the_desktop_runtime() {
+        assert_eq!(
+            read_only_cli_command(&["--status".to_string(), "--json".to_string()]),
+            Some("status")
+        );
+        assert_eq!(
+            read_only_cli_command(&["--doctor".to_string()]),
+            Some("doctor")
+        );
+        assert_eq!(read_only_cli_command(&["--mcp".to_string()]), None);
     }
 }

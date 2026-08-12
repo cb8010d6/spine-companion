@@ -30,21 +30,25 @@ impl IntegrationEnv {
             .or_else(|_| std::env::var("HOME"))
             .ok()
             .map(PathBuf::from)?;
-        let appdata = std::env::var("APPDATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| home.join("AppData").join("Roaming"));
-        let local_appdata = std::env::var("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| home.join("AppData").join("Local"));
+        let appdata_override = std::env::var("APPDATA").ok().map(PathBuf::from);
         let config_home = std::env::var("XDG_CONFIG_HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|_| {
                 if cfg!(target_os = "windows") {
-                    appdata.clone()
+                    appdata_override
+                        .clone()
+                        .unwrap_or_else(|| home.join("AppData").join("Roaming"))
                 } else {
                     home.join(".config")
                 }
             });
+        let data_home = std::env::var("XDG_DATA_HOME").ok().map(PathBuf::from);
+        let (default_appdata, default_local_appdata) =
+            platform_data_dirs(&home, &config_home, data_home.as_deref());
+        let appdata = appdata_override.unwrap_or(default_appdata);
+        let local_appdata = std::env::var("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .unwrap_or(default_local_appdata);
         let kimi_share_dir = std::env::var("KIMI_SHARE_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|_| home.join(".kimi"));
@@ -55,6 +59,27 @@ impl IntegrationEnv {
             config_home,
             kimi_share_dir,
         })
+    }
+}
+
+fn platform_data_dirs(
+    home: &Path,
+    config_home: &Path,
+    data_home: Option<&Path>,
+) -> (PathBuf, PathBuf) {
+    if cfg!(target_os = "windows") {
+        (
+            home.join("AppData").join("Roaming"),
+            home.join("AppData").join("Local"),
+        )
+    } else if cfg!(target_os = "macos") {
+        let application_support = home.join("Library").join("Application Support");
+        (application_support.clone(), application_support)
+    } else {
+        let data_home = data_home
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| home.join(".local").join("share"));
+        (config_home.to_path_buf(), data_home)
     }
 }
 
@@ -102,6 +127,7 @@ pub struct AiIntegration {
     pub last_test_ok: Option<bool>,
     pub last_test_error: String,
     pub last_configured_at: Option<u64>,
+    pub last_reported_at: Option<u64>,
     pub last_backup_path: String,
     pub restore_available: bool,
 }
@@ -165,6 +191,7 @@ struct IntegrationRuntimeState {
     last_test_ok: Option<bool>,
     last_test_error: String,
     last_configured_at: Option<u64>,
+    last_reported_at: Option<u64>,
     needs_restart: bool,
     config_restore: Option<IntegrationRestorePoint>,
 }
@@ -525,11 +552,19 @@ fn integration_from_def(env: &IntegrationEnv, def: &IntegrationDefinition) -> Ai
         None
     };
     let supported = def.format != IntegrationFormat::TemplateOnly || def.id == "custom";
-    let instructions_path = instructions_path_for_def(env, def)
-        .map(|path| path.to_string_lossy().to_string())
-        .unwrap_or_default();
-    let instructions_found =
-        !instructions_path.is_empty() && Path::new(&instructions_path).exists();
+    let instructions_target = instructions_path_for_def(env, def);
+    let instructions_found = instructions_target
+        .as_ref()
+        .map(|path| path.exists())
+        .unwrap_or(false);
+    let instructions_path = if installed || config_found || configured {
+        instructions_target
+            .as_ref()
+            .map(|path| path.to_string_lossy().to_string())
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
     AiIntegration {
         id: def.id.to_string(),
         name: def.name.to_string(),
@@ -553,6 +588,7 @@ fn integration_from_def(env: &IntegrationEnv, def: &IntegrationDefinition) -> Ai
         last_test_ok: None,
         last_test_error: String::new(),
         last_configured_at: None,
+        last_reported_at: None,
         last_backup_path: String::new(),
         restore_available: false,
     }
@@ -867,6 +903,7 @@ fn commit_pending_operation(
     if let Some(configured_at) = operation.last_configured_at {
         state.last_configured_at = Some(configured_at);
     }
+    state.last_reported_at = None;
     clear_test_state(state);
     save_integration_state(config_dir, &state_file)
 }
@@ -972,6 +1009,7 @@ fn apply_runtime_state(item: &mut AiIntegration, state: &IntegrationRuntimeState
     item.last_test_ok = state.last_test_ok;
     item.last_test_error = state.last_test_error.clone();
     item.last_configured_at = state.last_configured_at;
+    item.last_reported_at = state.last_reported_at;
     item.restore_available = state.config_restore.is_some();
     item.last_backup_path = state
         .config_restore
@@ -1013,6 +1051,7 @@ fn record_config_applied(
         .transpose()?;
     update_integration_state(config_dir, id, |state| {
         state.last_configured_at = Some(timestamp_millis());
+        state.last_reported_at = None;
         state.revision = state.revision.saturating_add(1);
         state.needs_restart = true;
         state.config_restore = Some(IntegrationRestorePoint {
@@ -1037,6 +1076,7 @@ pub fn record_instruction_change(config_dir: &Path, id: &str, changed: bool) -> 
     update_integration_state(config_dir, id, |state| {
         state.needs_restart = true;
         state.revision = state.revision.saturating_add(1);
+        state.last_reported_at = None;
         clear_test_state(state);
         Ok(())
     })?;
@@ -1096,6 +1136,58 @@ pub fn record_test_result_if_revision(
             state.last_test_error = bounded_error(error);
         }
     }
+    save_integration_state(config_dir, &state_file)?;
+    Ok(true)
+}
+
+pub fn record_source_report(
+    config_dir: &Path,
+    source: &str,
+    message: &str,
+) -> Result<bool, String> {
+    let env = match IntegrationEnv::current() {
+        Some(env) => env,
+        None => return Ok(false),
+    };
+    record_source_report_with_env(&env, config_dir, source, message)
+}
+
+fn record_source_report_with_env(
+    env: &IntegrationEnv,
+    config_dir: &Path,
+    source: &str,
+    message: &str,
+) -> Result<bool, String> {
+    let source = source.trim();
+    if source.is_empty() || message.starts_with("[Spine Companion self-test]") {
+        return Ok(false);
+    }
+    let source_id = crate::source_registry::canonical_source_id(source);
+    let Some(definition) = definitions(env).into_iter().find(|definition| {
+        if definition.source.eq_ignore_ascii_case(source) {
+            return true;
+        }
+        match (definition.id, source_id) {
+            ("roo-cline", Some("roo" | "cline")) => true,
+            ("gemini-antigravity", Some("gemini" | "antigravity")) => true,
+            ("claude-desktop", Some("claude")) => true,
+            ("kimi-code", Some("kimi")) => true,
+            (_, Some(id)) => crate::source_registry::canonical_source_id(definition.source)
+                .is_some_and(|definition_id| definition_id == id),
+            _ => false,
+        }
+    }) else {
+        return Ok(false);
+    };
+    let mut state_file = load_integration_state(config_dir)?;
+    let state = state_file
+        .tools
+        .entry(definition.id.to_string())
+        .or_default();
+    if state.last_reported_at.is_some() {
+        return Ok(false);
+    }
+    state.last_reported_at = Some(timestamp_millis());
     save_integration_state(config_dir, &state_file)?;
     Ok(true)
 }
@@ -1853,6 +1945,62 @@ mod tests {
     }
 
     #[test]
+    fn records_only_the_first_real_report_after_setup() {
+        let root = temp_root("first-report");
+        let env = fixture_env(&root);
+        let config_dir = root.join("companion-config");
+
+        assert!(!record_source_report_with_env(
+            &env,
+            &config_dir,
+            "codex-mcp",
+            "[Spine Companion self-test] Codex"
+        )
+        .unwrap());
+        assert!(
+            record_source_report_with_env(&env, &config_dir, "open-code-mcp", "Alias report")
+                .unwrap()
+        );
+        assert!(
+            load_integration_state(&config_dir).unwrap().tools["opencode"]
+                .last_reported_at
+                .is_some()
+        );
+        assert!(record_source_report_with_env(
+            &env,
+            &config_dir,
+            "codex-mcp",
+            "Reviewing the patch"
+        )
+        .unwrap());
+        let first = load_integration_state(&config_dir).unwrap().tools["codex"]
+            .last_reported_at
+            .unwrap();
+        assert!(
+            !record_source_report_with_env(&env, &config_dir, "codex-mcp", "Running tests")
+                .unwrap()
+        );
+        assert_eq!(
+            load_integration_state(&config_dir).unwrap().tools["codex"].last_reported_at,
+            Some(first)
+        );
+
+        record_instruction_change(&config_dir, "codex", true).unwrap();
+        assert_eq!(
+            load_integration_state(&config_dir).unwrap().tools["codex"].last_reported_at,
+            None
+        );
+        assert!(!record_source_report_with_env(
+            &env,
+            &config_dir,
+            "unknown-source",
+            "Should be ignored"
+        )
+        .unwrap());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn codex_preview_is_idempotent() {
         let exe = PathBuf::from("C:/Program Files/Spine Companion/spine-companion.exe");
         let def = IntegrationDefinition {
@@ -2485,7 +2633,27 @@ mod tests {
             .unwrap();
         assert_eq!(claude.status, "Not detected");
         assert_eq!(claude.config_path, "");
+        assert_eq!(claude.instructions_path, "");
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn platform_data_directories_follow_host_conventions() {
+        let home = PathBuf::from("home");
+        let config_home = home.join(".config");
+        let (appdata, local_appdata) = platform_data_dirs(&home, &config_home, None);
+
+        if cfg!(target_os = "windows") {
+            assert_eq!(appdata, home.join("AppData").join("Roaming"));
+            assert_eq!(local_appdata, home.join("AppData").join("Local"));
+        } else if cfg!(target_os = "macos") {
+            let expected = home.join("Library").join("Application Support");
+            assert_eq!(appdata, expected);
+            assert_eq!(local_appdata, expected);
+        } else {
+            assert_eq!(appdata, config_home);
+            assert!(local_appdata.ends_with(Path::new(".local").join("share")));
+        }
     }
 
     #[test]

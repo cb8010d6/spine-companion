@@ -32,7 +32,7 @@ Installed Tauri app:
 {
   "mcpServers": {
     "spine_companion": {
-      "command": "C:/Program Files/Spine Companion/spine-companion.exe",
+      "command": "<install-dir>/spine-companion.exe",
       "args": ["--mcp"],
       "env": {
         "COMPANION_API": "http://127.0.0.1:17388",
@@ -56,7 +56,7 @@ On Windows, OpenCode Desktop 1.17.x loads user config from
   "mcp": {
     "spine_companion": {
       "type": "local",
-      "command": ["C:/Program Files/Spine Companion/spine-companion.exe", "--mcp"],
+      "command": ["<install-dir>/spine-companion.exe", "--mcp"],
       "enabled": true,
       "environment": {
         "COMPANION_API": "http://127.0.0.1:17388",
@@ -75,7 +75,7 @@ Source workflow fallback:
   "mcpServers": {
     "spine_companion": {
       "command": "node",
-      "args": ["C:/path/to/spine-companion/scripts/mcp-companion-server.mjs"],
+      "args": ["<repo-root>/scripts/mcp-companion-server.mjs"],
       "env": {
         "COMPANION_API": "http://127.0.0.1:17388",
         "COMPANION_SOURCE": "my-tool-mcp",
@@ -103,6 +103,16 @@ curl -X POST http://127.0.0.1:17388/state \
 MCP does not automatically push state. The AI tool must have instructions to call
 `companion_report_ai_phase` during work phases. `companion_report_codex_phase`
 remains as a compatibility alias for older Codex instructions.
+
+The bridge also exposes two read-only diagnostics tools:
+
+- companion_get_diagnostics returns the loopback API endpoint, /health result,
+  current state/source, and MCP server version/transport/source label. It does
+  not return configuration paths or secrets. Full GPU, model, and cache
+  diagnostics remain in Manager > Diagnostics.
+- companion_test_bridge actually reads /health and /state and returns
+  machine-readable ok, reason, checks, and mutated: false fields. It never
+  changes the companion state.
 
 For GitHub Copilot / VS Code, a repository-level
 `.github/copilot-instructions.md` is the most reliable way to make the agent

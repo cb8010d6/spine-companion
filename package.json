@@ -1,7 +1,7 @@
 {
   "name": "spine-companion",
-  "version": "0.2.6-rc.10",
-  "description": "Open-source desktop companion shell for local Spine 3.8 models.",
+  "version": "0.2.6-rc.11",
+  "description": "Spine-powered AI coding companion that turns agent activity into an animated desktop character.",
   "license": "MIT",
   "packageManager": "bun@1.3.13",
   "author": {
@@ -34,6 +34,8 @@
     "tauri:dev": "tauri dev",
     "tauri:build": "bun scripts/tauri-build.cjs",
     "tauri:portable:assets": "bun scripts/package-tauri-portable.cjs",
+    "release:preflight": "bun scripts/release-preflight.mjs",
+    "release:checksums": "bun scripts/generate-sha256sums.mjs",
     "catalog:generate:illustrations": "bun scripts/generate-ark-catalog.mjs --source catalog/ark-illustrations-source.json --output catalog/illustrations.json",
     "catalog:generate:enemies": "bun scripts/generate-ark-catalog.mjs --source catalog/ark-enemies-source.json --output catalog/enemies.json",
     "catalog:audit": "bun scripts/audit-model-catalog.mjs --sample-rate 0.01"

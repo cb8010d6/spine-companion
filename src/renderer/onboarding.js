@@ -6,10 +6,15 @@ export function shouldShowOnboarding(config = {}) {
   return !config.paths?.hasLocalConfig || !config.spine?.assetDirConfigured;
 }
 
-export function createOnboarding({ onManager, onDownload }) {
+export function createOnboarding({ onManager }) {
   const managerStatus = h("span", { class: "error-action-status", role: "status" });
-  const managerButton = bindManagerButton(
-    h("button", { type: "button", class: "btn" }, t("onboarding.start")),
+  const libraryButton = bindManagerButton(
+    h("button", { type: "button", class: "btn btn-primary" }, t("onboarding.start")),
+    managerStatus,
+    onManager
+  );
+  const importButton = bindManagerButton(
+    h("button", { type: "button", class: "btn" }, t("onboarding.importOwn")),
     managerStatus,
     onManager
   );
@@ -18,8 +23,8 @@ export function createOnboarding({ onManager, onDownload }) {
     h("strong", { id: "onboarding-title" }, t("onboarding.title")),
     h("span", {}, t("onboarding.body")),
     h("div", { class: "onboarding-actions" },
-      h("button", { type: "button", class: "btn btn-primary", onClick: onDownload }, t("onboarding.download")),
-      managerButton
+      libraryButton,
+      importButton
     ),
     managerStatus
   );

@@ -2,9 +2,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import runtimeContract from "../src/shared/runtime-contract.json" with { type: "json" };
 
 const exePath = path.resolve(process.argv[2] || process.env.SPINE_COMPANION_MCP_EXE || "");
 const api = process.env.COMPANION_API || "http://127.0.0.1:17388";
+const expectedVersion = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
 if (!process.argv[2] && !process.env.SPINE_COMPANION_MCP_EXE) {
   throw new Error("Pass the packaged Spine Companion executable path as the first argument or SPINE_COMPANION_MCP_EXE.");
@@ -16,6 +18,10 @@ const readState = async () => {
   if (!response.ok) throw new Error(`Companion API returned HTTP ${response.status}.`);
   return response.json();
 };
+
+const resultValue = (result) => result.structuredContent?.value
+  ?? result.structuredContent
+  ?? JSON.parse(result.content[0].text);
 
 const transport = new StdioClientTransport({
   command: exePath,
@@ -34,9 +40,45 @@ let previousState;
 try {
   previousState = await readState();
   await client.connect(transport);
+  const serverVersion = client.getServerVersion()?.version;
+  if (serverVersion !== expectedVersion) {
+    throw new Error(`Packaged MCP version is ${serverVersion || "unknown"}; expected ${expectedVersion}.`);
+  }
   const tools = await client.listTools();
   const names = new Set(tools.tools.map((tool) => tool.name));
-  for (const expected of ["companion_get_state", "companion_set_state", "companion_reminder", "companion_report_ai_phase"]) {
+  const beforeBridge = await readState();
+  const diagnostics = resultValue(await client.callTool({
+    name: "companion_get_diagnostics",
+    arguments: {}
+  }));
+  if (
+    diagnostics.ok !== true
+    || diagnostics.api?.health?.ok !== true
+    || diagnostics.state?.state !== beforeBridge.state
+    || diagnostics.state?.source !== beforeBridge.source
+    || diagnostics.mcp?.transport !== "stdio"
+    || diagnostics.mcp?.source !== "packaged-smoke-mcp"
+  ) {
+    throw new Error("Packaged MCP diagnostics failed: " + JSON.stringify(diagnostics));
+  }
+
+  const bridge = resultValue(await client.callTool({
+    name: "companion_test_bridge",
+    arguments: {}
+  }));
+  const afterBridge = await readState();
+  if (
+    bridge.ok !== true
+    || bridge.reason !== "ok"
+    || bridge.checks?.health?.ok !== true
+    || bridge.checks?.state?.ok !== true
+    || bridge.mutated !== false
+    || JSON.stringify(afterBridge) !== JSON.stringify(beforeBridge)
+  ) {
+    throw new Error("Packaged MCP bridge test failed or changed state: " + JSON.stringify(bridge));
+  }
+
+  for (const expected of runtimeContract.mcp.core) {
     if (!names.has(expected)) throw new Error(`Packaged MCP server is missing tool: ${expected}`);
   }
 
@@ -49,7 +91,7 @@ try {
     throw new Error(`Packaged MCP report was not applied: ${JSON.stringify(reported)}`);
   }
 
-  console.log(`Packaged MCP check passed: ${exePath}`);
+  console.log(`Packaged MCP check passed (${serverVersion}): ${exePath}`);
 } finally {
   if (previousState && client) {
     try {

@@ -20,7 +20,7 @@ Installed entry shape:
 
 ```toml
 [mcp_servers.spine_companion]
-command = "C:/Program Files/Spine Companion/spine-companion.exe"
+command = "<install-dir>/spine-companion.exe"
 args = ["--mcp"]
 env = { COMPANION_API = "http://127.0.0.1:17388", COMPANION_SOURCE = "codex-mcp", COMPANION_SOURCE_LABEL = "Codex" }
 ```
@@ -28,15 +28,15 @@ env = { COMPANION_API = "http://127.0.0.1:17388", COMPANION_SOURCE = "codex-mcp"
 Source workflow fallback:
 
 ```bash
-npm run mcp:install:codex
+bun run mcp:install:codex
 ```
 
 This writes:
 
 ```toml
 [mcp_servers.spine_companion]
-command = "node"
-args = ["C:/path/to/spine-companion/scripts/mcp-companion-server.mjs"]
+command = "bun"
+args = ["<repo-root>/scripts/mcp-companion-server.mjs"]
 env = { COMPANION_API = "http://127.0.0.1:17388", COMPANION_SOURCE = "codex-mcp", COMPANION_SOURCE_LABEL = "Codex" }
 ```
 
@@ -53,10 +53,15 @@ Tools exposed:
   `succeeded`, or `failed` into companion states. This is kept as a
   compatibility alias.
 
-The companion desktop app or `npm run dev:api` must be running before these
+The bridge also exposes companion_get_diagnostics for read-only API/current
+state/MCP metadata and companion_test_bridge for checking /health and /state.
+The latter returns machine-readable ok/reason fields and does not change state;
+full GPU, model, and cache diagnostics remain in Manager > Diagnostics.
+
+The companion desktop app or `bun run dev:api` must be running before these
 tools are useful.
 
 MCP does not push Codex status automatically by itself. It exposes tools; the AI
-client must be instructed to call them. Use `npm run skill:install` and
-`npm run ai:configure -- --target all` to install persistent reporting rules for
+client must be instructed to call them. Use `bun run skill:install` and
+`bun run ai:configure -- --target all` to install persistent reporting rules for
 supported tools.

@@ -33,23 +33,14 @@ matching operating system; the GitHub Actions release matrix handles this.
 Use this path if you only want to run the app.
 
 1. Download the Windows NSIS installer, macOS DMG, Linux AppImage, or Linux DEB
-   from the GitHub Release page. Windows is primary support; rc.5 macOS/Linux
-   packages are experimental previews.
-2. Open the tray menu and choose `Open Config Folder`, then create
-   `companion.local.json` in that folder.
-3. Put this in the file and edit the two paths:
-
-```json
-{
-  "spine": {
-    "assetDir": "C:\\path\\to\\spine_model_folder",
-    "skel": "model.skel"
-  }
-}
-```
-
-4. Double-click the app. If no model appears, use `Open Config Folder` again
-   from the tray menu and confirm the config file is in the right place.
+   from the GitHub Release page. Windows is the stable target; macOS and Linux
+   packages are unsigned previews.
+2. Start the app, open **Manager > Library**, choose a model, and select
+   **Download and use**. For an authorized local model, choose **Import local
+   .skel**, then manage it from **Library > Installed**.
+3. Open **Manager > Settings** to tune scale and position. If no model appears,
+   open **Manager > Diagnostics** and confirm the model directory contains a
+   compatible skeleton, atlas, and referenced textures.
 
 The app does not ship copyrighted Spine model assets. Your `assetDir` must point
 to a local folder containing `.skel`, `.atlas`, and texture files.
@@ -63,7 +54,57 @@ The release build also checks this per-user config path:
 The app also checks for `companion.local.json` next to the executable, but the
 per-user config folder is more reliable across reinstall or overwrite updates.
 
-## 3. Clone And Install
+### Configuration layers and write location
+
+The packaged Tauri runtime treats the per-user file as the canonical writable
+configuration:
+
+```text
+<user-config-dir>/companion.local.json
+```
+
+The repository-root, current-working-directory, and executable-directory
+`companion.local.json` files are read-only legacy compatibility layers. They are
+loaded before the canonical file, so the per-user file always has the highest
+priority. Model activation, presentation settings, and other Manager changes
+are written only to the canonical file; legacy files are never overwritten.
+
+Relative `spine.assetDir` values are resolved against the directory of the
+layer that supplied that value. Manager > Diagnostics shows the canonical write
+path and the loaded layers so an override can be traced without exposing
+configuration contents or secrets. Active environment override names are shown
+there as well, but their values are not included.
+
+The browser/source adapter in `src/backend/config.cjs` mirrors this precedence
+for development. It is a development adapter, not a second packaged runtime.
+
+## 3. Upgrade, Uninstall, And Keep Data
+
+Before upgrading or uninstalling, quit Spine Companion and use **Open Config
+Folder** to make a backup of the folder if the model or configuration is
+important. The install directory and the user data directory are separate.
+
+For an upgrade, install the newer package over the existing installation. The
+user configuration, downloaded models, previews, logs, and AI integration
+backups are kept in user data; the application version and renderer are
+replaced. If a model is not active after the upgrade, open **Manager > Library >
+Installed** and set it active again.
+
+For an uninstall, use the operating system's normal app removal flow. It removes
+the installed application but does not require deleting the user data folder.
+Remove that folder manually only after confirming that you no longer need the
+models, settings, logs, or backups.
+
+### Restore An AI Configuration
+
+Manager creates a backup before it writes an AI tool configuration. Open
+**Manager > AI Integrations**, select the configured tool, and choose **Restore
+Previous Config** when a restore is available. The restore creates a safety copy
+of the currently replaced file and requires an AI-tool restart. If the target
+file was edited after Manager changed it, restore stops rather than overwriting
+the newer edit.
+
+## 4. Clone And Install
 
 ```bash
 git clone https://github.com/cb8010d6/spine-companion.git
@@ -78,13 +119,13 @@ same command in the project root:
 bun install
 ```
 
-## 4. Add Local Spine Assets
+## 5. Add Local Spine Assets
 
 Copyrighted model assets are intentionally not included in the repository.
 Choose a local model folder that you have the right to use.
 
 ```bash
-bun run setup:assets -- "C:\path\to\spine_model_folder"
+bun run setup:assets -- <model-folder>
 ```
 
 The setup script validates that the folder contains a `.skel`, at least one
@@ -100,13 +141,13 @@ texture files.
 If the folder contains multiple `.skel` files, pass the skeleton filename:
 
 ```bash
-bun run setup:assets -- "C:\path\to\spine_model_folder" model.skel
+bun run setup:assets -- <model-folder> model.skel
 ```
 
 You can also skip `companion.local.json` and use environment variables:
 
 ```bash
-set SPINE_ASSET_DIR=C:\path\to\spine_model_folder
+set SPINE_ASSET_DIR=<model-folder>
 set SPINE_SKEL=model.skel
 bun run dev
 ```
@@ -114,12 +155,12 @@ bun run dev
 On macOS or Linux:
 
 ```bash
-export SPINE_ASSET_DIR=/path/to/spine_model_folder
+export SPINE_ASSET_DIR=<model-folder>
 export SPINE_SKEL=model.skel
 bun run dev
 ```
 
-## 5. Start The Desktop App
+## 6. Start The Desktop App
 
 Run the Tauri desktop application:
 
@@ -148,7 +189,7 @@ The built-in settings panel also includes a model picker. Select
 `companion.local.json`. The app switches to the imported model immediately. The
 asset files stay local and are not committed to this repository.
 
-## 6. Browser Preview Mode
+## 7. Browser Preview Mode
 
 Use this when you want to test the renderer in a browser without opening the
 desktop window:
@@ -166,7 +207,7 @@ http://127.0.0.1:17389?api=http://127.0.0.1:17388
 
 The browser preview uses the same local HTTP state API as external integrations.
 
-## 7. State API
+## 8. State API
 
 The local API listens on:
 
@@ -228,12 +269,14 @@ curl -X POST http://127.0.0.1:17388/reminders ^
   -d "{\"text\":\"stand up\",\"inSeconds\":30}"
 ```
 
-Event streams:
+Event stream:
 
 - SSE: `GET /events`
-- WebSocket: `ws://127.0.0.1:17388/ws`
 
-## 8. AI / MCP Integrations
+The packaged API contract is HTTP plus SSE. State, reminders, and recent history
+are in-memory for the current application session and reset when the app exits.
+
+## 9. AI / MCP Integrations
 
 The MCP bridge lets AI tools read and update the companion through the local API.
 For installed Tauri builds, open **Manager > AI Integrations** and configure the
@@ -244,7 +287,7 @@ Installed Tauri entry shape:
 
 ```toml
 [mcp_servers.spine_companion]
-command = "C:/Program Files/Spine Companion/spine-companion.exe"
+command = "<install-dir>/spine-companion.exe"
 args = ["--mcp"]
 env = { COMPANION_API = "http://127.0.0.1:17388", COMPANION_SOURCE = "codex-mcp", COMPANION_SOURCE_LABEL = "Codex" }
 ```
@@ -260,7 +303,7 @@ This appends the following shape to `~/.codex/config.toml`:
 ```toml
 [mcp_servers.spine_companion]
 command = "bun"
-args = ["C:/path/to/spine-companion/scripts/mcp-companion-server.mjs"]
+args = ["<repo-root>/scripts/mcp-companion-server.mjs"]
 env = { COMPANION_API = "http://127.0.0.1:17388", COMPANION_SOURCE = "codex-mcp", COMPANION_SOURCE_LABEL = "Codex" }
 ```
 
@@ -274,11 +317,13 @@ MCP tools:
 - `companion_reminder`
 - `companion_report_ai_phase`
 - `companion_report_codex_phase`
+- `companion_get_diagnostics`
+- `companion_test_bridge`
 
 The desktop app or `bun run dev:api` must be running before the MCP tools can
 reach the companion.
 
-## 9. One-Click Codex Plugin
+## 10. One-Click Codex Plugin
 
 The repo includes a local Codex plugin:
 
@@ -297,7 +342,7 @@ Codex environments that read `.agents/plugins/marketplace.json` can install
 The desktop app or `bun run dev:api` still needs to be running before the MCP
 bridge can reach the local API.
 
-## 10. Build And Checks
+## 11. Build And Checks
 
 Run project checks:
 
@@ -340,14 +385,14 @@ directory. Use it for local testing or distribution only when you have confirmed
 you are allowed to redistribute those assets; public open-source releases should
 not bundle copyrighted model files.
 
-## 11. Troubleshooting
+## 12. Troubleshooting
 
 ### The app says the Spine asset is missing
 
 Run:
 
 ```bash
-bun run setup:assets -- "C:\path\to\spine_model_folder"
+bun run setup:assets -- <model-folder>
 ```
 
 Then restart `bun run dev`.
@@ -369,6 +414,34 @@ If you change the API port, update browser preview URLs and the MCP config
 Confirm `~/.codex/config.toml` contains `[mcp_servers.spine_companion]`, then
 restart Codex or open a new session.
 
+If Manager shows a failed integration, open **Manager > AI Integrations** and
+use **Restore Previous Config** before trying again. A restore is refused when
+the target file changed after Manager's backup; inspect the file manually and
+keep the newest intentional edit.
+
+### The local API is unavailable
+
+Confirm Spine Companion is running, then open **Manager > Diagnostics** and
+check the local API status. A port conflict or a security product blocking the
+application can prevent startup. Do not expose the local API beyond localhost.
+
+The installed executable also provides read-only checks that do not open a
+window or change companion state:
+
+```powershell
+& "<install-dir>/Spine Companion.exe" --status --json
+& "<install-dir>/Spine Companion.exe" --doctor --json
+```
+
+They return exit code `0` when the local bridge is healthy, `2` when the bridge
+is unavailable, and `1` for an invalid command or internal error.
+
+### State or reminders disappeared after restart
+
+This is expected: state, reminders, and recent history are session-only. Model
+files, settings, and AI configuration backups are the data intended to survive
+an application restart or upgrade.
+
 ### macOS arm64 app cannot be opened
 
 Unsigned macOS artifacts from GitHub Actions can be blocked by Gatekeeper,
@@ -377,15 +450,15 @@ a release you trust.
 
 Option 1: use Finder:
 
-1. Move `Spine Companion.app` to `/Applications`.
+1. Move `Spine Companion.app` to the system Applications folder.
 2. Right-click the app and choose **Open**.
 3. In the warning dialog, choose **Open** again.
 
 Option 2: remove the quarantine flag in Terminal:
 
 ```bash
-xattr -dr com.apple.quarantine "/Applications/Spine Companion.app"
-open "/Applications/Spine Companion.app"
+xattr -dr com.apple.quarantine "<path-to-Spine Companion.app>"
+open "<path-to-Spine Companion.app>"
 ```
 
 Official signing and notarization are deferred. For public signed macOS
@@ -404,7 +477,7 @@ these values in `companion.config.json`:
 - `spine.fitStates`
 - `spine.mixDurationMs`
 
-## 12. Open-Source Safety Checklist
+## 13. Open-Source Safety Checklist
 
 Before pushing or publishing:
 
@@ -412,3 +485,4 @@ Before pushing or publishing:
 - Confirm no `.skel`, `.atlas`, or texture files are staged.
 - Confirm `local-assets/`, `dist/`, `out/`, and `node_modules/` are not staged.
 - Run `bun run check`, `bun run check:mcp`, and `bun run build`.
+- Run the release preflight with the exact version tag before packaging.

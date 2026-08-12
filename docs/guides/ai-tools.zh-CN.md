@@ -30,7 +30,7 @@ Kimi 接入指 Moonshot AI 官方的 **Kimi Code CLI**。Manager 会写入官方
 {
   "mcpServers": {
     "spine_companion": {
-      "command": "C:/Program Files/Spine Companion/spine-companion.exe",
+      "command": "<install-dir>/spine-companion.exe",
       "args": ["--mcp"],
       "env": {
         "COMPANION_API": "http://127.0.0.1:17388",
@@ -54,7 +54,7 @@ OpenCode 使用官方的 `mcp` 配置形态，`command` 是数组。
   "mcp": {
     "spine_companion": {
       "type": "local",
-      "command": ["C:/Program Files/Spine Companion/spine-companion.exe", "--mcp"],
+      "command": ["<install-dir>/spine-companion.exe", "--mcp"],
       "enabled": true,
       "environment": {
         "COMPANION_API": "http://127.0.0.1:17388",
@@ -73,7 +73,7 @@ OpenCode 使用官方的 `mcp` 配置形态，`command` 是数组。
   "mcpServers": {
     "spine_companion": {
       "command": "node",
-      "args": ["C:/path/to/spine-companion/scripts/mcp-companion-server.mjs"],
+      "args": ["<repo-root>/scripts/mcp-companion-server.mjs"],
       "env": {
         "COMPANION_API": "http://127.0.0.1:17388",
         "COMPANION_SOURCE": "my-tool-mcp",
@@ -98,6 +98,14 @@ curl -X POST http://127.0.0.1:17388/state \
 
 MCP 本身不会自动推送状态。AI 工具必须有指令，在工作阶段主动调用
 `companion_report_ai_phase`。`companion_report_codex_phase` 仍保留为旧 Codex 指令的兼容别名。
+
+桥接服务还提供两个只读诊断工具：
+
+- companion_get_diagnostics 返回本地 API endpoint、/health 结果、当前
+  state/source，以及 MCP 服务版本、传输方式和来源标签。不返回配置路径或
+  secrets；完整的 GPU、模型和缓存诊断仍请查看 Manager > Diagnostics。
+- companion_test_bridge 会实际读取 /health 和 /state，返回机器可读的
+  ok、reason、checks 和 mutated: false 字段，不会修改桌宠状态。
 
 对 GitHub Copilot / VS Code，仓库级 `.github/copilot-instructions.md`
 通常是让 agent 主动调用 MCP 工具的最可靠方式。

@@ -10,7 +10,7 @@
     "port": 17388
   },
   "spine": {
-    "assetDir": "C:\\path\\to\\amiya_spine",
+    "assetDir": "<model-folder>",
     "skel": "amiya.skel",
     "scale": 0.86,
     "offsetX": 0,

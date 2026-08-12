@@ -46,6 +46,10 @@ fn known_source(source: &str) -> Option<(&'static str, &'static str)> {
     })
 }
 
+pub fn canonical_source_id(source: &str) -> Option<&'static str> {
+    known_source(source).map(|(id, _label)| id)
+}
+
 pub fn is_ai_source(source: &str) -> bool {
     let source = normalize_source(source);
     if source.is_empty() {
@@ -170,6 +174,9 @@ mod tests {
         assert!(!is_ai_source("tray"));
         assert_eq!(source_display_name("mimocode-mcp", None), "MiMoCode");
         assert_eq!(source_display_name("kimi-mcp", None), "Kimi");
+        assert_eq!(canonical_source_id("vs-code-mcp"), Some("vscode"));
+        assert_eq!(canonical_source_id("open-code-mcp"), Some("opencode"));
+        assert_eq!(canonical_source_id("moonshot-mcp"), Some("kimi"));
         assert_eq!(
             source_display_name("my-new-agent-mcp", None),
             "My New Agent"

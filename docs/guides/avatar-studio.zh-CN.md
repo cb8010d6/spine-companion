@@ -56,12 +56,20 @@ Manager 现在可以创建标准包，导入 PNG/JPEG/WebP 图层，调整图层
 - `companion_avatar_requirements`
 - `companion_create_avatar_job`
 - `companion_update_avatar_job`
+- `companion_list_avatar_jobs`
+- `companion_get_avatar_job`
 - `companion_validate_avatar_pack`
 - `companion_import_avatar_pack`
 
 Codex 应按阶段汇报进度：角色提示词、拆层、骨骼草稿、动作草稿、Spine 导出、校验和导入。
 如果本机没有安装 Spine Editor，Codex 仍可创建 avatar pack，但不能声称已经完成最终
 `.skel/.atlas/.png` runtime 导出。
+
+Avatar Job 会以受限的“规划/进度记录”保存到应用用户配置目录，重启应用后仍可读取，
+并保留一段有限的更新历史，方便 AI 工具明确读取上下文后继续规划。`resumable` 只表示
+记录可以提供继续工作的上下文，不会自动启动任务、调用 AI、自动拆层绑骨，或导出 Spine
+文件。Job ID 和可选的 `packPath` 会经过校验，记录和历史数量也有上限，避免配置文件无限增长。
+Job 仍必须先校验并导入为本地 avatar pack，才可能影响桌宠模型。
 
 ## Spine Editor 依赖
 
