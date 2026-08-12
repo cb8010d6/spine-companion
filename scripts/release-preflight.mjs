@@ -30,11 +30,11 @@ export function expectedReleaseArtifacts(tag) {
   if (!version) throw new Error(`Release artifact validation requires a version tag, got ${tag || "<empty>"}.`);
 
   return [
-    `Spine.Companion_${version}_x64-setup.exe`,
-    `Spine.Companion_${version}_amd64.AppImage`,
-    `Spine.Companion_${version}_amd64.deb`,
-    `Spine.Companion_${version}_x64.dmg`,
-    `Spine.Companion_${version}_aarch64.dmg`
+    `Spine Companion_${version}_x64-setup.exe`,
+    `Spine Companion_${version}_amd64.AppImage`,
+    `Spine Companion_${version}_amd64.deb`,
+    `Spine Companion_${version}_x64.dmg`,
+    `Spine Companion_${version}_aarch64.dmg`
   ];
 }
 

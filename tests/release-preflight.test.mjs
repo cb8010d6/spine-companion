@@ -64,6 +64,13 @@ describe("release preflight", () => {
   it("accepts exactly the five release artifacts", () => {
     const tag = "v0.2.6-rc.11";
     const expected = expectedReleaseArtifacts(tag);
+    expect(expected).toEqual([
+      "Spine Companion_0.2.6-rc.11_x64-setup.exe",
+      "Spine Companion_0.2.6-rc.11_amd64.AppImage",
+      "Spine Companion_0.2.6-rc.11_amd64.deb",
+      "Spine Companion_0.2.6-rc.11_x64.dmg",
+      "Spine Companion_0.2.6-rc.11_aarch64.dmg"
+    ]);
     expect(validateArtifactMatrix(expected.map((name) => `nested/${name}`), tag).actual).toEqual([...expected].sort());
   });
 
