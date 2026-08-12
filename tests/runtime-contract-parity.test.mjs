@@ -82,4 +82,12 @@ describe("runtime contract parity", () => {
     expect(javascript).toContain('url.pathname !== "/ws"');
     expect(rust).not.toContain('.route("/ws"');
   });
+
+  it("keeps reminders session-scoped in both normal runtimes", () => {
+    const javascriptConfig = read("src/backend/config.cjs");
+    const packagedState = read("src-tauri/src/state.rs");
+
+    expect(javascriptConfig).not.toContain('config.state.remindersPath =');
+    expect(packagedState).toContain("reminders intentionally live only for the current runtime session");
+  });
 });
