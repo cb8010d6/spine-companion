@@ -3,7 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { checkReleasePreflight } from "../scripts/release-preflight.mjs";
+import {
+  assertReleaseCommitMatch,
+  checkReleasePreflight,
+  expectedReleaseArtifacts,
+  validateArtifactMatrix
+} from "../scripts/release-preflight.mjs";
 import { generateSha256Sums } from "../scripts/generate-sha256sums.mjs";
 
 const temporaryRoots = [];
@@ -45,6 +50,37 @@ describe("release preflight", () => {
     await writeFile(path.join(root, "src-tauri", "tauri.conf.json"), JSON.stringify({ version: "1.2.3" }));
     expect(() => checkReleasePreflight(root, { tag: "v1.2.3", commit: "a".repeat(40) })).toThrow(/Release notes not found/);
   });
+
+  it("requires the tag commit to equal the remote main commit", () => {
+    const commit = "a".repeat(40);
+    expect(assertReleaseCommitMatch({ tagCommit: commit, mainCommit: ` ${commit.toUpperCase()} ` })).toEqual({
+      tagCommit: commit,
+      mainCommit: commit
+    });
+    expect(() => assertReleaseCommitMatch({ tagCommit: commit, mainCommit: "b".repeat(40) })).toThrow(/does not match remote main/);
+    expect(() => assertReleaseCommitMatch({ tagCommit: "short", mainCommit: commit })).toThrow(/not a full SHA/);
+  });
+
+  it("accepts exactly the five release artifacts", () => {
+    const tag = "v0.2.6-rc.11";
+    const expected = expectedReleaseArtifacts(tag);
+    expect(expected).toEqual([
+      "Spine Companion_0.2.6-rc.11_x64-setup.exe",
+      "Spine Companion_0.2.6-rc.11_amd64.AppImage",
+      "Spine Companion_0.2.6-rc.11_amd64.deb",
+      "Spine Companion_0.2.6-rc.11_x64.dmg",
+      "Spine Companion_0.2.6-rc.11_aarch64.dmg"
+    ]);
+    expect(validateArtifactMatrix(expected.map((name) => `nested/${name}`), tag).actual).toEqual([...expected].sort());
+  });
+
+  it("rejects missing, duplicate, and extra release artifacts", () => {
+    const tag = "v0.2.6-rc.11";
+    const expected = expectedReleaseArtifacts(tag);
+    expect(() => validateArtifactMatrix(expected.slice(1), tag)).toThrow(/Missing/);
+    expect(() => validateArtifactMatrix([...expected, expected[0]], tag)).toThrow(/unexpected/);
+    expect(() => validateArtifactMatrix([...expected.slice(0, -1), "notes.txt"], tag)).toThrow(/notes\.txt/);
+  });
 });
 
 describe("release checksums", () => {
@@ -72,6 +108,12 @@ describe("release workflow contract", () => {
     );
 
     expect(workflow).toContain("gh release download v0.2.6-rc.10");
+    expect(workflow).toContain("fetch-depth: 0");
+    expect(workflow).toContain("git ls-remote --refs origin refs/heads/main");
+    expect(workflow).toContain('refs/tags/${TAG}^{commit}');
+    expect(workflow).toContain("--tag-commit");
+    expect(workflow).toContain("--main-commit");
+    expect(workflow).toContain("--artifacts release-artifacts");
     expect(workflow).toContain("-PreviousInstallerPath $previous");
     expect(workflow).toContain('-PreviousInstallerSha256 "844049CC7F6478F6FEE6C0AF1AD50E7215F0D68DEF73293815837AF78A3292B1"');
     expect(artifactUpload).toContain("src-tauri/target/release/bundle/**/*.exe");
