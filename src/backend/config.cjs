@@ -204,7 +204,6 @@ function loadConfig() {
     ? path.resolve(assetBaseDir, config.spine.assetDir)
     : "";
   config.hasLocalConfig = loadedConfigPaths.includes(canonicalPath);
-  config.state.remindersPath = config.state.remindersPath || path.join(userConfigDir(), "reminders.json");
   return config;
 }
 
