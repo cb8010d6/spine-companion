@@ -17,7 +17,10 @@ model-source transparency, and reproducible releases.
   binaries are bundled with Spine Companion.
 - Separate the packaged MCP self-test from the first real AI work report. AI
   Integrations now shows both steps, supports Test All, persists progress, and
-  recognizes legacy source aliases without mislabeling the active tool.
+  recognizes legacy source aliases without mislabeling the active tool. The UI
+  now labels this accurately as a Companion MCP self-test; it does not claim to
+  launch or verify the third-party AI application itself. Undetected clients no
+  longer expose candidate config or instruction paths.
 - Restrict the local API to verified loopback addresses and strict local/Tauri
   CORS origins. The packaged API contract is HTTP plus SSE; `/ws` remains a
   development-only adapter. Reminders and recent history are session-scoped.
@@ -26,6 +29,8 @@ model-source transparency, and reproducible releases.
   reports the same version as the application. New read-only
   `companion_get_diagnostics` and `companion_test_bridge` tools verify the local
   bridge without changing companion state or returning local paths and secrets.
+  The installed executable also supports read-only `--status --json` and
+  `--doctor --json` checks without opening a window or changing state.
 - Reduce Manager to five daily-use destinations: Dashboard, Library, AI
   Integrations, Settings, and Diagnostics. Installed models and downloads are
   Library tabs; Avatar Studio is under Settings > Labs. Major catalog, model,
@@ -41,10 +46,13 @@ model-source transparency, and reproducible releases.
   resume an AI process. Windows lock acquisition now handles transient sharing
   errors with the existing bounded timeout.
 - Replace the developer-first README path with a no-terminal Library and Manager
-  workflow. Add current platform support, upgrade/uninstall and data retention
-  guidance, security policy, contribution guidance, and repository templates.
+  workflow and a current Manager Library screenshot. Add current platform
+  support, upgrade/uninstall and data retention guidance, security policy,
+  contribution guidance, and repository templates.
 - Add exact tag/version/release-note preflight checks, packaged Windows MCP
-  smoke testing, SHA-256 release manifests, and commit-pinned GitHub Actions.
+  smoke testing, a strict five-package artifact matrix, SHA-256 release
+  manifests, and commit-pinned GitHub Actions. A release tag must resolve to the
+  exact current `main` commit before any package can be published.
   Windows CI now installs the public rc.10 package, upgrades it in place to the
   candidate, checks the packaged MCP version, uninstalls it, and verifies user
   data retention.
@@ -69,11 +77,13 @@ model-source transparency, and reproducible releases.
 
 ## Validation
 
-- 264 JavaScript tests and 127 Rust tests pass locally, together with project,
+- 271 JavaScript tests and 130 Rust tests pass locally, together with project,
   MCP, coverage, frontend build, Rust check, and format checks.
 - The release workflow validates all versions against the tag, builds Windows,
   Linux, macOS Intel, and macOS Apple Silicon packages, runs the packaged Windows
   upgrade/installer/MCP smoke test, and publishes a `SHA256SUMS.txt` manifest.
+  The Windows package smoke also verifies the installed read-only status and
+  doctor commands.
 
 ## Please Test Before Stable
 

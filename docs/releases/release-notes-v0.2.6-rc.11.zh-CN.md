@@ -12,13 +12,16 @@ AI 集成验证、本地安全、模型来源透明度和可复现发布。
 - 对许可证为 `NOASSERTION` 或带来源警告的目录模型，在预览或下载前要求明确确认。
   用户确认前不会开始网络请求或创建缓存；Spine Companion 不打包第三方模型文件。
 - 将安装包 MCP 自检和 AI 第一次真实工作上报拆成两个步骤。AI Integrations 现在显示
-  两者状态、支持“测试全部连接”、持久化进度，并正确识别旧来源别名。
+  两者状态、支持“测试全部连接”、持久化进度，并正确识别旧来源别名。界面现在明确标为
+  Companion MCP 自检，不再暗示它会启动或验证第三方 AI 应用本身；未检测到的软件也不再
+  暴露候选配置路径或指令路径。
 - 本地 API 只允许经过验证的 loopback 地址，并严格校验本地/Tauri CORS origin。
   安装包 API 契约为 HTTP + SSE；`/ws` 仅用于开发预览。提醒和最近历史仅在本次会话有效。
 - 增加机器可读的 HTTP/MCP 契约，以及 JavaScript 开发 Bridge 与 Rust 安装包运行时的
   对照测试。源码 MCP server 现在会报告与应用一致的版本号。新增只读的
   `companion_get_diagnostics` 和 `companion_test_bridge`，可在不修改桌宠状态、
-  不返回本机路径和 secrets 的前提下验证本地 Bridge。
+  不返回本机路径和 secrets 的前提下验证本地 Bridge。安装后的可执行文件还支持只读的
+  `--status --json` 和 `--doctor --json`，不会打开窗口或修改状态。
 - Manager 收敛为五个日常入口：Dashboard、Library、AI 集成、设置和诊断。已安装模型与
   下载任务改为 Library 标签，Avatar Studio 移入“设置 > 实验功能”。模型目录、模型、
   AI 集成、renderer 和导出等主要错误会提供有界重试与打开诊断操作；已有离线目录缓存时
@@ -28,11 +31,12 @@ AI 集成验证、本地安全、模型来源透明度和可复现发布。
   已加载层和生效中的环境变量名称，但不会显示变量值。
 - Avatar Studio 的规划任务会进行有界持久化，便于 AI 辅助规划在明确上下文下继续；
   这不会运行或自动恢复 AI 进程。Windows 下的锁获取也会在既有超时内处理瞬时共享错误。
-- README 改为无需终端的 Library/Manager 使用路径，并补充当前平台等级、升级卸载、
-  数据保留、安全策略、贡献指南和仓库模板。
+- README 改为无需终端的 Library/Manager 使用路径，并加入当前 Manager 模型库实图；
+  同时补充当前平台等级、升级卸载、数据保留、安全策略、贡献指南和仓库模板。
 - 增加 tag/版本/发布说明严格预检、Windows 打包版 MCP 冒烟测试、SHA-256 清单和固定
-  commit 的 GitHub Actions。Windows CI 会先安装公开的 rc.10，再原位升级到候选版本，
-  核对打包 MCP 版本，完成卸载，并确认用户数据仍被保留。
+  commit 的 GitHub Actions；发布前还会严格核对五类安装包，并要求 tag 精确指向当前
+  `main` commit。Windows CI 会先安装公开的 rc.10，再原位升级到候选版本，核对打包
+  MCP 版本，完成卸载，并确认用户数据仍被保留。
 
 ## 兼容性与已知限制
 
@@ -48,10 +52,11 @@ AI 集成验证、本地安全、模型来源透明度和可复现发布。
 
 ## 验证
 
-- 本地 264 项 JavaScript 测试和 127 项 Rust 测试通过；项目检查、MCP 检查、覆盖率、
+- 本地 271 项 JavaScript 测试和 130 项 Rust 测试通过；项目检查、MCP 检查、覆盖率、
   前端构建、Rust check 和格式检查均通过。
 - Release workflow 会校验所有版本与 tag，构建 Windows、Linux、macOS Intel 和 macOS
-  Apple Silicon 安装包，执行 Windows 升级/安装/MCP 冒烟测试，并发布 `SHA256SUMS.txt`。
+  Apple Silicon 安装包，执行 Windows 升级/安装/MCP 冒烟测试，并发布 `SHA256SUMS.txt`；
+  Windows 安装包测试还会执行只读 status 与 doctor 命令。
 
 ## 正式版前请重点测试
 
