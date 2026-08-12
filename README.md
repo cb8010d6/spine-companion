@@ -13,6 +13,8 @@ unsigned previews for evaluation.
 
 Verify a downloaded file with `SHA256SUMS.txt` attached to the same release.
 
+![Spine Companion Manager showing the model Library](docs/media/manager-library-v0.2.6.png)
+
 ## First Character, No Terminal
 
 1. Install Spine Companion and start it from the desktop or Start menu.

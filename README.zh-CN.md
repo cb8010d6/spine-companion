@@ -12,6 +12,8 @@ Windows 安装包是稳定目标；macOS 和 Linux 安装包是未签名预览�
 
 同一 Release 中的 `SHA256SUMS.txt` 可用于校验下载文件。
 
+![Spine Companion Manager 的模型库界面](docs/media/manager-library-v0.2.6.png)
+
 ## 首次使用角色，无需终端
 
 1. 安装 Spine Companion，从桌面或开始菜单启动。
