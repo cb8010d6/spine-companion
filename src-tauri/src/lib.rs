@@ -4483,10 +4483,22 @@ fn now_ms() -> u64 {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    if std::env::args().any(|arg| arg == "--mcp") {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|arg| arg == "--mcp") {
         if let Err(error) = mcp::run_stdio() {
             eprintln!("Spine Companion MCP server failed: {}", error);
             std::process::exit(1);
+        }
+        return;
+    }
+    if let Some(command) = read_only_cli_command(&args) {
+        match mcp::run_read_only_cli(command, args.iter().any(|arg| arg == "--json")) {
+            Ok(true) => {}
+            Ok(false) => std::process::exit(2),
+            Err(error) => {
+                eprintln!("Spine Companion {command} failed: {error}");
+                std::process::exit(1);
+            }
         }
         return;
     }
@@ -4849,6 +4861,16 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+fn read_only_cli_command(args: &[String]) -> Option<&'static str> {
+    if args.iter().any(|arg| arg == "--doctor") {
+        Some("doctor")
+    } else if args.iter().any(|arg| arg == "--status") {
+        Some("status")
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -5367,5 +5389,18 @@ mod tests {
         assert!(validate_ai_integration_self_test("Codex", true, true)
             .unwrap_err()
             .contains("Confirm that Codex was restarted"));
+    }
+
+    #[test]
+    fn selects_read_only_cli_without_starting_the_desktop_runtime() {
+        assert_eq!(
+            read_only_cli_command(&["--status".to_string(), "--json".to_string()]),
+            Some("status")
+        );
+        assert_eq!(
+            read_only_cli_command(&["--doctor".to_string()]),
+            Some("doctor")
+        );
+        assert_eq!(read_only_cli_command(&["--mcp".to_string()]), None);
     }
 }

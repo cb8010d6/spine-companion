@@ -251,6 +251,15 @@ release/Spine Companion Portable.zip
 
 ## 9. 排错
 
+安装后的可执行文件提供只读检查，不会打开窗口或修改桌宠状态：
+
+```powershell
+& "<install-dir>/Spine Companion.exe" --status --json
+& "<install-dir>/Spine Companion.exe" --doctor --json
+```
+
+本地 Bridge 健康时退出码为 `0`，Bridge 不可用时为 `2`，命令无效或发生内部错误时为 `1`。
+
 - 模型缺失：重新选择 **Manager > Library > 已安装** 中的模型，或使用源码流程指定模型目录。
 - 端口冲突：设置 `COMPANION_PORT`，并同步更新 MCP 的 `COMPANION_API`。
 - Codex 看不到 MCP 工具：确认 `~/.codex/config.toml` 有 `[mcp_servers.spine_companion]`，然后重启 Codex。
