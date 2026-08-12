@@ -186,6 +186,16 @@ bun run skill:install
 bun run ai:configure -- --target all
 ```
 
+MCP 工具包括：
+
+- `companion_get_state`
+- `companion_set_state`
+- `companion_reminder`
+- `companion_report_ai_phase`
+- `companion_report_codex_phase`
+- `companion_get_diagnostics`
+- `companion_test_bridge`
+
 ## 7. Codex 插件一键安装
 
 仓库包含 repo-local 插件：
