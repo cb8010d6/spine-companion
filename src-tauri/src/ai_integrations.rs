@@ -30,21 +30,25 @@ impl IntegrationEnv {
             .or_else(|_| std::env::var("HOME"))
             .ok()
             .map(PathBuf::from)?;
-        let appdata = std::env::var("APPDATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| home.join("AppData").join("Roaming"));
-        let local_appdata = std::env::var("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| home.join("AppData").join("Local"));
+        let appdata_override = std::env::var("APPDATA").ok().map(PathBuf::from);
         let config_home = std::env::var("XDG_CONFIG_HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|_| {
                 if cfg!(target_os = "windows") {
-                    appdata.clone()
+                    appdata_override
+                        .clone()
+                        .unwrap_or_else(|| home.join("AppData").join("Roaming"))
                 } else {
                     home.join(".config")
                 }
             });
+        let data_home = std::env::var("XDG_DATA_HOME").ok().map(PathBuf::from);
+        let (default_appdata, default_local_appdata) =
+            platform_data_dirs(&home, &config_home, data_home.as_deref());
+        let appdata = appdata_override.unwrap_or(default_appdata);
+        let local_appdata = std::env::var("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .unwrap_or(default_local_appdata);
         let kimi_share_dir = std::env::var("KIMI_SHARE_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|_| home.join(".kimi"));
@@ -55,6 +59,27 @@ impl IntegrationEnv {
             config_home,
             kimi_share_dir,
         })
+    }
+}
+
+fn platform_data_dirs(
+    home: &Path,
+    config_home: &Path,
+    data_home: Option<&Path>,
+) -> (PathBuf, PathBuf) {
+    if cfg!(target_os = "windows") {
+        (
+            home.join("AppData").join("Roaming"),
+            home.join("AppData").join("Local"),
+        )
+    } else if cfg!(target_os = "macos") {
+        let application_support = home.join("Library").join("Application Support");
+        (application_support.clone(), application_support)
+    } else {
+        let data_home = data_home
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| home.join(".local").join("share"));
+        (config_home.to_path_buf(), data_home)
     }
 }
 
@@ -527,11 +552,19 @@ fn integration_from_def(env: &IntegrationEnv, def: &IntegrationDefinition) -> Ai
         None
     };
     let supported = def.format != IntegrationFormat::TemplateOnly || def.id == "custom";
-    let instructions_path = instructions_path_for_def(env, def)
-        .map(|path| path.to_string_lossy().to_string())
-        .unwrap_or_default();
-    let instructions_found =
-        !instructions_path.is_empty() && Path::new(&instructions_path).exists();
+    let instructions_target = instructions_path_for_def(env, def);
+    let instructions_found = instructions_target
+        .as_ref()
+        .map(|path| path.exists())
+        .unwrap_or(false);
+    let instructions_path = if installed || config_found || configured {
+        instructions_target
+            .as_ref()
+            .map(|path| path.to_string_lossy().to_string())
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
     AiIntegration {
         id: def.id.to_string(),
         name: def.name.to_string(),
@@ -2600,7 +2633,27 @@ mod tests {
             .unwrap();
         assert_eq!(claude.status, "Not detected");
         assert_eq!(claude.config_path, "");
+        assert_eq!(claude.instructions_path, "");
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn platform_data_directories_follow_host_conventions() {
+        let home = PathBuf::from("home");
+        let config_home = home.join(".config");
+        let (appdata, local_appdata) = platform_data_dirs(&home, &config_home, None);
+
+        if cfg!(target_os = "windows") {
+            assert_eq!(appdata, home.join("AppData").join("Roaming"));
+            assert_eq!(local_appdata, home.join("AppData").join("Local"));
+        } else if cfg!(target_os = "macos") {
+            let expected = home.join("Library").join("Application Support");
+            assert_eq!(appdata, expected);
+            assert_eq!(local_appdata, expected);
+        } else {
+            assert_eq!(appdata, config_home);
+            assert!(local_appdata.ends_with(Path::new(".local").join("share")));
+        }
     }
 
     #[test]
