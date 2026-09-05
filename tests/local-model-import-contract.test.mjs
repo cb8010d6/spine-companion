@@ -1,0 +1,39 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { describe, expect, it } from "vitest";
+
+describe("local model import IPC contract", () => {
+  it("preserves native import errors and refreshes any committed model", () => {
+    const manager = readFileSync(resolve(process.cwd(), "src/renderer/manager.js"), "utf8");
+    const action = manager.slice(manager.indexOf("async function importLocalModel()"), manager.indexOf("async function refreshIntegrations()"));
+    expect(action).toContain('readableManagerError(error, t("manager.error.localImportFailed"))');
+    expect(action).toContain("await refreshConfig().then(() => renderView(activeView)).catch(() => undefined)");
+    expect(action).toContain("if (localImportInFlight) return;");
+    expect(action).toContain("setLocalImportInFlight(true);");
+    expect(action).toMatch(/finally\s*\{\s*setLocalImportInFlight\(false\);\s*\}/);
+    expect(manager.match(/h\(\"button\", localImportButtonProps\(\), t\(\"manager\.actions\.importLocal\"\)\)/g)).toHaveLength(2);
+    expect(manager).toContain('h("button", { ...localImportButtonProps(), disabled: true }');
+    expect(manager).toContain('document.querySelectorAll("[data-action=\\"import-local\\"]")');
+    expect(manager).toContain('button.setAttribute("aria-busy", "true")');
+    expect(manager).toContain('button.removeAttribute("aria-busy")');
+  });
+
+  it("uses an explicit skeleton picker and does not invoke IPC on cancellation", () => {
+    const bridge = readFileSync(resolve(process.cwd(), "src/renderer/tauri-bridge.js"), "utf8");
+    expect(bridge).toMatch(/importLocalModel:\s*async\s*\(\)/);
+    expect(bridge).toMatch(/filters:\s*\[\{\s*name:\s*["']Spine skeleton["'],\s*extensions:\s*\["skel"\]/);
+    expect(bridge).toMatch(/if \(!selected \|\| Array\.isArray\(selected\)\) return \{ canceled: true \};[\s\S]*_tauriInvoke\("import_local_model"/);
+  });
+
+  it("registers the native command and keeps local metadata version-free", () => {
+    const backend = readFileSync(resolve(process.cwd(), "src-tauri/src/lib.rs"), "utf8");
+    expect(backend).toContain("async fn import_local_model(");
+    expect(backend).toContain("import_local_model,");
+    const command = backend.slice(backend.indexOf("async fn import_local_model("), backend.indexOf("async fn install_model_value("));
+    expect(backend).toContain("list_atlas_files");
+    expect(command).toContain("validate_spine_asset_dir");
+    expect(command).toContain("replace_directory_atomically");
+    expect(backend).toContain('"license": "UNVERIFIED"');
+    expect(command).not.toContain("spineVersion");
+  });
+});

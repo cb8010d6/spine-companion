@@ -38,13 +38,18 @@ Before a tag is created, run:
 
 ```bash
 bun install --frozen-lockfile
+bun audit
+bun run lint
+bun run type-check
 bun run test
+bun run test:coverage
 bun run check
 bun run check:mcp
 bun run build
-cargo fmt --manifest-path src-tauri/Cargo.toml --check
-cargo check --manifest-path src-tauri/Cargo.toml
-cargo test --manifest-path src-tauri/Cargo.toml
+cargo fmt --manifest-path src-tauri/Cargo.toml --all --check
+cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings
+cargo check --manifest-path src-tauri/Cargo.toml --locked
+cargo test --manifest-path src-tauri/Cargo.toml --locked
 bun run release:preflight -- --tag v0.2.6-rc.11
 ```
 
@@ -55,6 +60,18 @@ Windows MCP and installer lifecycle smoke, and publishes `SHA256SUMS.txt`.
 The Windows gate covers silent install, installed API startup, packaged MCP,
 silent uninstall, and user-data retention. The v0.2.6 final preview also tests
 an in-place upgrade from the public rc.10 installer.
+
+Use Bun 1.3.13 and the Rust toolchain pinned in `rust-toolchain.toml`.
+`type-check` currently checks the shared state, input, catalog, and integration
+logic listed in `jsconfig.json`; it is not whole-renderer TypeScript coverage.
+ESLint checks the frontend, scripts, and tests. Never replace frozen installs
+or strict lint with permissive commands to make a release pass.
+
+Run the Release workflow manually on the final candidate branch before tagging.
+Manual runs validate and package without publishing. Record its exact commit
+SHA and every job result; if any source or lockfile changes, validate the new
+commit again. Fixture screenshots and installer retention tests do not replace
+the hardware-dependent manual gate below.
 
 ## Manual Final-Preview Gate
 
@@ -88,6 +105,16 @@ than hidden release claims:
   rights holder provides verifiable permission or licensing evidence.
 - Automatic rigging and final Spine runtime export require a lawful Spine Editor
   or equivalent licensed export chain. Avatar Jobs are planning records only.
+
+### Linux Dependency Advisory
+
+The Linux Preview currently inherits `glib 0.18.5` through Tauri's GTK/WebKit
+stack. [GHSA-wrw7-89jp-8q8g](https://github.com/advisories/GHSA-wrw7-89jp-8q8g)
+affects its `VariantStrIter` implementation; the upstream fixed version is
+`0.20.0`, which cannot replace GTK 0.18's dependency independently. The Windows
+target does not include `glib`. Keep the advisory open and track a compatible
+upstream stack update separately; do not describe Linux Preview as having a
+clean dependency audit or dismiss the advisory because it is a preview.
 
 ## Publishing
 

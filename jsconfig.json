@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "types": [],
+    "skipLibCheck": true
+  },
+  "include": [
+    "src/renderer/input-gesture.js",
+    "src/renderer/navigation.js",
+    "src/renderer/integration-ui.js",
+    "src/renderer/dashboard-model.js",
+    "src/renderer/catalog-model.js",
+    "src/shared/notification-policy.js",
+    "src/renderer/hitbox.js",
+    "src/shared/ui-settings.cjs",
+    "src/shared/asset-url.js"
+  ]
+}

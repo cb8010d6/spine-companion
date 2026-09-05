@@ -35,13 +35,18 @@ Linux 和 macOS 的透明桌宠窗口使用保持可交互的兼容回退。各�
 
 ```bash
 bun install --frozen-lockfile
+bun audit
+bun run lint
+bun run type-check
 bun run test
+bun run test:coverage
 bun run check
 bun run check:mcp
 bun run build
-cargo fmt --manifest-path src-tauri/Cargo.toml --check
-cargo check --manifest-path src-tauri/Cargo.toml
-cargo test --manifest-path src-tauri/Cargo.toml
+cargo fmt --manifest-path src-tauri/Cargo.toml --all --check
+cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings
+cargo check --manifest-path src-tauri/Cargo.toml --locked
+cargo test --manifest-path src-tauri/Cargo.toml --locked
 bun run release:preflight -- --tag v0.2.6-rc.11
 ```
 
@@ -50,6 +55,14 @@ bun run release:preflight -- --tag v0.2.6-rc.11
 
 Windows 门槛覆盖静默安装、安装后 API 启动、安装包 MCP、静默卸载和用户数据保留。
 v0.2.6 最终预览版还要从公开 rc.10 安装包执行一次原位升级测试。
+
+使用 Bun 1.3.13 和 `rust-toolchain.toml` 固定的 Rust 工具链。`type-check` 目前覆盖
+`jsconfig.json` 中列出的共享状态、输入、目录和集成逻辑，不代表整个 Renderer 已完成
+类型检查；ESLint 检查前端、脚本和测试。不得以宽松命令替代 frozen 安装或严格 lint。
+
+打标签前，在最终候选分支手动运行 Release workflow。手动运行只校验和打包，不发布。
+记录准确的 commit SHA 和各项任务结果；源码或锁文件变动后，必须重新验证新提交。
+测试数据截图和安装包数据保留测试不能替代下面的硬件相关人工验收。
 
 ## 最终预览版人工门槛
 
@@ -76,6 +89,14 @@ v0.2.6 最终预览版还要从公开 rc.10 安装包执行一次原位升级测
   `NOASSERTION` 的第三方引用。
 - 自动绑骨和最终 Spine runtime 导出需要合法的 Spine Editor 或等价授权导出链；
   Avatar Job 只保存规划与进度。
+
+### Linux 依赖告警
+
+Linux Preview 通过 Tauri 的 GTK/WebKit 依赖链引入 `glib 0.18.5`。
+[GHSA-wrw7-89jp-8q8g](https://github.com/advisories/GHSA-wrw7-89jp-8q8g)
+涉及其 `VariantStrIter` 实现；上游修复版为 `0.20.0`，不能单独替换 GTK 0.18 的依赖。
+Windows 目标不包含 `glib`。告警保持开放，另行跟踪兼容的上游依赖链升级；不能因为是
+Preview 就关闭告警或声称 Linux 已通过完整依赖安全审计。
 
 ## 发布步骤
 

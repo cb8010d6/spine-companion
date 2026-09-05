@@ -1,3 +1,23 @@
+/**
+ * @typedef {object} UiSettings
+ * @property {boolean} hudVisible
+ * @property {boolean} bubbleVisible
+ * @property {boolean} bubbleShadow
+ * @property {string} bubbleBackground
+ * @property {number} bubbleHoldMs
+ * @property {string} dragMode
+ * @property {string} frameRateMode
+ * @property {boolean} autoRevealOnMcp
+ * @property {boolean} systemNotifications
+ * @property {boolean} updateAutoCheck
+ * @property {string} updateChannel
+ * @property {number} maxDevicePixelRatio
+ * @property {number} hitboxPadding
+ * @property {boolean} debugHitbox
+ * @property {string} theme
+ */
+
+/** @type {Readonly<UiSettings>} */
 const DEFAULT_UI_SETTINGS = Object.freeze({
   hudVisible: false,
   bubbleVisible: true,
@@ -22,6 +42,7 @@ const FRAME_RATE_MODES = new Set(["display", "60", "30"]);
 const THEMES = new Set(["system", "light", "dark"]);
 const UPDATE_CHANNELS = new Set(["auto", "stable", "prerelease"]);
 
+/** @param {Partial<UiSettings>} input */
 function normalizeUiSettings(input = {}, defaults = DEFAULT_UI_SETTINGS) {
   const source = input && typeof input === "object" ? input : {};
   return {

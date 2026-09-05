@@ -941,7 +941,7 @@ fn reconcile_pending_integrations_with_env(
             return Err("Pending integration safety backup path is invalid.".to_string());
         }
         if let Some(restore) = &operation.final_restore {
-            if PathBuf::from(&restore.target_path) != target {
+            if Path::new(&restore.target_path) != target {
                 return Err("Pending integration restore target is invalid.".to_string());
             }
             if let Some(backup) = &restore.backup_path {
@@ -1258,7 +1258,7 @@ fn restore_ai_integration_with_env(
     id: &str,
 ) -> Result<IntegrationRestoreResult, String> {
     reconcile_pending_integrations_with_env(env, config_dir)?;
-    let def = find_definition(&env, id)?;
+    let def = find_definition(env, id)?;
     if def.format == IntegrationFormat::TemplateOnly {
         return Err("Custom integrations do not have a managed backup.".to_string());
     }
@@ -1273,7 +1273,7 @@ fn restore_ai_integration_with_env(
         .config_restore
         .clone()
         .ok_or_else(|| "No saved integration setup is available to restore.".to_string())?;
-    if PathBuf::from(&restore.target_path) != target {
+    if Path::new(&restore.target_path) != target {
         return Err("The saved integration target no longer matches this tool.".to_string());
     }
     let current_bytes = std::fs::read(&target).map_err(|error| error.to_string())?;
@@ -1344,7 +1344,7 @@ fn restore_ai_integration_with_env(
     remove_pending_operation(config_dir, id)?;
 
     let state_file = load_integration_state(config_dir)?;
-    let mut integration = integration_from_def(&env, &def);
+    let mut integration = integration_from_def(env, &def);
     if let Some(runtime) = state_file.tools.get(id) {
         apply_runtime_state(&mut integration, runtime);
     }
@@ -1706,7 +1706,7 @@ fn configure_ai_integration_managed_with_env(
     api: &str,
 ) -> Result<IntegrationApplyResult, String> {
     reconcile_pending_integrations_with_env(env, config_dir)?;
-    let def = find_definition(&env, id)?;
+    let def = find_definition(env, id)?;
     if def.format == IntegrationFormat::TemplateOnly {
         return Err("Custom integrations are template-only.".to_string());
     }
@@ -1718,7 +1718,7 @@ fn configure_ai_integration_managed_with_env(
         "{}\n",
         render_config_text(&def, &current, exe_path, api)?.trim_end()
     );
-    let integration = integration_from_def(&env, &def);
+    let integration = integration_from_def(env, &def);
     if next == current {
         return Ok(IntegrationApplyResult {
             integration,
@@ -1796,7 +1796,7 @@ fn configure_ai_integration_with_env(
     exe_path: &Path,
     api: &str,
 ) -> Result<IntegrationApplyResult, String> {
-    let def = find_definition(&env, id)?;
+    let def = find_definition(env, id)?;
     if def.format == IntegrationFormat::TemplateOnly {
         return Err("Custom integrations are template-only.".to_string());
     }
@@ -1807,7 +1807,7 @@ fn configure_ai_integration_with_env(
         "{}\n",
         render_config_text(&def, &current, exe_path, api)?.trim_end()
     );
-    let integration = integration_from_def(&env, &def);
+    let integration = integration_from_def(env, &def);
     if next == current {
         return Ok(IntegrationApplyResult {
             integration,

@@ -74,6 +74,22 @@ pub fn list_skeletons(asset_dir: &Path) -> Result<Vec<String>, String> {
     })
 }
 
+/// Lists atlas files without inspecting unrelated atlas contents.
+pub fn list_atlas_files(asset_dir: &Path) -> Result<Vec<String>, String> {
+    let root = asset_dir
+        .canonicalize()
+        .map_err(|error| format!("Cannot read Spine asset directory: {error}"))?;
+    list_files(&root).map(|files| {
+        let mut atlases = files
+            .into_iter()
+            .filter(|path| has_extension(path, "atlas"))
+            .map(|path| display_relative(&root, &path))
+            .collect::<Vec<_>>();
+        sort_paths(&mut atlases);
+        atlases
+    })
+}
+
 /// Selects a single skeleton predictably, requiring an explicit selector for ambiguity.
 pub fn select_skeleton(asset_dir: &Path, requested: Option<&str>) -> Result<String, String> {
     if let Some(requested) = requested.map(str::trim).filter(|value| !value.is_empty()) {

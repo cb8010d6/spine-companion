@@ -22,6 +22,8 @@ use state::{
     ReminderBroadcast, ReminderStore, SetStateInput, StateBroadcast, StateStore,
 };
 use std::collections::HashMap;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{
@@ -77,6 +79,7 @@ struct AppData {
     renderer_health: Arc<Mutex<RendererHealth>>,
     catalog_cache: Arc<Mutex<catalog::CatalogCache>>,
     ai_integration_lock: Arc<Mutex<()>>,
+    model_mutation_lock: tokio::sync::Mutex<()>,
     model_trial_previous: Arc<Mutex<Option<CurrentModel>>>,
     download_cancellations: Arc<Mutex<HashMap<String, Arc<AtomicU8>>>>,
 }
@@ -269,6 +272,7 @@ fn default_time_scale() -> f64 {
     1.0
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn should_ignore_cursor(
     enabled: bool,
     dragging: bool,
@@ -413,6 +417,14 @@ fn pointer_passthrough_capability() -> serde_json::Value {
 #[serde(rename_all = "camelCase")]
 struct ImportModelInput {
     id: String,
+    #[serde(default = "default_model_activation")]
+    activate: bool,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportLocalModelInput {
+    skel_path: String,
     #[serde(default = "default_model_activation")]
     activate: bool,
 }
@@ -755,6 +767,509 @@ async fn import_model(
     install_model_value(&app, &data, input, model).await
 }
 
+fn local_model_name(asset_dir: &Path, skel: &str) -> String {
+    asset_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .or_else(|| Path::new(skel).file_stem().and_then(|name| name.to_str()))
+        .unwrap_or("Local model")
+        .trim()
+        .to_string()
+}
+
+fn local_model_id(asset_dir: &Path, name: &str, skel: &str) -> String {
+    let mut slug = String::new();
+    let mut separator = false;
+    for byte in name.bytes() {
+        if byte.is_ascii_alphanumeric() {
+            slug.push(byte.to_ascii_lowercase() as char);
+            separator = false;
+        } else if !slug.is_empty() && !separator {
+            slug.push('-');
+            separator = true;
+        }
+    }
+    while slug.ends_with('-') {
+        slug.pop();
+    }
+    if slug.is_empty() {
+        slug.push_str("model");
+    }
+    slug.truncate(40);
+    while slug.ends_with('-') {
+        slug.pop();
+    }
+    let mut digest = Sha1::new();
+    digest.update(asset_dir.to_string_lossy().as_bytes());
+    digest.update([0]);
+    digest.update(skel.as_bytes());
+    let hash = format!("{:x}", digest.finalize());
+    format!("local-{slug}-{}", &hash[..12])
+}
+
+fn is_local_import_staging_name(name: &str) -> bool {
+    name.starts_with(".local-")
+        && name
+            .strip_suffix(".staging")
+            .and_then(|stem| stem.rsplit_once("-local-import-"))
+            .is_some_and(|(_, request)| {
+                !request.is_empty() && request.bytes().all(|byte| byte.is_ascii_digit())
+            })
+}
+
+fn normalized_relative_path(root: &Path, path: &Path) -> Result<String, String> {
+    let canonical = path
+        .canonicalize()
+        .map_err(|error| format!("Asset file cannot be read: {error}"))?;
+    let canonical_root = root
+        .canonicalize()
+        .map_err(|error| format!("Asset directory cannot be read: {error}"))?;
+    if !canonical.starts_with(&canonical_root) || !canonical.is_file() {
+        return Err(format!(
+            "Asset file must stay inside the selected folder: {}",
+            path.to_string_lossy()
+        ));
+    }
+    let relative = canonical
+        .strip_prefix(&canonical_root)
+        .map_err(|_| "Asset file is outside the selected folder.".to_string())?;
+    let relative = avatar::spine_assets::safe_relative_path(&relative.to_string_lossy())?;
+    Ok(relative.to_string_lossy().replace('\\', "/"))
+}
+
+fn validate_local_skeleton_header(path: &Path) -> Result<String, String> {
+    let version = avatar::read_spine_binary_version(path)
+        .ok_or_else(|| "Selected .skel file is not a valid Spine binary skeleton.".to_string())?;
+    if version.trim().is_empty() {
+        return Err("Selected .skel file has no Spine runtime version.".to_string());
+    }
+    if version != "3.8" && !version.starts_with("3.8.") {
+        return Err(format!(
+            "Unsupported Spine runtime version {version}; expected Spine 3.8."
+        ));
+    }
+    Ok(version)
+}
+
+#[derive(Debug)]
+struct LocalRuntimeSelection {
+    #[cfg(test)]
+    atlas_source: String,
+    atlas_destination: String,
+    atlas_text: String,
+    texture_sources: Vec<String>,
+}
+
+fn select_local_atlas(asset_dir: &Path, skel: &str) -> Result<String, String> {
+    let skeleton_stem = Path::new(skel)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("");
+    let atlas_files = avatar::spine_assets::list_atlas_files(asset_dir)?;
+    if atlas_files.is_empty() {
+        return Err("The selected .skel folder must also contain an .atlas file.".to_string());
+    }
+    let atlas_candidates = atlas_files
+        .iter()
+        .filter(|atlas| {
+            Path::new(atlas)
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .is_some_and(|stem| stem.eq_ignore_ascii_case(skeleton_stem))
+        })
+        .collect::<Vec<_>>();
+    if atlas_files.len() == 1 {
+        Ok(atlas_files[0].clone())
+    } else {
+        match atlas_candidates.as_slice() {
+            [atlas] => Ok((*atlas).clone()),
+            [] => Err(format!(
+                "Multiple atlas files were found. Add one named for the selected skeleton ({skeleton_stem}.atlas)."
+            )),
+            _ => Err(format!(
+                "Multiple atlas files match the selected skeleton ({skeleton_stem}). Select a folder with one matching atlas."
+            )),
+        }
+    }
+}
+
+fn read_local_atlas(asset_dir: &Path, atlas: &str) -> Result<(String, Vec<String>), String> {
+    let atlas_path = asset_dir.join(
+        avatar::spine_assets::safe_relative_path(atlas)
+            .map_err(|error| format!("Invalid atlas path: {error}"))?,
+    );
+    let mut atlas_file = File::open(&atlas_path)
+        .map_err(|error| format!("Unable to read Spine atlas file {atlas}: {error}"))?;
+    let mut atlas_bytes = Vec::new();
+    std::io::Read::by_ref(&mut atlas_file)
+        .take(MAX_MODEL_FILE_BYTES + 1)
+        .read_to_end(&mut atlas_bytes)
+        .map_err(|error| format!("Unable to read Spine atlas file {atlas}: {error}"))?;
+    if atlas_bytes.len() as u64 > MAX_MODEL_FILE_BYTES {
+        return Err(format!("Atlas {atlas} exceeds the 64 MiB per-file limit."));
+    }
+    let atlas_text = String::from_utf8(atlas_bytes)
+        .map_err(|_| format!("Spine atlas {atlas} is not valid UTF-8."))?;
+    let references = avatar::spine_assets::atlas_texture_refs(&atlas_text);
+    if references.is_empty() {
+        return Err(format!(
+            "Spine atlas {atlas} does not reference a texture page."
+        ));
+    }
+    let mut texture_files = Vec::new();
+    for texture in references {
+        let relative = avatar::spine_assets::safe_relative_path(&texture)
+            .map_err(|error| format!("Invalid atlas texture reference: {error}"))?;
+        let texture_path = atlas_path.parent().unwrap_or(asset_dir).join(relative);
+        texture_files.push(normalized_relative_path(asset_dir, &texture_path)?);
+    }
+    Ok((atlas_text, texture_files))
+}
+
+fn local_runtime_selection(asset_dir: &Path, skel: &str) -> Result<LocalRuntimeSelection, String> {
+    let atlas_source = select_local_atlas(asset_dir, skel)?;
+    let (atlas_text, texture_sources) = read_local_atlas(asset_dir, &atlas_source)?;
+    let skeleton_stem = Path::new(skel)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "Selected skeleton has an invalid file name.".to_string())?;
+    let atlas_destination = format!("{skeleton_stem}.atlas");
+    Ok(LocalRuntimeSelection {
+        #[cfg(test)]
+        atlas_source,
+        atlas_destination,
+        atlas_text,
+        texture_sources,
+    })
+}
+
+/// Selects one skeleton's atlas and referenced pages, avoiding unrelated files in a shared folder.
+#[cfg(test)]
+fn local_runtime_files(asset_dir: &Path, skel: &str) -> Result<Vec<String>, String> {
+    let selection = local_runtime_selection(asset_dir, skel)?;
+    let mut files = vec![skel.to_string(), selection.atlas_source];
+    files.extend(selection.texture_sources);
+    files.sort_by_key(|path| path.to_ascii_lowercase());
+    files.dedup();
+    Ok(files)
+}
+
+fn rewrite_local_atlas(atlas_text: &str, texture_destinations: &[String]) -> String {
+    let mut texture_index = 0;
+    let mut rewritten = String::with_capacity(atlas_text.len());
+    for line in atlas_text.split_inclusive('\n') {
+        let content = line.strip_suffix('\n').unwrap_or(line);
+        let content_without_cr = content.strip_suffix('\r').unwrap_or(content);
+        let trimmed = content_without_cr.trim();
+        let is_top_level_texture = !content_without_cr
+            .chars()
+            .next()
+            .is_some_and(char::is_whitespace)
+            && Path::new(trimmed)
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| {
+                    ["png", "jpg", "jpeg", "webp"]
+                        .iter()
+                        .any(|allowed| extension.eq_ignore_ascii_case(allowed))
+                });
+        if is_top_level_texture && texture_index < texture_destinations.len() {
+            rewritten.push_str(&texture_destinations[texture_index]);
+            rewritten.push_str(&line[content_without_cr.len()..]);
+            texture_index += 1;
+        } else {
+            rewritten.push_str(line);
+        }
+    }
+    rewritten
+}
+
+fn copy_local_asset_file(
+    source_root: &Path,
+    relative: &str,
+    destination_root: &Path,
+    total_bytes: &mut u64,
+) -> Result<(), String> {
+    let relative = avatar::spine_assets::safe_relative_path(relative)?;
+    let source = source_root.join(&relative);
+    let file_type = fs::symlink_metadata(&source)
+        .map_err(|error| format!("Unable to inspect asset {}: {error}", relative.display()))?;
+    if !file_type.is_file() {
+        return Err(format!(
+            "Asset is not a regular file: {}",
+            relative.display()
+        ));
+    }
+    let canonical_source = source
+        .canonicalize()
+        .map_err(|error| format!("Unable to resolve asset {}: {error}", relative.display()))?;
+    let canonical_root = source_root
+        .canonicalize()
+        .map_err(|error| format!("Unable to resolve asset directory: {error}"))?;
+    if !canonical_source.starts_with(&canonical_root) {
+        return Err(format!(
+            "Asset escapes the selected folder: {}",
+            relative.display()
+        ));
+    }
+    let declared_size = file_type.len();
+    if declared_size > MAX_MODEL_FILE_BYTES {
+        return Err(format!(
+            "Asset {} exceeds the 64 MiB per-file limit.",
+            relative.display()
+        ));
+    }
+    *total_bytes = total_bytes
+        .checked_add(declared_size)
+        .ok_or_else(|| "Local model size overflowed.".to_string())?;
+    if *total_bytes > MAX_MODEL_TOTAL_BYTES {
+        return Err("Local model exceeds the 256 MiB total size limit.".to_string());
+    }
+
+    let destination = destination_root.join(&relative);
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let mut input = File::open(&canonical_source).map_err(|error| error.to_string())?;
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&destination)
+        .map_err(|error| error.to_string())?;
+    let copied = std::io::copy(
+        &mut std::io::Read::by_ref(&mut input).take(MAX_MODEL_FILE_BYTES + 1),
+        &mut output,
+    )
+    .map_err(|error| error.to_string())?;
+    if copied > MAX_MODEL_FILE_BYTES || copied != declared_size {
+        return Err(format!(
+            "Asset {} changed while it was being imported.",
+            relative.display()
+        ));
+    }
+    output.sync_all().map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn write_local_atlas_file(
+    destination_root: &Path,
+    relative: &str,
+    contents: &str,
+    total_bytes: &mut u64,
+) -> Result<(), String> {
+    let relative = avatar::spine_assets::safe_relative_path(relative)?;
+    let bytes = contents.as_bytes();
+    if bytes.len() as u64 > MAX_MODEL_FILE_BYTES {
+        return Err(format!(
+            "Atlas {} exceeds the 64 MiB per-file limit.",
+            relative.display()
+        ));
+    }
+    *total_bytes = total_bytes
+        .checked_add(bytes.len() as u64)
+        .ok_or_else(|| "Local model size overflowed.".to_string())?;
+    if *total_bytes > MAX_MODEL_TOTAL_BYTES {
+        return Err("Local model exceeds the 256 MiB total size limit.".to_string());
+    }
+    let destination = destination_root.join(&relative);
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&destination)
+        .map_err(|error| error.to_string())?;
+    output
+        .write_all(bytes)
+        .and_then(|_| output.sync_all())
+        .map_err(|error| error.to_string())
+}
+
+fn write_local_import_metadata(
+    destination_root: &Path,
+    id: &str,
+    name: &str,
+    skel: &str,
+    files: &[String],
+) -> Result<(), String> {
+    write_model_metadata(
+        destination_root,
+        &serde_json::json!({
+            "id": id,
+            "name": name,
+            "source": "Local",
+            "license": "UNVERIFIED",
+            "licenseNote": "Rights and redistribution terms were not verified for this local asset.",
+            "skel": skel,
+            "files": files,
+            "category": "operator",
+            "compatibilityProfile": "companion"
+        }),
+    )
+}
+
+fn local_import_result(
+    data: &AppData,
+    id: &str,
+    name: &str,
+    skel: &str,
+    asset_dir: &Path,
+    activated: bool,
+) -> ImportModelResult {
+    let public = public_config_with_ui(data);
+    let origin = public
+        .get("server")
+        .and_then(|server| server.get("origin"))
+        .and_then(|origin| origin.as_str())
+        .unwrap_or("http://127.0.0.1:17388");
+    ImportModelResult {
+        id: id.to_string(),
+        name: name.to_string(),
+        asset_dir: asset_dir.to_string_lossy().to_string(),
+        skel: skel.to_string(),
+        asset_url: format!("{origin}/assets/spine/{}", url_encode_path_segment(skel)),
+        local_config_path: data.local_config_path.to_string_lossy().to_string(),
+        requires_restart: false,
+        activated,
+    }
+}
+
+#[tauri::command]
+async fn import_local_model(
+    app: tauri::AppHandle,
+    data: State<'_, AppData>,
+    input: ImportLocalModelInput,
+) -> Result<ImportModelResult, String> {
+    let requested = input.skel_path.trim();
+    if requested.is_empty() {
+        return Err("Choose a Spine .skel file to import.".to_string());
+    }
+    let selected = PathBuf::from(requested);
+    let selected_type = fs::symlink_metadata(&selected)
+        .map_err(|error| format!("Unable to inspect selected skeleton: {error}"))?;
+    if !selected_type.is_file() {
+        return Err("The selected skeleton must be a regular file.".to_string());
+    }
+    if !selected
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("skel"))
+    {
+        return Err("Choose a Spine .skel file to import.".to_string());
+    }
+    let selected = selected
+        .canonicalize()
+        .map_err(|error| format!("Unable to resolve selected skeleton: {error}"))?;
+    let asset_dir = selected
+        .parent()
+        .ok_or_else(|| "Selected skeleton has no containing folder.".to_string())?
+        .canonicalize()
+        .map_err(|error| format!("Unable to resolve selected asset folder: {error}"))?;
+    let skel = selected
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "Selected skeleton has an invalid file name.".to_string())?
+        .to_string();
+    let _spine_version = validate_local_skeleton_header(&selected)?;
+    let selection = local_runtime_selection(&asset_dir, &skel)?;
+    let mut files = vec![skel.clone()];
+    files.extend(selection.texture_sources.iter().cloned());
+    files.push(selection.atlas_destination.clone());
+    files.sort_by_key(|path| path.to_ascii_lowercase());
+    files.dedup();
+    let name = local_model_name(&asset_dir, &skel);
+    let id = local_model_id(&asset_dir, &name, &skel);
+    let models_root = data.config_dir.join("models");
+    fs::create_dir_all(&models_root).map_err(|error| error.to_string())?;
+    let request_id = NEXT_DOWNLOAD_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
+    let staging = models_root.join(format!(".{id}-local-import-{request_id}.staging"));
+    remove_dir_if_exists_blocking(&staging)?;
+    fs::create_dir_all(&staging).map_err(|error| error.to_string())?;
+    let copy_result = (|| {
+        let mut total_bytes = 0;
+        for relative in &files {
+            if relative == &selection.atlas_destination {
+                continue;
+            }
+            copy_local_asset_file(&asset_dir, relative, &staging, &mut total_bytes)?;
+        }
+        let atlas_text = rewrite_local_atlas(&selection.atlas_text, &selection.texture_sources);
+        write_local_atlas_file(
+            &staging,
+            &selection.atlas_destination,
+            &atlas_text,
+            &mut total_bytes,
+        )?;
+        write_local_import_metadata(&staging, &id, &name, &skel, &files)?;
+        validate_spine_asset_dir(&staging, &skel)
+    })();
+    if let Err(error) = copy_result {
+        let _ = remove_dir_if_exists_blocking(&staging);
+        return Err(format!("Local model import failed: {error}"));
+    }
+
+    let mutation = data.model_mutation_lock.lock().await;
+    let model_dir = models_root.join(&id);
+    let backup = match avatar::replace_directory_atomically(&staging, &model_dir) {
+        Ok(backup) => backup,
+        Err(error) => {
+            let _ = remove_dir_if_exists_blocking(&staging);
+            return Err(format!("Local model import failed: {error}"));
+        }
+    };
+    let canonical_model_dir = match model_dir.canonicalize() {
+        Ok(path) => path,
+        Err(error) => {
+            let _ = avatar::rollback_directory_replace(&model_dir, backup.as_deref());
+            return Err(format!("Local model import failed: {error}"));
+        }
+    };
+    let result = if input.activate {
+        activate_installed_model(&app, &data, &id, &mutation).await
+    } else {
+        Ok(local_import_result(
+            &data,
+            &id,
+            &name,
+            &skel,
+            &canonical_model_dir,
+            false,
+        ))
+    };
+    match result {
+        Ok(result) => {
+            if result.activated {
+                clear_model_trial(&data);
+            }
+            if let Some(backup) = backup {
+                let _ = fs::remove_dir_all(backup);
+            }
+            if !input.activate {
+                let _ = app.emit("companion:model-imported", result.clone());
+            }
+            Ok(result)
+        }
+        Err(error) => {
+            if let Some(backup) = backup {
+                let _ = fs::remove_dir_all(backup);
+            }
+            if input.activate {
+                let imported =
+                    local_import_result(&data, &id, &name, &skel, &canonical_model_dir, false);
+                let _ = app.emit("companion:model-imported", imported);
+                Err(format!(
+                    "Local model imported but could not be activated: {error}"
+                ))
+            } else {
+                Err(error)
+            }
+        }
+    }
+}
+
 async fn install_model_value(
     app: &tauri::AppHandle,
     data: &AppData,
@@ -1020,13 +1535,12 @@ async fn install_model_value_inner(
         );
         error
     })?;
-    begin_download_commit(cancellation.as_ref()).map_err(|error| {
+    let mutation = data.model_mutation_lock.lock().await;
+    begin_download_commit(cancellation.as_ref()).inspect_err(|_| {
         let _ = remove_dir_if_exists_blocking(&temp_model_dir);
-        error
     })?;
-    write_model_metadata(&temp_model_dir, &model).map_err(|error| {
+    write_model_metadata(&temp_model_dir, &model).inspect_err(|_| {
         let _ = remove_dir_if_exists_blocking(&temp_model_dir);
-        error
     })?;
     replace_model_dir(&temp_model_dir, &model_dir)
         .await
@@ -1049,25 +1563,9 @@ async fn install_model_value_inner(
         .canonicalize()
         .map_err(|error| error.to_string())?;
     if input.activate {
-        write_local_model_config(&data.local_config_path, &canonical_model_dir, &skel).map_err(
-            |error| {
-                let message = format!("Failed to activate downloaded model: {}", error);
-                let _ = app.emit(
-                    "companion:download-progress",
-                    serde_json::json!({
-                        "id": input.id,
-                        "file": "Activation",
-                        "current": total_files,
-                        "total": total_files,
-                        "status": "failed",
-                        "error": message
-                    }),
-                );
-                message
-            },
-        )?;
-        verify_local_model_config(&data.local_config_path, &canonical_model_dir, &skel).map_err(
-            |error| {
+        commit_model_selection(data, &canonical_model_dir, &skel, Some(&model), &mutation)
+            .await
+            .map_err(|error| {
                 let message = format!("Downloaded model was not activated: {}", error);
                 let _ = app.emit(
                     "companion:download-progress",
@@ -1081,47 +1579,8 @@ async fn install_model_value_inner(
                     }),
                 );
                 message
-            },
-        )?;
-        if let Ok(mut public) = data.public_config.lock() {
-            merge_json(
-                &mut public,
-                serde_json::json!({
-                    "spine": {
-                        "assetDir": canonical_model_dir.to_string_lossy().to_string(),
-                        "assetDirConfigured": true,
-                        "skel": skel.clone(),
-                        "modelCategory": model.get("category").cloned().unwrap_or_else(|| serde_json::json!("operator")),
-                        "compatibilityProfile": model.get("compatibilityProfile").cloned().unwrap_or_else(|| serde_json::json!("companion"))
-                    }
-                }),
-            );
-        }
-        {
-            let mut asset_root = data.asset_root.write().await;
-            *asset_root = Some(canonical_model_dir.clone());
-        }
-        let public = public_config_with_ui(data);
-        let configured_dir = string_at(&public, &["spine", "assetDir"])
-            .map(PathBuf::from)
-            .unwrap_or_default();
-        if configured_dir != canonical_model_dir
-            || string_at(&public, &["spine", "skel"]) != Some(skel.as_str())
-        {
-            let message = "Downloaded model was not activated in public config".to_string();
-            let _ = app.emit(
-                "companion:download-progress",
-                serde_json::json!({
-                    "id": input.id,
-                    "file": "Activation",
-                    "current": total_files,
-                    "total": total_files,
-                    "status": "failed",
-                    "error": message
-                }),
-            );
-            return Err(message);
-        }
+            })?;
+        clear_model_trial(data);
     }
     let _ = app.emit(
         "companion:download-progress",
@@ -1210,7 +1669,7 @@ async fn prepare_model_preview(
     let skel = entry.model.skel.clone();
     let preview_root = data.config_dir.join("preview-assets");
     let preview_dir = preview_root.join(&id);
-    let temp_dir = preview_root.join(format!("{}.preview-download", &id));
+    let temp_dir = preview_root.join(format!("{}.preview-download", id));
     let signature = format!(
         "{:x}",
         Sha256::digest(serde_json::to_vec(&entry.model).map_err(|error| error.to_string())?)
@@ -1313,9 +1772,8 @@ async fn prepare_model_preview(
                     })?;
             }
         }
-        validate_spine_asset_dir(&temp_dir, &skel).map_err(|error| {
+        validate_spine_asset_dir(&temp_dir, &skel).inspect_err(|_| {
             let _ = remove_dir_if_exists_blocking(&temp_dir);
-            error
         })?;
         tokio::fs::write(temp_dir.join(".catalog-signature"), &signature)
             .await
@@ -1358,10 +1816,7 @@ fn github_raw_to_jsdelivr_url(url: &str) -> Option<String> {
         return None;
     }
     Some(format!(
-        "https://cdn.jsdelivr.net/gh/{}@{}/{}",
-        format!("{}/{}", owner, repo),
-        branch,
-        path
+        "https://cdn.jsdelivr.net/gh/{owner}/{repo}@{branch}/{path}"
     ))
 }
 
@@ -1698,7 +2153,7 @@ fn prune_preview_asset_cache(root: &Path, keep_id: &str, max_entries: usize, max
             Some((name, entry.path(), modified, size))
         })
         .collect::<Vec<_>>();
-    cached.sort_by(|left, right| right.2.cmp(&left.2));
+    cached.sort_by_key(|right| std::cmp::Reverse(right.2));
     let mut retained_entries = cached.len();
     let mut retained_bytes = cached.iter().map(|entry| entry.3).sum::<u64>();
     for (name, path, _, size) in cached.into_iter().rev() {
@@ -1749,6 +2204,7 @@ async fn save_settings(
     data: State<'_, AppData>,
     input: SaveSettingsInput,
 ) -> Result<(), String> {
+    let _mutation = data.model_mutation_lock.lock().await;
     let path = &data.local_config_path;
     let mut patch = input.patch;
     if let Some(spine) = patch.get("spine").and_then(serde_json::Value::as_object) {
@@ -1803,6 +2259,7 @@ async fn save_model_presentation(
     input: ModelPresentationInput,
 ) -> Result<serde_json::Value, String> {
     validate_model_presentation(&input)?;
+    let _mutation = data.model_mutation_lock.lock().await;
     let presentation = serde_json::json!({
         "scale": input.scale,
         "offsetX": input.offset_x,
@@ -2034,13 +2491,19 @@ struct InstalledModel {
 
 #[tauri::command]
 fn get_installed_models(data: State<'_, AppData>) -> Result<Vec<InstalledModel>, String> {
-    let models_dir = data.config_dir.join("models");
+    installed_models_in(&data.config_dir.join("models"))
+}
+
+fn installed_models_in(models_dir: &Path) -> Result<Vec<InstalledModel>, String> {
     let mut models = Vec::new();
     if let Ok(entries) = std::fs::read_dir(models_dir) {
         for entry in entries.flatten() {
             if let Ok(file_type) = entry.file_type() {
                 if file_type.is_dir() {
                     let id = entry.file_name().to_string_lossy().to_string();
+                    if is_local_import_staging_name(&id) {
+                        continue;
+                    }
                     let dir = entry.path().to_string_lossy().to_string();
                     let metadata =
                         std::fs::read_to_string(entry.path().join(".companion-model.json"))
@@ -2085,8 +2548,14 @@ fn get_installed_models(data: State<'_, AppData>) -> Result<Vec<InstalledModel>,
 }
 
 #[tauri::command]
-fn remove_model(data: State<'_, AppData>, id: String) -> Result<(), String> {
-    if id.contains("..") || id.contains('/') || id.contains('\\') {
+async fn remove_model(data: State<'_, AppData>, id: String) -> Result<(), String> {
+    let _mutation = data.model_mutation_lock.lock().await;
+    validate_model_download_file_name(&id).map_err(|_| "Invalid model ID".to_string())?;
+    if id.contains("..")
+        || id.contains('/')
+        || id.contains('\\')
+        || is_local_import_staging_name(&id)
+    {
         return Err("Invalid model ID".to_string());
     }
     let models_dir = data.config_dir.join("models");
@@ -2112,6 +2581,18 @@ fn remove_model(data: State<'_, AppData>, id: String) -> Result<(), String> {
         if active == resolved_model_dir {
             return Err("Cannot remove the active model".to_string());
         }
+    }
+    if data
+        .model_trial_previous
+        .lock()
+        .map_err(|_| "Model trial lock is poisoned".to_string())?
+        .as_ref()
+        .is_some_and(|model| {
+            PathBuf::from(&model.asset_dir).canonicalize().ok().as_ref()
+                == Some(&resolved_model_dir)
+        })
+    {
+        return Err("Finish the model trial before removing the previous model".to_string());
     }
     if model_dir.exists() {
         std::fs::remove_dir_all(model_dir).map_err(|error| error.to_string())?;
@@ -2166,11 +2647,28 @@ async fn activate_installed_model(
     app: &tauri::AppHandle,
     data: &AppData,
     id: &str,
+    mutation: &tokio::sync::MutexGuard<'_, ()>,
 ) -> Result<ImportModelResult, String> {
-    if id.contains("..") || id.contains('/') || id.contains('\\') {
+    let result = select_installed_model(data, id, mutation).await?;
+    let _ = app.emit("companion:model-imported", result.clone());
+    let _ = app.emit("companion:config-changed", public_config_with_ui(data));
+    Ok(result)
+}
+
+async fn select_installed_model(
+    data: &AppData,
+    id: &str,
+    mutation: &tokio::sync::MutexGuard<'_, ()>,
+) -> Result<ImportModelResult, String> {
+    validate_model_download_file_name(id).map_err(|_| "Invalid model ID".to_string())?;
+    if id.contains("..")
+        || id.contains('/')
+        || id.contains('\\')
+        || is_local_import_staging_name(id)
+    {
         return Err("Invalid model ID".to_string());
     }
-    let public = public_config_with_ui(&data);
+    let public = public_config_with_ui(data);
     let model_dir = data.config_dir.join("models").join(id);
     let model = model_by_id(&public, id).or_else(|| {
         std::fs::read_to_string(model_dir.join(".companion-model.json"))
@@ -2201,26 +2699,7 @@ async fn activate_installed_model(
     let canonical_model_dir = model_dir
         .canonicalize()
         .map_err(|error| error.to_string())?;
-    write_local_model_config(&data.local_config_path, &canonical_model_dir, &skel)?;
-    verify_local_model_config(&data.local_config_path, &canonical_model_dir, &skel)?;
-    if let Ok(mut public) = data.public_config.lock() {
-        merge_json(
-            &mut public,
-            serde_json::json!({
-                "spine": {
-                    "assetDir": canonical_model_dir.to_string_lossy().to_string(),
-                    "assetDirConfigured": true,
-                    "skel": skel.clone(),
-                    "modelCategory": model.as_ref().and_then(|value| value.get("category")).cloned().unwrap_or_else(|| serde_json::json!("operator")),
-                    "compatibilityProfile": model.as_ref().and_then(|value| value.get("compatibilityProfile")).cloned().unwrap_or_else(|| serde_json::json!("companion"))
-                }
-            }),
-        );
-    }
-    {
-        let mut asset_root = data.asset_root.write().await;
-        *asset_root = Some(canonical_model_dir.clone());
-    }
+    commit_model_selection(data, &canonical_model_dir, &skel, model.as_ref(), mutation).await?;
     let origin = public
         .get("server")
         .and_then(|server| server.get("origin"))
@@ -2240,9 +2719,42 @@ async fn activate_installed_model(
         requires_restart: false,
         activated: true,
     };
-    let _ = app.emit("companion:model-imported", result.clone());
-    let _ = app.emit("companion:config-changed", public_config_with_ui(&data));
     Ok(result)
+}
+
+async fn commit_model_selection(
+    data: &AppData,
+    asset_dir: &Path,
+    skel: &str,
+    model: Option<&serde_json::Value>,
+    _mutation: &tokio::sync::MutexGuard<'_, ()>,
+) -> Result<(), String> {
+    // Acquire the asynchronous resource guard before publishing any part of the selection.
+    let mut asset_root = data.asset_root.write().await;
+    let mut public = data
+        .public_config
+        .lock()
+        .map_err(|_| "Config lock is poisoned".to_string())?;
+    write_local_model_config(&data.local_config_path, asset_dir, skel)?;
+    verify_local_model_config(&data.local_config_path, asset_dir, skel)?;
+    merge_json(
+        &mut public,
+        serde_json::json!({
+            "spine": {
+                "assetDir": asset_dir.to_string_lossy().to_string(),
+                "assetDirConfigured": !asset_dir.as_os_str().is_empty(),
+                "skel": skel,
+                "modelCategory": model.and_then(|value| value.get("category")).cloned().unwrap_or_else(|| serde_json::json!("operator")),
+                "compatibilityProfile": model.and_then(|value| value.get("compatibilityProfile")).cloned().unwrap_or_else(|| serde_json::json!("companion"))
+            }
+        }),
+    );
+    *asset_root = if asset_dir.as_os_str().is_empty() {
+        None
+    } else {
+        Some(asset_dir.to_path_buf())
+    };
+    Ok(())
 }
 
 #[tauri::command]
@@ -2251,7 +2763,10 @@ async fn set_active_model(
     data: State<'_, AppData>,
     id: String,
 ) -> Result<ImportModelResult, String> {
-    activate_installed_model(&app, &data, &id).await
+    let mutation = data.model_mutation_lock.lock().await;
+    let result = activate_installed_model(&app, &data, &id, &mutation).await?;
+    clear_model_trial(&data);
+    Ok(result)
 }
 
 #[tauri::command]
@@ -2260,6 +2775,7 @@ async fn begin_model_trial(
     data: State<'_, AppData>,
     id: String,
 ) -> Result<ImportModelResult, String> {
+    let mutation = data.model_mutation_lock.lock().await;
     let current = get_current_model(data.clone())?;
     {
         let mut previous = data
@@ -2271,7 +2787,7 @@ async fn begin_model_trial(
         }
         *previous = Some(current);
     }
-    match activate_installed_model(&app, &data, &id).await {
+    match activate_installed_model(&app, &data, &id, &mutation).await {
         Ok(result) => Ok(result),
         Err(error) => {
             if let Ok(mut previous) = data.model_trial_previous.lock() {
@@ -2283,7 +2799,8 @@ async fn begin_model_trial(
 }
 
 #[tauri::command]
-fn confirm_model_trial(data: State<'_, AppData>) -> Result<(), String> {
+async fn confirm_model_trial(data: State<'_, AppData>) -> Result<(), String> {
+    let _mutation = data.model_mutation_lock.lock().await;
     let mut previous = data
         .model_trial_previous
         .lock()
@@ -2297,39 +2814,43 @@ async fn cancel_model_trial(
     app: tauri::AppHandle,
     data: State<'_, AppData>,
 ) -> Result<Option<ImportModelResult>, String> {
+    let mutation = data.model_mutation_lock.lock().await;
     let previous = data
         .model_trial_previous
         .lock()
         .map_err(|_| "Model trial lock is poisoned".to_string())?
-        .take();
-    match previous {
-        Some(model) if !model.id.is_empty() => activate_installed_model(&app, &data, &model.id)
-            .await
-            .map(Some),
+        .clone();
+    let result = match previous {
+        Some(model) if !model.id.is_empty() => {
+            activate_installed_model(&app, &data, &model.id, &mutation)
+                .await
+                .map(Some)
+        }
         Some(model) => {
             let asset_dir = PathBuf::from(&model.asset_dir);
             if !model.asset_dir.is_empty() || !model.skel.is_empty() {
                 validate_spine_asset_dir(&asset_dir, &model.skel)?;
             }
-            write_local_model_config(&data.local_config_path, &asset_dir, &model.skel)?;
-            if let Ok(mut public) = data.public_config.lock() {
-                merge_json(
-                    &mut public,
-                    serde_json::json!({"spine": {"assetDir": model.asset_dir.clone(), "assetDirConfigured": !model.asset_dir.is_empty(), "skel": model.skel.clone()}}),
-                );
-            }
-            {
-                let mut asset_root = data.asset_root.write().await;
-                *asset_root = if asset_dir.as_os_str().is_empty() {
-                    None
-                } else {
-                    Some(asset_dir.canonicalize().unwrap_or(asset_dir))
-                };
-            }
+            let asset_dir = if asset_dir.as_os_str().is_empty() {
+                asset_dir
+            } else {
+                asset_dir.canonicalize().unwrap_or(asset_dir)
+            };
+            commit_model_selection(&data, &asset_dir, &model.skel, None, &mutation).await?;
             let _ = app.emit("companion:config-changed", public_config_with_ui(&data));
             Ok(None)
         }
         None => Ok(None),
+    };
+    if result.is_ok() {
+        clear_model_trial(&data);
+    }
+    result
+}
+
+fn clear_model_trial(data: &AppData) {
+    if let Ok(mut previous) = data.model_trial_previous.lock() {
+        *previous = None;
     }
 }
 
@@ -2910,12 +3431,13 @@ fn cleanup_stale_model_downloads(config_dir: &Path) -> u64 {
             let path = entry.path();
             let is_download_dir =
                 name.ends_with(".download") || name.ends_with(".preview-download");
+            let is_local_staging = is_local_import_staging_name(&name);
             let is_marked_partial = path.join(PARTIAL_DOWNLOAD_MARKER).exists();
             let has_committed_manifest = path.join(".companion-model.json").exists()
                 || path.join(".catalog-signature").exists();
             if entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false)
-                && is_download_dir
-                && (is_marked_partial || !has_committed_manifest)
+                && (is_local_staging
+                    || (is_download_dir && (is_marked_partial || !has_committed_manifest)))
                 && std::fs::remove_dir_all(path).is_ok()
             {
                 removed += 1;
@@ -3015,6 +3537,7 @@ async fn import_avatar_pack(
             "registryPath": result.registry_path
         }));
     }
+    let _mutation = data.model_mutation_lock.lock().await;
     let installed = avatar::install_runtime_pack(&path, &data.config_dir)?;
     let model_id = installed.validation.id.clone();
     Ok(serde_json::json!({
@@ -3101,7 +3624,7 @@ async fn test_ai_integration_inner(
 
     let exe = current_mcp_exe_path()?;
     let api = companion_api_origin_from_data(data);
-    let preview = ai_integrations::preview_ai_integration_config(&tool_id, &exe, &api)?;
+    let preview = ai_integrations::preview_ai_integration_config(tool_id, &exe, &api)?;
     let mut child = tokio::process::Command::new(&exe)
         .arg("--mcp")
         .env("COMPANION_API", &api)
@@ -3310,11 +3833,11 @@ async fn move_drag(
     if let Some(drag) = drag_state {
         let logical_dx = point
             .total_x
-            .or_else(|| Some(point.screen_x - drag.start_x))
+            .or(Some(point.screen_x - drag.start_x))
             .unwrap_or(point.screen_x - drag.start_x);
         let logical_dy = point
             .total_y
-            .or_else(|| Some(point.screen_y - drag.start_y))
+            .or(Some(point.screen_y - drag.start_y))
             .unwrap_or(point.screen_y - drag.start_y);
         let dx = physical_drag_delta(logical_dx, drag.scale_factor);
         let dy = physical_drag_delta(logical_dy, drag.scale_factor);
@@ -3343,6 +3866,7 @@ struct WindowPosition {
     height: u32,
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn dwm_process_changed(previous: Option<u32>, current: Option<u32>) -> bool {
     matches!((previous, current), (Some(previous), Some(current)) if previous != current)
 }
@@ -3543,7 +4067,7 @@ fn start_renderer_watchdog(app: AppHandle) {
             #[cfg(target_os = "windows")]
             {
                 dwm_probe_tick = dwm_probe_tick.wrapping_add(1);
-                if dwm_probe_tick % 2 == 0 {
+                if dwm_probe_tick.is_multiple_of(2) {
                     let current_dwm_process_id = current_session_dwm_process_id();
                     if dwm_process_changed(last_dwm_process_id, current_dwm_process_id) {
                         last_dwm_process_id = current_dwm_process_id;
@@ -4423,11 +4947,11 @@ fn select_release_asset(assets: &[serde_json::Value]) -> Option<serde_json::Valu
     assets
         .iter()
         .filter(|asset| {
-            asset
+            !asset
                 .get("url")
                 .and_then(|value| value.as_str())
                 .unwrap_or("")
-                != ""
+                .is_empty()
         })
         .map(|asset| (release_asset_score(asset), asset))
         .filter(|(score, _)| *score > 0)
@@ -4559,6 +5083,7 @@ pub fn run() {
             renderer_health: Arc::new(Mutex::new(RendererHealth::default())),
             catalog_cache: catalog_cache_store,
             ai_integration_lock: Arc::new(Mutex::new(())),
+            model_mutation_lock: tokio::sync::Mutex::new(()),
             model_trial_previous: Arc::new(Mutex::new(None)),
             download_cancellations: Arc::new(Mutex::new(HashMap::new())),
         })
@@ -4597,14 +5122,16 @@ pub fn run() {
             // racing the first PIXI load against server startup can leave the
             // transparent window visible with no model.
             if let Err(e) = tauri::async_runtime::block_on(server::start_api_server(
-                store_for_server,
-                tx_for_server,
-                reminders_for_server,
-                reminder_tx_for_server,
-                asset_root_for_server,
-                preview_root_for_server,
-                public_config_for_server,
-                history_for_server,
+                server::AppState {
+                    store: store_for_server,
+                    tx: tx_for_server,
+                    reminders: reminders_for_server,
+                    reminder_tx: reminder_tx_for_server,
+                    asset_root: asset_root_for_server,
+                    preview_root: preview_root_for_server,
+                    public_config: public_config_for_server,
+                    history: history_for_server,
+                },
                 &host_for_server,
                 port_for_server,
             )) {
@@ -4795,6 +5322,7 @@ pub fn run() {
             set_ui_settings,
             emit_scale_event,
             import_model,
+            import_local_model,
             import_catalog_model,
             cancel_model_download,
             prepare_model_preview,
@@ -4876,6 +5404,187 @@ fn read_only_cli_command(args: &[String]) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn model_test_data() -> AppData {
+        let root = std::env::temp_dir().join(format!(
+            "spine-companion-model-selection-{}-{}",
+            std::process::id(),
+            NEXT_DOWNLOAD_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let (store, tx) = create_state_store("idle");
+        let config = fallback_config();
+        let local_config_path = root.join("companion.local.json");
+        fs::write(
+            &local_config_path,
+            br#"{"ui":{"theme":"light"},"spine":{"scale":1.37}}"#,
+        )
+        .unwrap();
+        AppData {
+            store,
+            tx,
+            reminders: create_reminder_store(),
+            reminder_tx: create_reminder_broadcast(),
+            ui_settings: Arc::new(Mutex::new(ui_settings_from_config(&config))),
+            public_config: Arc::new(Mutex::new(config)),
+            config_dir: root,
+            local_config_path,
+            asset_root: Arc::new(tokio::sync::RwLock::new(None)),
+            history: Arc::new(Mutex::new(Vec::new())),
+            drag_state: Arc::new(Mutex::new(None)),
+            passthrough_enabled: Arc::new(AtomicBool::new(false)),
+            pointer_regions: Arc::new(Mutex::new(Vec::new())),
+            panel_pinned: Arc::new(AtomicBool::new(false)),
+            panel_interaction_locked: Arc::new(AtomicBool::new(false)),
+            renderer_health: Arc::new(Mutex::new(RendererHealth::default())),
+            catalog_cache: Arc::new(Mutex::new(catalog::CatalogCache::default())),
+            ai_integration_lock: Arc::new(Mutex::new(())),
+            model_mutation_lock: tokio::sync::Mutex::new(()),
+            model_trial_previous: Arc::new(Mutex::new(None)),
+            download_cancellations: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    fn install_test_model(data: &AppData, id: &str) -> PathBuf {
+        let dir = data.config_dir.join("models").join(id);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("model.skel"), b"skeleton").unwrap();
+        fs::write(dir.join("model.atlas"), "model.png\nsize: 1,1\n").unwrap();
+        fs::write(dir.join("model.png"), b"texture").unwrap();
+        dir.canonicalize().unwrap()
+    }
+
+    #[tokio::test]
+    async fn model_selection_waits_for_asset_root_before_publishing_config() {
+        let data = model_test_data();
+        let dir = install_test_model(&data, "first");
+        let before = fs::read(&data.local_config_path).unwrap();
+        let public_before = data.public_config.lock().unwrap().clone();
+        let asset_reader = data.asset_root.read().await;
+        let mutation = data.model_mutation_lock.lock().await;
+        let mut selection = Box::pin(select_installed_model(&data, "first", &mutation));
+        // Poll the real selection until it waits for the outstanding asset reader.
+        tokio::select! {
+            biased;
+            result = &mut selection => panic!("Selection should be waiting: {result:?}"),
+            () = std::future::ready(()) => {}
+        }
+        assert_eq!(fs::read(&data.local_config_path).unwrap(), before);
+        assert_eq!(*data.public_config.lock().unwrap(), public_before);
+        drop(asset_reader);
+        selection.await.unwrap();
+        verify_local_model_config(&data.local_config_path, &dir, "model.skel").unwrap();
+        assert_eq!(*data.asset_root.read().await, Some(dir));
+        fs::remove_dir_all(&data.config_dir).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_model_selections_keep_disk_public_config_and_assets_consistent() {
+        let data = Arc::new(model_test_data());
+        for id in ["first", "second"] {
+            install_test_model(&data, id);
+        }
+        let mut tasks = tokio::task::JoinSet::new();
+        for index in 0..16 {
+            let data = data.clone();
+            tasks.spawn(async move {
+                let mutation = data.model_mutation_lock.lock().await;
+                let id = if index % 2 == 0 { "first" } else { "second" };
+                let selected = select_installed_model(&data, id, &mutation).await.unwrap();
+                tokio::task::yield_now().await;
+                let dir = PathBuf::from(&selected.asset_dir);
+                verify_local_model_config(&data.local_config_path, &dir, &selected.skel).unwrap();
+                assert_eq!(*data.asset_root.read().await, Some(dir));
+                let public = data.public_config.lock().unwrap();
+                assert_eq!(public["spine"]["assetDir"], selected.asset_dir);
+                assert_eq!(public["spine"]["skel"], selected.skel);
+            });
+        }
+        while let Some(result) = tasks.join_next().await {
+            result.unwrap();
+        }
+        let saved = read_json_if_exists(&data.local_config_path).unwrap();
+        assert_eq!(saved["ui"]["theme"], "light");
+        assert_eq!(saved["spine"]["scale"], 1.37);
+        fs::remove_dir_all(&data.config_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_model_selection_preserves_the_current_model() {
+        let data = model_test_data();
+        let dir = install_test_model(&data, "first");
+        let mutation = data.model_mutation_lock.lock().await;
+        select_installed_model(&data, "first", &mutation)
+            .await
+            .unwrap();
+        let before = fs::read(&data.local_config_path).unwrap();
+        let public_before = data.public_config.lock().unwrap().clone();
+        for invalid in ["", ".", "..", "../first", "first/other"] {
+            assert!(select_installed_model(&data, invalid, &mutation)
+                .await
+                .is_err());
+        }
+        assert!(select_installed_model(&data, "missing", &mutation)
+            .await
+            .is_err());
+        assert_eq!(fs::read(&data.local_config_path).unwrap(), before);
+        assert_eq!(*data.public_config.lock().unwrap(), public_before);
+        assert_eq!(*data.asset_root.read().await, Some(dir));
+        fs::remove_dir_all(&data.config_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn model_selection_can_restore_an_unconfigured_profile() {
+        let data = model_test_data();
+        install_test_model(&data, "first");
+        let mutation = data.model_mutation_lock.lock().await;
+        select_installed_model(&data, "first", &mutation)
+            .await
+            .unwrap();
+        commit_model_selection(&data, Path::new(""), "", None, &mutation)
+            .await
+            .unwrap();
+        assert_eq!(*data.asset_root.read().await, None);
+        let public = data.public_config.lock().unwrap().clone();
+        assert_eq!(public["spine"]["assetDirConfigured"], false);
+        assert_eq!(public["spine"]["assetDir"], "");
+        verify_local_model_config(&data.local_config_path, Path::new(""), "").unwrap();
+        fs::remove_dir_all(&data.config_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn local_import_staging_is_never_listed_or_selected_as_a_model() {
+        let data = model_test_data();
+        install_test_model(&data, "first");
+        let temporary_id = ".local-first-0123456789ab-local-import-42.staging";
+        install_test_model(&data, temporary_id);
+        let models = installed_models_in(&data.config_dir.join("models")).unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "first");
+        let mutation = data.model_mutation_lock.lock().await;
+        assert!(select_installed_model(&data, temporary_id, &mutation)
+            .await
+            .is_err());
+        assert_eq!(*data.asset_root.read().await, None);
+        fs::remove_dir_all(&data.config_dir).unwrap();
+    }
+
+    #[test]
+    fn interrupted_local_import_cleanup_preserves_unrelated_staging_directories() {
+        let data = model_test_data();
+        let temporary_id = ".local-first-0123456789ab-local-import-42.staging";
+        let temporary = install_test_model(&data, temporary_id);
+        fs::write(temporary.join(".companion-model.json"), b"{}").unwrap();
+        let ordinary = install_test_model(&data, "first");
+        let unrelated = install_test_model(&data, "user.staging");
+        let malformed = install_test_model(&data, ".local-first-local-import-not-a-number.staging");
+        assert_eq!(cleanup_stale_model_downloads(&data.config_dir), 1);
+        assert!(!temporary.exists());
+        assert!(ordinary.exists());
+        assert!(unrelated.exists());
+        assert!(malformed.exists());
+        fs::remove_dir_all(&data.config_dir).unwrap();
+    }
 
     #[test]
     fn packaged_server_config_advertises_sse_without_websocket() {
@@ -5402,5 +6111,172 @@ mod tests {
             Some("doctor")
         );
         assert_eq!(read_only_cli_command(&["--mcp".to_string()]), None);
+    }
+
+    #[test]
+    fn local_import_selects_matching_atlas_and_referenced_pages_only() {
+        let root = std::env::temp_dir().join(format!(
+            "spine-companion-local-import-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("amiya.skel"), b"skeleton").unwrap();
+        std::fs::write(root.join("amiya.atlas"), b"amiya.png\nsize: 1,1\n").unwrap();
+        std::fs::write(root.join("other.atlas"), b"other.png\nsize: 1,1\n").unwrap();
+        std::fs::write(root.join("amiya.png"), b"texture").unwrap();
+        std::fs::write(root.join("other.png"), b"texture").unwrap();
+
+        let files = local_runtime_files(&root, "amiya.skel").unwrap();
+        assert_eq!(files, vec!["amiya.atlas", "amiya.png", "amiya.skel"]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_import_accepts_a_sole_atlas_with_a_different_name() {
+        let root = std::env::temp_dir().join(format!(
+            "spine-companion-local-import-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("character.skel"), b"skeleton").unwrap();
+        std::fs::write(root.join("shared.atlas"), b"page.png\nsize: 1,1\n").unwrap();
+        std::fs::write(root.join("page.png"), b"texture").unwrap();
+
+        let files = local_runtime_files(&root, "character.skel").unwrap();
+        assert_eq!(files, vec!["character.skel", "page.png", "shared.atlas"]);
+        let selection = local_runtime_selection(&root, "character.skel").unwrap();
+        assert_eq!(selection.atlas_destination, "character.atlas");
+        assert_eq!(
+            rewrite_local_atlas(&selection.atlas_text, &selection.texture_sources),
+            "page.png\nsize: 1,1\n"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_import_rebases_nested_atlas_pages_to_the_staged_skeleton_root() {
+        let root = std::env::temp_dir().join(format!(
+            "spine-companion-local-import-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(root.join("atlases")).unwrap();
+        std::fs::create_dir_all(root.join("atlases").join("pages")).unwrap();
+        std::fs::write(root.join("character.skel"), b"skeleton").unwrap();
+        std::fs::write(
+            root.join("atlases").join("shared.atlas"),
+            "pages/page.png\nsize: 1,1\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("atlases").join("pages").join("page.png"),
+            b"texture",
+        )
+        .unwrap();
+
+        let selection = local_runtime_selection(&root, "character.skel").unwrap();
+        assert_eq!(selection.atlas_destination, "character.atlas");
+        assert_eq!(
+            selection.texture_sources,
+            vec!["atlases/pages/page.png".to_string()]
+        );
+        assert_eq!(
+            rewrite_local_atlas(&selection.atlas_text, &selection.texture_sources),
+            "atlases/pages/page.png\nsize: 1,1\n"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_import_rejects_ambiguous_atlas_selection() {
+        let root = std::env::temp_dir().join(format!(
+            "spine-companion-local-import-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("amiya.skel"), b"skeleton").unwrap();
+        std::fs::write(root.join("amiya.atlas"), b"amiya.png\nsize: 1,1\n").unwrap();
+        std::fs::create_dir_all(root.join("alternate")).unwrap();
+        std::fs::write(
+            root.join("alternate").join("amiya.atlas"),
+            b"amiya.png\nsize: 1,1\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("amiya.png"), b"texture").unwrap();
+        std::fs::write(root.join("alternate").join("amiya.png"), b"texture").unwrap();
+
+        let error = local_runtime_files(&root, "amiya.skel").unwrap_err();
+        assert!(error.contains("Multiple atlas files"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_import_ids_are_stable_per_source_path() {
+        let first = local_model_id(Path::new("C:/models/amiya"), "Amiya", "model.skel");
+        let second = local_model_id(Path::new("C:/models/amiya"), "Amiya", "model.skel");
+        let other = local_model_id(Path::new("C:/models/exusiai"), "Amiya", "model.skel");
+        let sibling = local_model_id(Path::new("C:/models/amiya"), "Amiya", "alt.skel");
+        assert_eq!(first, second);
+        assert_ne!(first, other);
+        assert_ne!(first, sibling);
+        assert!(first.starts_with("local-amiya-"));
+    }
+
+    #[test]
+    fn local_import_rejects_invalid_or_unsupported_skeleton_headers() {
+        let root = std::env::temp_dir().join(format!(
+            "spine-companion-local-import-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let encode = |value: &str| {
+            let mut bytes = Vec::with_capacity(value.len() + 2);
+            bytes.push((value.len() as u8).saturating_add(1));
+            bytes.extend_from_slice(value.as_bytes());
+            bytes
+        };
+        let mut valid = encode("hash");
+        valid.extend(encode("3.8.99"));
+        valid.resize(128 * 1024, 0);
+        let valid_path = root.join("valid.skel");
+        std::fs::write(&valid_path, valid).unwrap();
+        assert_eq!(
+            validate_local_skeleton_header(&valid_path).unwrap(),
+            "3.8.99"
+        );
+
+        let invalid_path = root.join("invalid.skel");
+        std::fs::write(&invalid_path, b"not-spine").unwrap();
+        assert!(validate_local_skeleton_header(&invalid_path)
+            .unwrap_err()
+            .contains("not a valid Spine binary"));
+
+        let mut unsupported = encode("hash");
+        unsupported.extend(encode("4.0.0"));
+        let unsupported_path = root.join("unsupported.skel");
+        std::fs::write(&unsupported_path, unsupported).unwrap();
+        assert!(validate_local_skeleton_header(&unsupported_path)
+            .unwrap_err()
+            .contains("expected Spine 3.8"));
+
+        let mut misleading = encode("hash");
+        misleading.extend(encode("3.80.0"));
+        std::fs::write(&unsupported_path, misleading).unwrap();
+        assert!(validate_local_skeleton_header(&unsupported_path).is_err());
+        let _ = std::fs::remove_dir_all(root);
     }
 }

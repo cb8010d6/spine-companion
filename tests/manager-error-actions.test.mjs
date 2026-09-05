@@ -11,6 +11,7 @@ describe("Manager actionable error recovery", () => {
   it("keeps readable technical messages while adding a next step", () => {
     expect(readableManagerError(new Error("MCP timed out"))).toBe("MCP timed out");
     expect(readableManagerError({ message: "catalog offline" })).toBe("catalog offline");
+    expect(readableManagerError(" Imported, but activation failed. ")).toBe("Imported, but activation failed.");
     expect(actionableManagerErrorBody(new Error("catalog offline"), "Retry or open diagnostics.")).toBe("Retry or open diagnostics.\n\ncatalog offline");
   });
 
