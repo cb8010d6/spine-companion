@@ -3,6 +3,13 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 describe("local model import IPC contract", () => {
+  it("preserves native import errors and refreshes any committed model", () => {
+    const manager = readFileSync(resolve(process.cwd(), "src/renderer/manager.js"), "utf8");
+    const action = manager.slice(manager.indexOf("async function importLocalModel()"), manager.indexOf("async function refreshIntegrations()"));
+    expect(action).toContain('readableManagerError(error, t("manager.error.localImportFailed"))');
+    expect(action).toContain("await refreshConfig().then(() => renderView(activeView)).catch(() => undefined)");
+  });
+
   it("uses an explicit skeleton picker and does not invoke IPC on cancellation", () => {
     const bridge = readFileSync(resolve(process.cwd(), "src/renderer/tauri-bridge.js"), "utf8");
     expect(bridge).toMatch(/importLocalModel:\s*async\s*\(\)/);

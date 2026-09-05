@@ -833,7 +833,7 @@ fn validate_local_skeleton_header(path: &Path) -> Result<String, String> {
     if version.trim().is_empty() {
         return Err("Selected .skel file has no Spine runtime version.".to_string());
     }
-    if !version.starts_with("3.8") {
+    if version != "3.8" && !version.starts_with("3.8.") {
         return Err(format!(
             "Unsupported Spine runtime version {version}; expected Spine 3.8."
         ));
@@ -6040,6 +6040,7 @@ mod tests {
         };
         let mut valid = encode("hash");
         valid.extend(encode("3.8.99"));
+        valid.resize(128 * 1024, 0);
         let valid_path = root.join("valid.skel");
         std::fs::write(&valid_path, valid).unwrap();
         assert_eq!(
@@ -6060,6 +6061,11 @@ mod tests {
         assert!(validate_local_skeleton_header(&unsupported_path)
             .unwrap_err()
             .contains("expected Spine 3.8"));
+
+        let mut misleading = encode("hash");
+        misleading.extend(encode("3.80.0"));
+        std::fs::write(&unsupported_path, misleading).unwrap();
+        assert!(validate_local_skeleton_header(&unsupported_path).is_err());
         let _ = std::fs::remove_dir_all(root);
     }
 }

@@ -2067,16 +2067,12 @@ fn find_missing_attachments(
 }
 
 pub(crate) fn read_spine_binary_version(path: &Path) -> Option<String> {
-    const MAX_HEADER_BYTES: u64 = 64 * 1024 * 1024;
-    let mut file = File::open(path).ok()?;
+    const MAX_HEADER_BYTES: u64 = 64 * 1024;
+    let file = File::open(path).ok()?;
     let mut data = Vec::new();
-    std::io::Read::by_ref(&mut file)
-        .take(MAX_HEADER_BYTES + 1)
+    file.take(MAX_HEADER_BYTES)
         .read_to_end(&mut data)
         .ok()?;
-    if data.len() as u64 > MAX_HEADER_BYTES {
-        return None;
-    }
     let mut offset = 0;
     read_spine_string(&data, &mut offset)?;
     read_spine_string(&data, &mut offset)

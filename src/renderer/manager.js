@@ -1250,7 +1250,9 @@ async function importLocalModel() {
     setStatus(t("manager.status.localModelLoaded", { name: result.skel || result.name }));
     renderView(activeView);
   } catch (error) {
-    const message = error.message || t("manager.error.localImportFailed");
+    const message = readableManagerError(error, t("manager.error.localImportFailed"));
+    // Import may have committed before activation failed; retain the original error.
+    await refreshConfig().then(() => renderView(activeView)).catch(() => undefined);
     setStatus(message);
     showModal(t("manager.modal.importFailed"), message, [
       h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.close"))
