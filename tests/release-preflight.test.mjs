@@ -182,7 +182,7 @@ describe("release workflow contract", () => {
       expect(rustPins.length).toBeGreaterThan(0);
       expect(rustPins.every((version) => version === rustVersion)).toBe(true);
       for (const match of workflow.matchAll(/run: (bun install[^\n]*)/gu)) expect(match[1]).toContain("--frozen-lockfile");
-      for (const command of ["bun run lint", "bun run type-check", "cargo fmt --all --check", "cargo clippy --locked --all-targets -- -D warnings", "cargo test --locked"]) expect(workflow).toContain(command);
+      for (const command of ["bun audit", "bun run lint", "bun run type-check", "cargo fmt --all --check", "cargo clippy --locked --all-targets -- -D warnings", "cargo test --locked"]) expect(workflow).toContain(command);
     }
   });
 

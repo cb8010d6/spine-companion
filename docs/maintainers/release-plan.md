@@ -38,6 +38,7 @@ Before a tag is created, run:
 
 ```bash
 bun install --frozen-lockfile
+bun audit
 bun run lint
 bun run type-check
 bun run test

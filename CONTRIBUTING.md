@@ -23,6 +23,7 @@ directory.
 Run the focused checks relevant to your change, then the release-safe baseline:
 
 ```bash
+bun audit
 bun run lint
 bun run type-check
 bun run test

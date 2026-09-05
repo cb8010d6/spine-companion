@@ -35,6 +35,7 @@ Linux 和 macOS 的透明桌宠窗口使用保持可交互的兼容回退。各�
 
 ```bash
 bun install --frozen-lockfile
+bun audit
 bun run lint
 bun run type-check
 bun run test
