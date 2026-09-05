@@ -9,6 +9,11 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+$expectedVersion = (Get-Content -LiteralPath (Join-Path $PSScriptRoot "../package.json") -Raw | ConvertFrom-Json).version
+if ([string]::IsNullOrWhiteSpace($expectedVersion)) {
+  throw "Package version must be available for installer verification."
+}
+
 if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP) -or -not (Test-Path -LiteralPath $env:RUNNER_TEMP)) {
   throw "RUNNER_TEMP must point to an existing isolated temporary directory."
 }
@@ -296,8 +301,8 @@ env = { COMPANION_API = "http://127.0.0.1:17388", USER_SETTING = "keep-user-sett
     throw "Installed read-only doctor command failed with exit code $LASTEXITCODE."
   }
   $doctor = $doctorOutput | ConvertFrom-Json
-  if (-not ($doctor.ok -eq $true -and $doctor.mcp.version -match '^0\.2\.6')) {
-    throw "Installed read-only doctor command returned an invalid health result or package version."
+  if (-not ($doctor.ok -eq $true -and $doctor.mcp.version -ceq $expectedVersion)) {
+    throw "Installed doctor returned health=$($doctor.ok), version=$($doctor.mcp.version); expected health=True, version=$expectedVersion."
   }
 
   & bun scripts/check-packaged-mcp.mjs $exe
