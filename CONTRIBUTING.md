@@ -5,10 +5,12 @@ copyrighted model assets, credentials, generated installers, or local config.
 
 ## Development
 
-Requirements: Bun 1.3.13 or newer, Rust stable for Tauri work, and Git.
+Requirements: Bun 1.3.13, the Rust version pinned in `rust-toolchain.toml`, and
+Git. Update the Bun version in `package.json` and CI together when upgrading it;
+regenerate `bun.lock` with that version and retain the frozen-lockfile gate.
 
 ```bash
-bun install
+bun install --frozen-lockfile
 bun run dev
 ```
 
@@ -21,13 +23,17 @@ directory.
 Run the focused checks relevant to your change, then the release-safe baseline:
 
 ```bash
+bun run lint
+bun run type-check
 bun run test
 bun run check
 bun run check:mcp
 bun run build
 ```
 
-Tauri changes should also pass `cargo test` and `cargo check` from `src-tauri/`.
+Tauri changes should also pass `cargo fmt --all --check`,
+`cargo clippy --locked --all-targets -- -D warnings`, and `cargo test --locked`
+from `src-tauri/`.
 Release changes should run the preflight with the exact release tag. Native
 install and uninstall behavior is verified on the matching operating system.
 

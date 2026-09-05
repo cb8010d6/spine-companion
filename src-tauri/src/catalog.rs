@@ -798,9 +798,7 @@ pub fn search_catalog(
                     || request
                         .runtime_spine_version
                         .as_ref()
-                        .is_none_or(|runtime| {
-                            entry.model.spine.is_compatible_with(runtime)
-                        }))
+                        .is_none_or(|runtime| entry.model.spine.is_compatible_with(runtime)))
                 && matches_query(entry, &query)
         })
         .cloned()
@@ -1255,7 +1253,8 @@ mod tests {
         };
 
         let resolved =
-            resolve_cached_model_entry(std::slice::from_ref(&source), &cache, &source.id, "alpha").unwrap();
+            resolve_cached_model_entry(std::slice::from_ref(&source), &cache, &source.id, "alpha")
+                .unwrap();
 
         assert_eq!(resolved.catalog_source_id, source.id);
         assert_eq!(resolved.model, expected);
@@ -1270,7 +1269,8 @@ mod tests {
         let cache = CatalogCache::default();
 
         let missing =
-            resolve_cached_model_entry(std::slice::from_ref(&enabled), &cache, "missing", "alpha").unwrap_err();
+            resolve_cached_model_entry(std::slice::from_ref(&enabled), &cache, "missing", "alpha")
+                .unwrap_err();
         assert!(missing.contains("not configured"));
 
         let disabled_error =
@@ -1336,9 +1336,13 @@ mod tests {
             schema_version: CATALOG_SCHEMA_VERSION + 1,
             models: vec![model("alpha", "Alpha", "3.8")],
         });
-        let schema_error =
-            resolve_cached_model_entry(std::slice::from_ref(&source), &invalid_schema, "community", "alpha")
-                .unwrap_err();
+        let schema_error = resolve_cached_model_entry(
+            std::slice::from_ref(&source),
+            &invalid_schema,
+            "community",
+            "alpha",
+        )
+        .unwrap_err();
         assert!(schema_error.contains("Invalid cached catalog"));
         assert!(schema_error.contains("schema version"));
 

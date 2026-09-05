@@ -82,20 +82,26 @@ Spine Companion 加载 Spine 3.8 兼容模型目录，其中应包含 skeleton�
 
 ## 开发
 
-源码开发需要 Bun 1.3.13 或更新版本，以及 Rust stable。常用流程：
+可复现构建使用 Bun 1.3.13 和 `rust-toolchain.toml` 固定的 Rust 版本。
+升级 Bun 时同步更新 `package.json`、`bun.lock` 和 CI 版本。常用流程：
 
 ```bash
-bun install
+bun install --frozen-lockfile
 bun run dev
 ```
 
 提交变更前运行：
 
 ```bash
+bun run lint
+bun run type-check
 bun run test
 bun run check
 bun run check:mcp
 bun run build
+cargo fmt --manifest-path src-tauri/Cargo.toml --all --check
+cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings
+cargo test --manifest-path src-tauri/Cargo.toml --locked
 ```
 
 原生打包和模型设置说明见[部署指南](docs/guides/deployment.zh-CN.md)。仓库协作流程和审查要求

@@ -7,7 +7,7 @@ export default [
     files: ["src/**/*.{js,cjs}", "scripts/*.{js,cjs,mjs}", "tests/*.mjs", "*.{js,mjs}"],
     ...js.configs.recommended,
     languageOptions: { globals: { ...globals.browser, ...globals.node } },
-    rules: { "no-unused-vars": ["error", { args: "none", caughtErrors: "none", varsIgnorePattern: "^_" }] }
+    rules: { "no-unused-vars": ["error", { args: "none", caughtErrors: "none" }] }
   },
   { files: ["**/*.cjs"], languageOptions: { sourceType: "commonjs" } }
 ];

@@ -1208,7 +1208,7 @@ async fn prepare_model_preview(
     let skel = entry.model.skel.clone();
     let preview_root = data.config_dir.join("preview-assets");
     let preview_dir = preview_root.join(&id);
-    let temp_dir = preview_root.join(format!("{}.preview-download", &id));
+    let temp_dir = preview_root.join(format!("{}.preview-download", id));
     let signature = format!(
         "{:x}",
         Sha256::digest(serde_json::to_vec(&entry.model).map_err(|error| error.to_string())?)

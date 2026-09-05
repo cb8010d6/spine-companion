@@ -96,21 +96,27 @@ being listed in the Library does not grant redistribution rights.
 
 ## Development
 
-Source development uses Bun 1.3.13 or newer and Rust stable. The normal source
+Reproducible builds use Bun 1.3.13 and the Rust version in `rust-toolchain.toml`.
+Keep `package.json`, `bun.lock`, and the CI Bun pin in sync. The normal source
 workflow is:
 
 ```bash
-bun install
+bun install --frozen-lockfile
 bun run dev
 ```
 
 Before submitting changes, run:
 
 ```bash
+bun run lint
+bun run type-check
 bun run test
 bun run check
 bun run check:mcp
 bun run build
+cargo fmt --manifest-path src-tauri/Cargo.toml --all --check
+cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings
+cargo test --manifest-path src-tauri/Cargo.toml --locked
 ```
 
 Native packaging and model setup details are in the [deployment guide](docs/guides/deployment.md).

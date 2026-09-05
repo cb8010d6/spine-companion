@@ -99,6 +99,29 @@ describe("release checksums", () => {
 });
 
 describe("release workflow contract", () => {
+  it("keeps manual candidate validation non-publishing and toolchains reproducible", async () => {
+    const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+    const release = await readFile(path.join(root, ".github", "workflows", "release.yml"), "utf8");
+    const ci = await readFile(path.join(root, ".github", "workflows", "ci.yml"), "utf8");
+    const toolchain = await readFile(path.join(root, "rust-toolchain.toml"), "utf8");
+    const packageJson = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
+    const bunVersion = packageJson.packageManager.split("@")[1];
+    const rustVersion = toolchain.match(/^channel = "([^"]+)"/mu)[1];
+
+    expect(release.slice(release.indexOf("\n  publish:"))).toContain("if: github.event_name == 'push' && github.ref_type == 'tag'");
+    expect(release).toContain("${{ needs.validate.outputs.tag }}");
+    for (const workflow of [ci, release]) {
+      const bunPins = [...workflow.matchAll(/bun-version:\s*(\S+)/gu)].map((match) => match[1]);
+      const rustPins = [...workflow.matchAll(/toolchain:\s*(\S+)/gu)].map((match) => match[1]);
+      expect(bunPins.length).toBeGreaterThan(0);
+      expect(bunPins.every((version) => version === bunVersion)).toBe(true);
+      expect(rustPins.length).toBeGreaterThan(0);
+      expect(rustPins.every((version) => version === rustVersion)).toBe(true);
+      for (const match of workflow.matchAll(/run: (bun install[^\n]*)/gu)) expect(match[1]).toContain("--frozen-lockfile");
+      for (const command of ["bun run lint", "bun run type-check", "cargo fmt --all --check", "cargo clippy --locked --all-targets -- -D warnings", "cargo test --locked"]) expect(workflow).toContain(command);
+    }
+  });
+
   it("smoke-tests the installed Windows package without publishing the raw executable", async () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
     const workflow = await readFile(path.join(root, ".github", "workflows", "release.yml"), "utf8");
