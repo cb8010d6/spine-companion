@@ -269,6 +269,7 @@ fn default_time_scale() -> f64 {
     1.0
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn should_ignore_cursor(
     enabled: bool,
     dragging: bool,
@@ -3337,6 +3338,7 @@ struct WindowPosition {
     height: u32,
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn dwm_process_changed(previous: Option<u32>, current: Option<u32>) -> bool {
     matches!((previous, current), (Some(previous), Some(current)) if previous != current)
 }
