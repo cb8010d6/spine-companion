@@ -13,6 +13,8 @@
   --accent: var(--sc-accent);
   --accent-hover: var(--sc-accent-strong);
   --danger: var(--sc-danger);
+  --surface: var(--sc-bg-elevated);
+  --warning: var(--sc-warning);
 }
 
 body {
