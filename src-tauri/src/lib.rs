@@ -808,6 +808,16 @@ fn local_model_id(asset_dir: &Path, name: &str, skel: &str) -> String {
     format!("local-{slug}-{}", &hash[..12])
 }
 
+fn is_local_import_staging_name(name: &str) -> bool {
+    name.starts_with(".local-")
+        && name
+            .strip_suffix(".staging")
+            .and_then(|stem| stem.rsplit_once("-local-import-"))
+            .is_some_and(|(_, request)| {
+                !request.is_empty() && request.bytes().all(|byte| byte.is_ascii_digit())
+            })
+}
+
 fn normalized_relative_path(root: &Path, path: &Path) -> Result<String, String> {
     let canonical = path
         .canonicalize()
@@ -2481,13 +2491,19 @@ struct InstalledModel {
 
 #[tauri::command]
 fn get_installed_models(data: State<'_, AppData>) -> Result<Vec<InstalledModel>, String> {
-    let models_dir = data.config_dir.join("models");
+    installed_models_in(&data.config_dir.join("models"))
+}
+
+fn installed_models_in(models_dir: &Path) -> Result<Vec<InstalledModel>, String> {
     let mut models = Vec::new();
     if let Ok(entries) = std::fs::read_dir(models_dir) {
         for entry in entries.flatten() {
             if let Ok(file_type) = entry.file_type() {
                 if file_type.is_dir() {
                     let id = entry.file_name().to_string_lossy().to_string();
+                    if is_local_import_staging_name(&id) {
+                        continue;
+                    }
                     let dir = entry.path().to_string_lossy().to_string();
                     let metadata =
                         std::fs::read_to_string(entry.path().join(".companion-model.json"))
@@ -2535,7 +2551,11 @@ fn get_installed_models(data: State<'_, AppData>) -> Result<Vec<InstalledModel>,
 async fn remove_model(data: State<'_, AppData>, id: String) -> Result<(), String> {
     let _mutation = data.model_mutation_lock.lock().await;
     validate_model_download_file_name(&id).map_err(|_| "Invalid model ID".to_string())?;
-    if id.contains("..") || id.contains('/') || id.contains('\\') {
+    if id.contains("..")
+        || id.contains('/')
+        || id.contains('\\')
+        || is_local_import_staging_name(&id)
+    {
         return Err("Invalid model ID".to_string());
     }
     let models_dir = data.config_dir.join("models");
@@ -2641,7 +2661,11 @@ async fn select_installed_model(
     mutation: &tokio::sync::MutexGuard<'_, ()>,
 ) -> Result<ImportModelResult, String> {
     validate_model_download_file_name(id).map_err(|_| "Invalid model ID".to_string())?;
-    if id.contains("..") || id.contains('/') || id.contains('\\') {
+    if id.contains("..")
+        || id.contains('/')
+        || id.contains('\\')
+        || is_local_import_staging_name(id)
+    {
         return Err("Invalid model ID".to_string());
     }
     let public = public_config_with_ui(data);
@@ -3407,12 +3431,13 @@ fn cleanup_stale_model_downloads(config_dir: &Path) -> u64 {
             let path = entry.path();
             let is_download_dir =
                 name.ends_with(".download") || name.ends_with(".preview-download");
+            let is_local_staging = is_local_import_staging_name(&name);
             let is_marked_partial = path.join(PARTIAL_DOWNLOAD_MARKER).exists();
             let has_committed_manifest = path.join(".companion-model.json").exists()
                 || path.join(".catalog-signature").exists();
             if entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false)
-                && is_download_dir
-                && (is_marked_partial || !has_committed_manifest)
+                && (is_local_staging
+                    || (is_download_dir && (is_marked_partial || !has_committed_manifest)))
                 && std::fs::remove_dir_all(path).is_ok()
             {
                 removed += 1;
@@ -5524,6 +5549,40 @@ mod tests {
         assert_eq!(public["spine"]["assetDirConfigured"], false);
         assert_eq!(public["spine"]["assetDir"], "");
         verify_local_model_config(&data.local_config_path, Path::new(""), "").unwrap();
+        fs::remove_dir_all(&data.config_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn local_import_staging_is_never_listed_or_selected_as_a_model() {
+        let data = model_test_data();
+        install_test_model(&data, "first");
+        let temporary_id = ".local-first-0123456789ab-local-import-42.staging";
+        install_test_model(&data, temporary_id);
+        let models = installed_models_in(&data.config_dir.join("models")).unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "first");
+        let mutation = data.model_mutation_lock.lock().await;
+        assert!(select_installed_model(&data, temporary_id, &mutation)
+            .await
+            .is_err());
+        assert_eq!(*data.asset_root.read().await, None);
+        fs::remove_dir_all(&data.config_dir).unwrap();
+    }
+
+    #[test]
+    fn interrupted_local_import_cleanup_preserves_unrelated_staging_directories() {
+        let data = model_test_data();
+        let temporary_id = ".local-first-0123456789ab-local-import-42.staging";
+        let temporary = install_test_model(&data, temporary_id);
+        fs::write(temporary.join(".companion-model.json"), b"{}").unwrap();
+        let ordinary = install_test_model(&data, "first");
+        let unrelated = install_test_model(&data, "user.staging");
+        let malformed = install_test_model(&data, ".local-first-local-import-not-a-number.staging");
+        assert_eq!(cleanup_stale_model_downloads(&data.config_dir), 1);
+        assert!(!temporary.exists());
+        assert!(ordinary.exists());
+        assert!(unrelated.exists());
+        assert!(malformed.exists());
         fs::remove_dir_all(&data.config_dir).unwrap();
     }
 
