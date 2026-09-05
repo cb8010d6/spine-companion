@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { cp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -18,9 +18,29 @@ export function publishedAssetName(fileName) {
   return path.basename(fileName).replaceAll(" ", ".");
 }
 
+function pathsOverlap(left, right) {
+  const relative = path.relative(left, right);
+  return relative === "" || (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`));
+}
+
 export async function stageReleaseAssets(root, stagingRoot) {
   const absoluteRoot = path.resolve(root);
   const absoluteStaging = path.resolve(stagingRoot);
+  if (pathsOverlap(absoluteRoot, absoluteStaging) || pathsOverlap(absoluteStaging, absoluteRoot)) {
+    throw new Error(`Release staging directory must not overlap the artifact directory: ${stagingRoot}.`);
+  }
+
+  const stagingInfo = await lstat(absoluteStaging).catch((error) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (stagingInfo && (!stagingInfo.isDirectory() || stagingInfo.isSymbolicLink())) {
+    throw new Error(`Release staging path must be a real directory: ${stagingRoot}.`);
+  }
+  if (stagingInfo && (await readdir(absoluteStaging)).length > 0) {
+    throw new Error(`Release staging directory must be absent or empty: ${stagingRoot}.`);
+  }
+
   const files = await listFiles(absoluteRoot);
   if (files.length === 0) throw new Error(`No release files found under ${root}.`);
 
@@ -35,7 +55,6 @@ export async function stageReleaseAssets(root, stagingRoot) {
     destinations.set(publishedName, sourceName);
   }
 
-  await rm(absoluteStaging, { recursive: true, force: true });
   await mkdir(absoluteStaging, { recursive: true });
   for (const file of files) {
     await cp(file, path.join(absoluteStaging, publishedAssetName(file)));

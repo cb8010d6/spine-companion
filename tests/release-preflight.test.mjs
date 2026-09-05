@@ -135,6 +135,27 @@ describe("release checksums", () => {
 
     await expect(stageReleaseAssets(artifacts, path.join(root, "release-upload"))).rejects.toThrow(/collision after GitHub normalization/iu);
   });
+
+  it("rejects overlapping or dirty staging paths without deleting source files", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "spine-release-staging-safety-"));
+    temporaryRoots.push(root);
+    const artifacts = path.join(root, "release-artifacts");
+    await mkdir(artifacts, { recursive: true });
+    const source = path.join(artifacts, "asset.bin");
+    await writeFile(source, "asset");
+
+    await expect(stageReleaseAssets(artifacts, artifacts)).rejects.toThrow(/must not overlap/iu);
+    await expect(readFile(source, "utf8")).resolves.toBe("asset");
+    await expect(stageReleaseAssets(artifacts, root)).rejects.toThrow(/must not overlap/iu);
+    await expect(readdir(root)).resolves.toContain("release-artifacts");
+
+    const dirtyStaging = path.join(root, "release-upload");
+    const sentinel = path.join(dirtyStaging, "sentinel.txt");
+    await mkdir(dirtyStaging, { recursive: true });
+    await writeFile(sentinel, "keep");
+    await expect(stageReleaseAssets(artifacts, dirtyStaging)).rejects.toThrow(/absent or empty/iu);
+    await expect(readFile(sentinel, "utf8")).resolves.toBe("keep");
+  });
 });
 
 describe("release workflow contract", () => {
@@ -149,6 +170,10 @@ describe("release workflow contract", () => {
 
     expect(release.slice(release.indexOf("\n  publish:"))).toContain("if: github.event_name == 'push' && github.ref_type == 'tag'");
     expect(release).toContain("${{ needs.validate.outputs.tag }}");
+    const stageIndex = release.indexOf("bun scripts/generate-sha256sums.mjs --stage release-artifacts release-upload");
+    const createIndex = release.indexOf('gh release create "$TAG"');
+    expect(stageIndex).toBeGreaterThan(-1);
+    expect(createIndex).toBeGreaterThan(stageIndex);
     for (const workflow of [ci, release]) {
       const bunPins = [...workflow.matchAll(/bun-version:\s*(\S+)/gu)].map((match) => match[1]);
       const rustPins = [...workflow.matchAll(/toolchain:\s*(\S+)/gu)].map((match) => match[1]);
