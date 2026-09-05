@@ -8,6 +8,14 @@ describe("local model import IPC contract", () => {
     const action = manager.slice(manager.indexOf("async function importLocalModel()"), manager.indexOf("async function refreshIntegrations()"));
     expect(action).toContain('readableManagerError(error, t("manager.error.localImportFailed"))');
     expect(action).toContain("await refreshConfig().then(() => renderView(activeView)).catch(() => undefined)");
+    expect(action).toContain("if (localImportInFlight) return;");
+    expect(action).toContain("setLocalImportInFlight(true);");
+    expect(action).toMatch(/finally\s*\{\s*setLocalImportInFlight\(false\);\s*\}/);
+    expect(manager.match(/h\(\"button\", localImportButtonProps\(\), t\(\"manager\.actions\.importLocal\"\)\)/g)).toHaveLength(2);
+    expect(manager).toContain('h("button", { ...localImportButtonProps(), disabled: true }');
+    expect(manager).toContain('document.querySelectorAll("[data-action=\\"import-local\\"]")');
+    expect(manager).toContain('button.setAttribute("aria-busy", "true")');
+    expect(manager).toContain('button.removeAttribute("aria-busy")');
   });
 
   it("uses an explicit skeleton picker and does not invoke IPC on cancellation", () => {

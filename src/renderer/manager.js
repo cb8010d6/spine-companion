@@ -124,6 +124,7 @@ const integrationTestResults = new Map();
 let integrationFilter = "all";
 let selectedIntegrationId = "";
 let integrationTestAllInFlight = false;
+let localImportInFlight = false;
 let dashboardRenderRevision = 0;
 const navigationGuard = createNavigationGuard();
 let librarySession = null;
@@ -392,7 +393,7 @@ function libraryLoadingView() {
         h("p", { class: "empty-text" }, t("manager.library.subtitle"))
       ),
       h("div", { class: "model-actions" },
-        h("button", { class: "btn", type: "button", disabled: true }, t("manager.actions.importLocal")),
+        h("button", { ...localImportButtonProps(), disabled: true }, t("manager.actions.importLocal")),
         h("button", { class: "btn", type: "button", onClick: () => navTo("avatar") }, ...iconLabel(Sparkles, t("manager.labs.open")))
       )
     ),
@@ -537,6 +538,26 @@ function iconAction(Icon, label, onClick, { danger = false, disabled = false } =
     disabled,
     onClick
   }, icon);
+}
+
+function setLocalImportInFlight(inFlight) {
+  localImportInFlight = inFlight;
+  for (const button of document.querySelectorAll("[data-action=\"import-local\"]")) {
+    button.disabled = inFlight;
+    if (inFlight) button.setAttribute("aria-busy", "true");
+    else button.removeAttribute("aria-busy");
+  }
+}
+
+function localImportButtonProps() {
+  return {
+    class: "btn",
+    type: "button",
+    dataset: { action: "import-local" },
+    disabled: localImportInFlight,
+    "aria-busy": localImportInFlight ? "true" : undefined,
+    onClick: importLocalModel
+  };
 }
 
 function catalogSourceLabel(source = {}) {
@@ -1155,7 +1176,7 @@ async function libraryView({ cachedOnly = false } = {}) {
         h("p", { class: "empty-text" }, t("manager.library.subtitle"))
       ),
       h("div", { class: "model-actions" },
-        h("button", { class: "btn", type: "button", onClick: importLocalModel }, t("manager.actions.importLocal")),
+        h("button", localImportButtonProps(), t("manager.actions.importLocal")),
         h("button", { class: "btn", type: "button", onClick: () => navTo("avatar") }, ...iconLabel(Sparkles, t("manager.labs.open")))
       )
     ),
@@ -1240,16 +1261,18 @@ async function activateModel(id, { incremental = false } = {}) {
 }
 
 async function importLocalModel() {
+  if (localImportInFlight) return;
   if (!window.companion?.importLocalModel) {
     setStatus(t("manager.status.localImportUnavailable"));
     return;
   }
+  setLocalImportInFlight(true);
   try {
     const result = await window.companion.importLocalModel();
     if (result?.canceled) return;
     await refreshConfig();
     setStatus(t("manager.status.localModelLoaded", { name: result.skel || result.name }));
-    renderView(activeView);
+    await renderView(activeView);
   } catch (error) {
     const message = readableManagerError(error, t("manager.error.localImportFailed"));
     // Import may have committed before activation failed; retain the original error.
@@ -1258,6 +1281,8 @@ async function importLocalModel() {
     showModal(t("manager.modal.importFailed"), message, [
       h("button", { class: "btn", type: "button", onClick: closeModal }, t("manager.actions.close"))
     ]);
+  } finally {
+    setLocalImportInFlight(false);
   }
 }
 
@@ -1431,7 +1456,7 @@ function settingsView() {
     ),
     h("div", { class: "settings-shell" },
       section(t("manager.settings.appearance"), t("manager.settings.appearanceHelp"),
-        h("button", { class: "btn", type: "button", onClick: importLocalModel }, t("manager.actions.importLocal")),
+        h("button", localImportButtonProps(), t("manager.actions.importLocal")),
         rangeNumber(t("manager.field.scale"), "set-scale", Number(spine.scale || 1), 0.2, 2.5, 0.01, saveSpine),
         rangeNumber(t("manager.field.offsetX"), "set-offset-x", Number(spine.offsetX || 0), -240, 240, 1, saveSpine),
         rangeNumber(t("manager.field.offsetY"), "set-offset-y", Number(spine.offsetY || 0), -240, 240, 1, saveSpine),
