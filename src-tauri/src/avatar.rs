@@ -23,7 +23,10 @@ const AVATAR_JOB_MAX_MOTIONS: usize = 32;
 const AVATAR_JOB_MAX_MOTION_BYTES: usize = 64;
 const AVATAR_JOB_MAX_STORE_BYTES: u64 = 8 * 1024 * 1024;
 const AVATAR_JOB_MAX_BACKUPS: usize = 3;
-const AVATAR_JOB_LOCK_TIMEOUT: Duration = Duration::from_secs(2);
+// File locks are released by the OS when the owning process exits. Wait up to
+// the documented bounded interval for a brief job-store critical section,
+// without trying to infer whether another process is still alive.
+const AVATAR_JOB_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
 const AVATAR_JOB_LOCK_MAX_WAIT: Duration = Duration::from_secs(10);
 const AVATAR_JOB_LOCK_RETRY: Duration = Duration::from_millis(20);
 
@@ -2236,12 +2239,12 @@ fn unique_suffix() -> String {
 mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Write};
-    use std::process::{Child, ChildStdout, Command, Stdio};
-    use std::sync::{Arc, Barrier};
+    use std::process::{Child, Command, ExitStatus, Stdio};
+    use std::sync::{mpsc, Arc, Barrier};
+    use std::thread::JoinHandle;
 
     const CHILD_MODE_ENV: &str = "SPINE_COMPANION_AVATAR_JOB_CHILD_MODE";
     const CHILD_CONFIG_ENV: &str = "SPINE_COMPANION_AVATAR_JOB_CHILD_CONFIG";
-    const CHILD_GATE_ENV: &str = "SPINE_COMPANION_AVATAR_JOB_CHILD_GATE";
     const CHILD_JOB_ID_ENV: &str = "SPINE_COMPANION_AVATAR_JOB_CHILD_ID";
 
     fn temp_pack(name: &str) -> PathBuf {
@@ -2269,8 +2272,91 @@ mod tests {
         fs::write(exports.join("avatar.png"), []).unwrap();
     }
 
-    fn spawn_lock_child(mode: &str, config: &Path) -> (Child, BufReader<ChildStdout>) {
-        let mut child = Command::new(std::env::current_exe().unwrap())
+    struct ChildGuard {
+        child: Child,
+        output_thread: Option<JoinHandle<()>>,
+    }
+
+    impl ChildGuard {
+        fn stdin(&mut self) -> &mut std::process::ChildStdin {
+            self.child.stdin.as_mut().expect("child stdin pipe")
+        }
+
+        fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
+            self.child.try_wait()
+        }
+
+        fn reap_output(&mut self) {
+            if let Some(thread) = self.output_thread.take() {
+                let _ = thread.join();
+            }
+        }
+
+        fn wait_bounded(&mut self, timeout: Duration) -> std::io::Result<ExitStatus> {
+            let deadline = Instant::now() + timeout;
+            loop {
+                if let Some(status) = self.try_wait()? {
+                    self.reap_output();
+                    return Ok(status);
+                }
+                if Instant::now() >= deadline {
+                    let exited = self.terminate_bounded(Duration::from_secs(2));
+                    if exited {
+                        self.reap_output();
+                    } else {
+                        // A blocking stdout reader cannot be joined safely until
+                        // the child is known to have exited. Dropping its handle
+                        // detaches it while keeping this failure path bounded.
+                        self.output_thread.take();
+                    }
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "avatar job lock child did not exit before the test deadline",
+                    ));
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
+
+        fn terminate_bounded(&mut self, timeout: Duration) -> bool {
+            match self.child.try_wait() {
+                Ok(Some(_)) => return true,
+                Ok(None) => {}
+                Err(_) => return false,
+            }
+            let _ = self.child.kill();
+            let deadline = Instant::now() + timeout;
+            while Instant::now() < deadline {
+                match self.child.try_wait() {
+                    Ok(Some(_)) => return true,
+                    Err(_) => return false,
+                    Ok(None) => thread::sleep(Duration::from_millis(10)),
+                }
+            }
+            false
+        }
+    }
+
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            // A child waiting on its stdin gate must be terminated and reaped
+            // without allowing cleanup to turn a failed test into a hang.
+            if self.terminate_bounded(Duration::from_secs(2)) {
+                self.reap_output();
+            } else {
+                // Do not join a reader whose child process may still be alive.
+                self.output_thread.take();
+            }
+        }
+    }
+
+    fn spawn_avatar_child(
+        mode: &str,
+        config: &Path,
+        job_id: Option<&str>,
+    ) -> (ChildGuard, mpsc::Receiver<String>) {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
             .args([
                 "--ignored",
                 "--exact",
@@ -2281,40 +2367,58 @@ mod tests {
             .env(CHILD_MODE_ENV, mode)
             .env(CHILD_CONFIG_ENV, config)
             .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .expect("spawn avatar job lock child");
-        let stdout = BufReader::new(child.stdout.take().expect("child stdout pipe"));
-        (child, stdout)
+            .stdout(Stdio::piped());
+        if let Some(job_id) = job_id {
+            command.env(CHILD_JOB_ID_ENV, job_id);
+        }
+        let mut child = command.spawn().expect("spawn avatar job lock child");
+        let stdout = child.stdout.take().expect("child stdout pipe");
+        let (line_tx, line_rx) = mpsc::channel();
+        let output_thread = thread::spawn(move || {
+            let mut stdout = BufReader::new(stdout);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match stdout.read_line(&mut line) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        if line_tx.send(line.clone()).is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        (
+            ChildGuard {
+                child,
+                output_thread: Some(output_thread),
+            },
+            line_rx,
+        )
     }
 
-    fn wait_for_child_ready(stdout: &mut BufReader<ChildStdout>) {
+    fn wait_for_child_ready(lines: &mpsc::Receiver<String>) {
         let deadline = Instant::now() + Duration::from_secs(10);
-        let mut line = String::new();
         loop {
-            line.clear();
+            let remaining = deadline.saturating_duration_since(Instant::now());
             assert!(
-                stdout.read_line(&mut line).expect("read child output") > 0,
-                "avatar job lock child exited before announcing readiness"
+                !remaining.is_zero(),
+                "avatar job lock child did not become ready"
             );
+            let line = match lines.recv_timeout(remaining) {
+                Ok(line) => line,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    panic!("avatar job lock child did not become ready before the test deadline")
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    panic!("avatar job lock child exited before announcing readiness")
+                }
+            };
             if line.contains("AVATAR_LOCK_CHILD_READY") {
                 return;
             }
-            assert!(
-                Instant::now() < deadline,
-                "avatar job lock child did not become ready"
-            );
-        }
-    }
-
-    fn wait_for_path(path: &Path, timeout: Duration) {
-        let deadline = Instant::now() + timeout;
-        while !path.exists() {
-            assert!(
-                Instant::now() < deadline,
-                "child did not observe the inter-process test gate"
-            );
-            std::thread::yield_now();
         }
     }
 
@@ -2328,8 +2432,8 @@ mod tests {
         if mode == "create" {
             println!("AVATAR_LOCK_CHILD_READY");
             std::io::stdout().flush().unwrap();
-            let gate = PathBuf::from(std::env::var(CHILD_GATE_ENV).unwrap());
-            wait_for_path(&gate, Duration::from_secs(10));
+            let mut release = String::new();
+            std::io::stdin().read_line(&mut release).unwrap();
             let job_id = std::env::var(CHILD_JOB_ID_ENV).unwrap();
             create_avatar_job(
                 &config,
@@ -2706,8 +2810,8 @@ mod tests {
     #[test]
     fn interprocess_avatar_job_lock_contends_without_stale_steal_and_keeps_path() {
         let config = temp_pack("job-lock-contention");
-        let (mut child, mut stdout) = spawn_lock_child("hold", &config);
-        wait_for_child_ready(&mut stdout);
+        let (mut child, lines) = spawn_avatar_child("hold", &config, None);
+        wait_for_child_ready(&lines);
         let lock_path = avatar_job_lock_path(&config);
         assert!(lock_path.is_file());
 
@@ -2722,13 +2826,10 @@ mod tests {
             "contention must not delete the lock file"
         );
 
+        child.stdin().write_all(b"release\n").unwrap();
         child
-            .stdin
-            .as_mut()
-            .expect("child stdin pipe")
-            .write_all(b"release\n")
-            .unwrap();
-        child.wait().unwrap();
+            .wait_bounded(Duration::from_secs(10))
+            .expect("lock child should exit after release");
         assert!(lock_path.is_file(), "the lock file is stable after release");
         let replacement = acquire_avatar_job_lock_with_limits(&config, Duration::from_millis(120))
             .expect("the lock must be reusable after the owner releases it");
@@ -2740,9 +2841,11 @@ mod tests {
     #[test]
     fn interprocess_avatar_job_lock_releases_after_owner_process_exit() {
         let config = temp_pack("job-lock-crash-release");
-        let (mut child, mut stdout) = spawn_lock_child("crash", &config);
-        wait_for_child_ready(&mut stdout);
-        let status = child.wait().unwrap();
+        let (mut child, lines) = spawn_avatar_child("crash", &config, None);
+        wait_for_child_ready(&lines);
+        let status = child
+            .wait_bounded(Duration::from_secs(10))
+            .expect("crash child should exit");
         assert!(
             status.success(),
             "lock child should exit cleanly after simulating a crash"
@@ -2759,36 +2862,26 @@ mod tests {
     #[test]
     fn interprocess_avatar_job_creates_preserve_every_job() {
         let config = temp_pack("job-interprocess-concurrency");
-        let gate = config.join("children-start");
         let workers = 8;
         let mut children = Vec::with_capacity(workers);
         for index in 0..workers {
-            let mut command = Command::new(std::env::current_exe().unwrap());
-            command
-                .args([
-                    "--ignored",
-                    "--exact",
-                    "avatar::tests::avatar_job_lock_child",
-                    "--nocapture",
-                    "--test-threads=1",
-                ])
-                .env(CHILD_MODE_ENV, "create")
-                .env(CHILD_CONFIG_ENV, &config)
-                .env(CHILD_GATE_ENV, &gate)
-                .env(CHILD_JOB_ID_ENV, format!("interprocess-{index}"))
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped());
-            let mut child = command.spawn().expect("spawn avatar job create child");
-            let stdout = BufReader::new(child.stdout.take().expect("child stdout pipe"));
-            children.push((child, stdout));
+            children.push(spawn_avatar_child(
+                "create",
+                &config,
+                Some(&format!("interprocess-{index}")),
+            ));
         }
 
-        for (_, stdout) in &mut children {
-            wait_for_child_ready(stdout);
+        for (_, lines) in &children {
+            wait_for_child_ready(lines);
         }
-        fs::write(&gate, b"go").unwrap();
-        for (mut child, _stdout) in children {
-            let status = child.wait().unwrap();
+        for (child, _) in &mut children {
+            child.stdin().write_all(b"go\n").unwrap();
+        }
+        for (child, _) in &mut children {
+            let status = child
+                .wait_bounded(Duration::from_secs(10))
+                .expect("avatar job create child should exit");
             assert!(status.success(), "avatar job create child failed");
         }
 
