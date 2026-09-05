@@ -93,6 +93,19 @@ export async function initTauriBridge() {
     quitApp: () => _tauriInvoke("quit_app"),
     emitScale: (payload) => _tauriInvoke("emit_scale_event", { input: payload }),
     importModel: (input) => _tauriInvoke("import_model", { input }),
+    importLocalModel: async () => {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const selected = await open({
+        multiple: false,
+        directory: false,
+        filters: [{ name: "Spine skeleton", extensions: ["skel"] }],
+        title: "Select a Spine .skel file"
+      });
+      if (!selected || Array.isArray(selected)) return { canceled: true };
+      return _tauriInvoke("import_local_model", {
+        input: { skelPath: selected, activate: true }
+      });
+    },
     installModel: (input) => _tauriInvoke("import_model", { input: { ...input, activate: false } }),
     importCatalogModel: (sourceId, modelId, activate = true, acknowledgement = false) => _tauriInvoke("import_catalog_model", { sourceId, modelId, activate, acknowledgement }),
     installCatalogModel: (sourceId, modelId, acknowledgement = false) => _tauriInvoke("import_catalog_model", { sourceId, modelId, activate: false, acknowledgement }),

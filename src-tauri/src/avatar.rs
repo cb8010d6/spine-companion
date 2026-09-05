@@ -2255,7 +2255,10 @@ fn copy_tree_inner(root: &Path, source: &Path, destination: &Path) -> Result<(),
     Ok(())
 }
 
-fn replace_directory_atomically(staging: &Path, target: &Path) -> Result<Option<PathBuf>, String> {
+pub(crate) fn replace_directory_atomically(
+    staging: &Path,
+    target: &Path,
+) -> Result<Option<PathBuf>, String> {
     let backup = target.with_file_name(format!(
         ".{}.backup-{}",
         target
@@ -2277,7 +2280,10 @@ fn replace_directory_atomically(staging: &Path, target: &Path) -> Result<Option<
     Ok(had_target.then_some(backup))
 }
 
-fn rollback_directory_replace(target: &Path, backup: Option<&Path>) -> Result<(), String> {
+pub(crate) fn rollback_directory_replace(
+    target: &Path,
+    backup: Option<&Path>,
+) -> Result<(), String> {
     if target.exists() {
         fs::remove_dir_all(target).map_err(|error| error.to_string())?;
     }
