@@ -229,6 +229,8 @@ describe("release workflow contract", () => {
     expect(smoke).toContain('$transientDllInitializationFailure = -1073741502');
     expect(smoke).toContain('for ($attempt = 1; $attempt -le 2; $attempt++)');
     expect(smoke).toContain("bun scripts/check-packaged-mcp.mjs $exe");
+    expect(smoke).toContain('Join-Path $PSScriptRoot "../package.json"');
+    expect(smoke).toContain('$doctor.mcp.version -ceq $expectedVersion');
     const packagedMcp = await readFile(path.join(root, "scripts", "check-packaged-mcp.mjs"), "utf8");
     expect(packagedMcp).toContain("client.getServerVersion()?.version");
     expect(packagedMcp).toContain("serverVersion !== expectedVersion");

@@ -107,11 +107,11 @@ read current snapshots rather than treating them as new real reports.
 
 ## Separate Follow-ups
 
-Avatar job records already have a bounded store, backup recovery, and a
-cross-process marker lock. The marker's age-based stale recovery still deserves
-an independent change to an OS-backed file lock: elapsed time alone does not prove
-that an owner is dead. This concerns experimental Avatar planning records, not
-model files or user AI configuration, and is not claimed fixed by the state work.
+Avatar job records use a bounded store, backup recovery, and an OS-backed file
+lock, delivered separately from the state changes. Lock-file age no longer
+determines ownership. Exit older versions before upgrading: their marker-lock
+protocol is not compatible with the new protocol. This protection covers Avatar
+job records, not every pack-editing or model-installation operation.
 
 Windows remains the stable target; Linux/macOS remain Preview and Avatar Studio
 remains Experimental. There is no cloud synchronization, telemetry, automatic

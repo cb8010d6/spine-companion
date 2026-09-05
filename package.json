@@ -1,6 +1,6 @@
 {
   "name": "spine-companion",
-  "version": "0.2.6",
+  "version": "0.2.7-alpha.1",
   "description": "Spine-powered AI coding companion that turns agent activity into an animated desktop character.",
   "license": "MIT",
   "packageManager": "bun@1.3.13",
