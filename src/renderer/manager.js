@@ -12,6 +12,7 @@ import {
   Library,
   Languages,
   PackageCheck,
+  Plug,
   Settings,
   Sparkles,
   Trash2,
@@ -1986,7 +1987,7 @@ async function integrationsView() {
     return h("span", { class: className, style: { "--integration-brand": brand.color }, "aria-hidden": "true" },
       brand.image
         ? h("img", { src: brand.image, alt: "" })
-        : h("svg", { viewBox: "0 0 24 24", focusable: "false" }, h("path", { d: brand.path }))
+        : createElement(Plug)
     );
   };
   const primaryAction = () => {

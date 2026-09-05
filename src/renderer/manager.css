@@ -1204,7 +1204,8 @@ input[type="range"] {
 .integration-monogram svg {
   width: 18px;
   height: 18px;
-  fill: var(--integration-brand, currentColor);
+  fill: none;
+  stroke: var(--integration-brand, currentColor);
 }
 
 .integration-brand-detail {
