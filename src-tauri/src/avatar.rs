@@ -2868,7 +2868,7 @@ mod tests {
         let config = temp_pack("job-lock-owned-marker");
         let lock = acquire_avatar_job_lock_with_limits(
             &config,
-            Duration::from_millis(100),
+            Duration::from_millis(500),
             Duration::from_secs(30),
         )
         .unwrap();
@@ -2925,7 +2925,7 @@ mod tests {
             let started = Instant::now();
             let result = acquire_avatar_job_lock_with_limits(
                 &contender_config,
-                Duration::from_millis(100),
+                Duration::from_millis(500),
                 Duration::from_secs(30),
             );
             result_tx.send((started.elapsed(), result)).unwrap();
@@ -2933,10 +2933,10 @@ mod tests {
         ready_rx.recv().unwrap();
 
         // Keep the marker live while advancing its owner identity. Every
-        // interval is below the 100 ms no-progress timeout, but the aggregate
+        // interval is below the 500 ms no-progress timeout, but the aggregate
         // hold exceeds it and therefore exercises the real retry loop.
         for index in 0..8 {
-            thread::sleep(Duration::from_millis(40));
+            thread::sleep(Duration::from_millis(100));
             fs::write(
                 &lock_path,
                 serde_json::to_vec(&AvatarJobLockMetadata {
@@ -2964,10 +2964,11 @@ mod tests {
             .recv_timeout(Duration::from_secs(2))
             .expect("contender should finish after the owner releases the lock");
         assert!(
-            elapsed >= Duration::from_millis(100),
+            elapsed >= Duration::from_millis(500),
             "contender unexpectedly acquired before the aggregate timeout: {elapsed:?}"
         );
-        assert!(result.is_ok(), "progressing owners must not cause timeout");
+        let acquired = result.expect("progressing owners must not cause timeout");
+        drop(acquired);
         contender.join().unwrap();
         let _ = fs::remove_dir_all(config);
     }
