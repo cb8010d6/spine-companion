@@ -4,6 +4,10 @@
   "description": "Spine-powered AI coding companion that turns agent activity into an animated desktop character.",
   "license": "MIT",
   "packageManager": "bun@1.3.13",
+  "overrides": {
+    "vite": "6.4.3",
+    "ws": "8.21.0"
+  },
   "author": {
     "name": "Spine Companion contributors",
     "email": "spine-companion@users.noreply.github.com"
