@@ -467,11 +467,14 @@ fn acquire_avatar_job_lock_with_limits(
                 let bytes = match serde_json::to_vec(&metadata) {
                     Ok(bytes) => bytes,
                     Err(error) => {
+                        drop(file);
                         let _ = fs::remove_file(&path);
                         return Err(error.to_string());
                     }
                 };
-                if let Err(error) = file.write_all(&bytes).and_then(|_| file.sync_all()) {
+                // create_new provides atomic ownership; marker metadata only needs visibility.
+                if let Err(error) = file.write_all(&bytes) {
+                    drop(file);
                     let _ = fs::remove_file(&path);
                     return Err(format!("Cannot initialize Avatar job lock: {error}"));
                 }
@@ -663,7 +666,7 @@ fn parse_avatar_jobs(bytes: &[u8], label: &str) -> Result<Vec<AvatarJob>, String
     for job in &mut jobs {
         normalize_avatar_job(job)?;
     }
-    jobs.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+    jobs.sort_by_key(|job| std::cmp::Reverse(job.updated_at));
     Ok(jobs)
 }
 
@@ -1859,9 +1862,7 @@ fn optional_runtime_path(
     exports_dir: &Path,
     errors: &mut Vec<String>,
 ) -> Option<String> {
-    let Some(value) = manifest.get(key) else {
-        return None;
-    };
+    let value = manifest.get(key)?;
     let Some(value) = value
         .as_str()
         .map(str::trim)
@@ -2615,6 +2616,50 @@ mod tests {
         assert!(error.contains("busy"));
         assert!(started.elapsed() < Duration::from_secs(1));
         fs::remove_file(avatar_job_lock_path(&config)).unwrap();
+        let _ = fs::remove_dir_all(config);
+    }
+
+    #[test]
+    fn live_avatar_job_lock_metadata_survives_timeout_and_owned_drop_allows_reacquire() {
+        let config = temp_pack("job-lock-owned-marker");
+        let lock = acquire_avatar_job_lock_with_limits(
+            &config,
+            Duration::from_millis(100),
+            Duration::from_secs(30),
+        )
+        .unwrap();
+        let metadata = serde_json::from_slice::<AvatarJobLockMetadata>(
+            &read_bytes_bounded(
+                &avatar_job_lock_path(&config),
+                AVATAR_JOB_LOCK_BYTES,
+                "Avatar job lock",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(metadata.owner, lock.owner);
+
+        let error = acquire_avatar_job_lock_with_limits(
+            &config,
+            Duration::from_millis(80),
+            Duration::from_secs(30),
+        )
+        .err()
+        .expect("a live lock should time out");
+        assert!(error.contains("busy"));
+        assert!(avatar_job_lock_path(&config).exists());
+        drop(lock);
+        assert!(!avatar_job_lock_path(&config).exists());
+
+        let replacement = acquire_avatar_job_lock_with_limits(
+            &config,
+            Duration::from_millis(100),
+            Duration::from_secs(30),
+        )
+        .unwrap();
+        assert!(avatar_job_lock_path(&config).exists());
+        drop(replacement);
+        assert!(!avatar_job_lock_path(&config).exists());
         let _ = fs::remove_dir_all(config);
     }
 
