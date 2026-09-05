@@ -129,12 +129,6 @@ function readJsonIfExists(file, warnings = []) {
   }
 }
 
-function resolveMaybeRelative(value) {
-  if (!value) return "";
-  if (path.isAbsolute(value)) return path.normalize(value);
-  return path.resolve(rootDir, value);
-}
-
 function parseCompanionPort(value) {
   if (value === undefined || value === null || value === "") return null;
   const port = Number(value);

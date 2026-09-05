@@ -360,14 +360,7 @@ fn build_router(app_state: AppState) -> Router {
 }
 
 pub async fn start_api_server(
-    store: StateStore,
-    tx: StateBroadcast,
-    reminders: ReminderStore,
-    reminder_tx: ReminderBroadcast,
-    asset_root: AssetRootStore,
-    preview_root: PathBuf,
-    public_config: PublicConfigStore,
-    history: HistoryStore,
+    app_state: AppState,
     host: &str,
     port: u16,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -384,17 +377,6 @@ pub async fn start_api_server(
         .into());
     }
     let addr = addresses[0];
-    let app_state = AppState {
-        store,
-        tx,
-        reminders,
-        reminder_tx,
-        asset_root,
-        preview_root,
-        public_config,
-        history,
-    };
-
     let app = build_router(app_state);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -497,14 +479,16 @@ mod tests {
     async fn rejects_non_loopback_host_before_binding() {
         let (store, tx) = create_state_store("idle");
         let error = start_api_server(
-            store,
-            tx,
-            create_reminder_store(),
-            create_reminder_broadcast(),
-            Arc::new(RwLock::new(None)),
-            std::env::temp_dir(),
-            Arc::new(Mutex::new(json!({}))),
-            Arc::new(Mutex::new(Vec::new())),
+            AppState {
+                store,
+                tx,
+                reminders: create_reminder_store(),
+                reminder_tx: create_reminder_broadcast(),
+                asset_root: Arc::new(RwLock::new(None)),
+                preview_root: std::env::temp_dir(),
+                public_config: Arc::new(Mutex::new(json!({}))),
+                history: Arc::new(Mutex::new(Vec::new())),
+            },
             "0.0.0.0",
             0,
         )

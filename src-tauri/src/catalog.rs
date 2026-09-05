@@ -15,9 +15,10 @@ pub const DEFAULT_PAGE_SIZE: usize = 24;
 pub const MAX_PAGE_SIZE: usize = 100;
 const MAX_CATALOG_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum CatalogSourceKind {
+    #[default]
     Official,
     CustomRaw,
     CustomCdn,
@@ -33,12 +34,6 @@ pub struct CatalogSource {
     pub kind: CatalogSourceKind,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
-}
-
-impl Default for CatalogSourceKind {
-    fn default() -> Self {
-        Self::Official
-    }
 }
 
 fn default_enabled() -> bool {
@@ -682,7 +677,7 @@ fn append_catalog_chunk_with_limit(
 }
 
 fn catalog_size_error(limit: usize) -> String {
-    if limit % (1024 * 1024) == 0 {
+    if limit.is_multiple_of(1024 * 1024) {
         format!(
             "Catalog response exceeds the {} MiB limit.",
             limit / (1024 * 1024)
@@ -803,7 +798,7 @@ pub fn search_catalog(
                     || request
                         .runtime_spine_version
                         .as_ref()
-                        .map_or(true, |runtime| {
+                        .is_none_or(|runtime| {
                             entry.model.spine.is_compatible_with(runtime)
                         }))
                 && matches_query(entry, &query)
@@ -1260,7 +1255,7 @@ mod tests {
         };
 
         let resolved =
-            resolve_cached_model_entry(&[source.clone()], &cache, &source.id, "alpha").unwrap();
+            resolve_cached_model_entry(std::slice::from_ref(&source), &cache, &source.id, "alpha").unwrap();
 
         assert_eq!(resolved.catalog_source_id, source.id);
         assert_eq!(resolved.model, expected);
@@ -1275,7 +1270,7 @@ mod tests {
         let cache = CatalogCache::default();
 
         let missing =
-            resolve_cached_model_entry(&[enabled.clone()], &cache, "missing", "alpha").unwrap_err();
+            resolve_cached_model_entry(std::slice::from_ref(&enabled), &cache, "missing", "alpha").unwrap_err();
         assert!(missing.contains("not configured"));
 
         let disabled_error =
@@ -1299,7 +1294,7 @@ mod tests {
         assert!(invalid_error.contains("Invalid catalog source"));
 
         let missing_cache = resolve_cached_model_entry(
-            &[valid.clone()],
+            std::slice::from_ref(&valid),
             &CatalogCache::default(),
             "community",
             "alpha",
@@ -1342,7 +1337,7 @@ mod tests {
             models: vec![model("alpha", "Alpha", "3.8")],
         });
         let schema_error =
-            resolve_cached_model_entry(&[source.clone()], &invalid_schema, "community", "alpha")
+            resolve_cached_model_entry(std::slice::from_ref(&source), &invalid_schema, "community", "alpha")
                 .unwrap_err();
         assert!(schema_error.contains("Invalid cached catalog"));
         assert!(schema_error.contains("schema version"));
@@ -1354,7 +1349,7 @@ mod tests {
             models: vec![invalid_model],
         });
         let model_error = resolve_cached_model_entry(
-            &[source.clone()],
+            std::slice::from_ref(&source),
             &invalid_model_cache,
             "community",
             "alpha",

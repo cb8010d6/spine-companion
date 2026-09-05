@@ -1020,13 +1020,11 @@ async fn install_model_value_inner(
         );
         error
     })?;
-    begin_download_commit(cancellation.as_ref()).map_err(|error| {
+    begin_download_commit(cancellation.as_ref()).inspect_err(|_| {
         let _ = remove_dir_if_exists_blocking(&temp_model_dir);
-        error
     })?;
-    write_model_metadata(&temp_model_dir, &model).map_err(|error| {
+    write_model_metadata(&temp_model_dir, &model).inspect_err(|_| {
         let _ = remove_dir_if_exists_blocking(&temp_model_dir);
-        error
     })?;
     replace_model_dir(&temp_model_dir, &model_dir)
         .await
@@ -1313,9 +1311,8 @@ async fn prepare_model_preview(
                     })?;
             }
         }
-        validate_spine_asset_dir(&temp_dir, &skel).map_err(|error| {
+        validate_spine_asset_dir(&temp_dir, &skel).inspect_err(|_| {
             let _ = remove_dir_if_exists_blocking(&temp_dir);
-            error
         })?;
         tokio::fs::write(temp_dir.join(".catalog-signature"), &signature)
             .await
@@ -1358,10 +1355,7 @@ fn github_raw_to_jsdelivr_url(url: &str) -> Option<String> {
         return None;
     }
     Some(format!(
-        "https://cdn.jsdelivr.net/gh/{}@{}/{}",
-        format!("{}/{}", owner, repo),
-        branch,
-        path
+        "https://cdn.jsdelivr.net/gh/{owner}/{repo}@{branch}/{path}"
     ))
 }
 
@@ -1698,7 +1692,7 @@ fn prune_preview_asset_cache(root: &Path, keep_id: &str, max_entries: usize, max
             Some((name, entry.path(), modified, size))
         })
         .collect::<Vec<_>>();
-    cached.sort_by(|left, right| right.2.cmp(&left.2));
+    cached.sort_by_key(|right| std::cmp::Reverse(right.2));
     let mut retained_entries = cached.len();
     let mut retained_bytes = cached.iter().map(|entry| entry.3).sum::<u64>();
     for (name, path, _, size) in cached.into_iter().rev() {
@@ -2170,7 +2164,7 @@ async fn activate_installed_model(
     if id.contains("..") || id.contains('/') || id.contains('\\') {
         return Err("Invalid model ID".to_string());
     }
-    let public = public_config_with_ui(&data);
+    let public = public_config_with_ui(data);
     let model_dir = data.config_dir.join("models").join(id);
     let model = model_by_id(&public, id).or_else(|| {
         std::fs::read_to_string(model_dir.join(".companion-model.json"))
@@ -2241,7 +2235,7 @@ async fn activate_installed_model(
         activated: true,
     };
     let _ = app.emit("companion:model-imported", result.clone());
-    let _ = app.emit("companion:config-changed", public_config_with_ui(&data));
+    let _ = app.emit("companion:config-changed", public_config_with_ui(data));
     Ok(result)
 }
 
@@ -3101,7 +3095,7 @@ async fn test_ai_integration_inner(
 
     let exe = current_mcp_exe_path()?;
     let api = companion_api_origin_from_data(data);
-    let preview = ai_integrations::preview_ai_integration_config(&tool_id, &exe, &api)?;
+    let preview = ai_integrations::preview_ai_integration_config(tool_id, &exe, &api)?;
     let mut child = tokio::process::Command::new(&exe)
         .arg("--mcp")
         .env("COMPANION_API", &api)
@@ -3310,11 +3304,11 @@ async fn move_drag(
     if let Some(drag) = drag_state {
         let logical_dx = point
             .total_x
-            .or_else(|| Some(point.screen_x - drag.start_x))
+            .or(Some(point.screen_x - drag.start_x))
             .unwrap_or(point.screen_x - drag.start_x);
         let logical_dy = point
             .total_y
-            .or_else(|| Some(point.screen_y - drag.start_y))
+            .or(Some(point.screen_y - drag.start_y))
             .unwrap_or(point.screen_y - drag.start_y);
         let dx = physical_drag_delta(logical_dx, drag.scale_factor);
         let dy = physical_drag_delta(logical_dy, drag.scale_factor);
@@ -3543,7 +3537,7 @@ fn start_renderer_watchdog(app: AppHandle) {
             #[cfg(target_os = "windows")]
             {
                 dwm_probe_tick = dwm_probe_tick.wrapping_add(1);
-                if dwm_probe_tick % 2 == 0 {
+                if dwm_probe_tick.is_multiple_of(2) {
                     let current_dwm_process_id = current_session_dwm_process_id();
                     if dwm_process_changed(last_dwm_process_id, current_dwm_process_id) {
                         last_dwm_process_id = current_dwm_process_id;
@@ -4423,11 +4417,11 @@ fn select_release_asset(assets: &[serde_json::Value]) -> Option<serde_json::Valu
     assets
         .iter()
         .filter(|asset| {
-            asset
+            !asset
                 .get("url")
                 .and_then(|value| value.as_str())
                 .unwrap_or("")
-                != ""
+                .is_empty()
         })
         .map(|asset| (release_asset_score(asset), asset))
         .filter(|(score, _)| *score > 0)
@@ -4597,14 +4591,16 @@ pub fn run() {
             // racing the first PIXI load against server startup can leave the
             // transparent window visible with no model.
             if let Err(e) = tauri::async_runtime::block_on(server::start_api_server(
-                store_for_server,
-                tx_for_server,
-                reminders_for_server,
-                reminder_tx_for_server,
-                asset_root_for_server,
-                preview_root_for_server,
-                public_config_for_server,
-                history_for_server,
+                server::AppState {
+                    store: store_for_server,
+                    tx: tx_for_server,
+                    reminders: reminders_for_server,
+                    reminder_tx: reminder_tx_for_server,
+                    asset_root: asset_root_for_server,
+                    preview_root: preview_root_for_server,
+                    public_config: public_config_for_server,
+                    history: history_for_server,
+                },
                 &host_for_server,
                 port_for_server,
             )) {
