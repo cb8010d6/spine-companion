@@ -144,10 +144,11 @@ async fn get_reminders(AxumState(app): AxumState<AppState>) -> impl IntoResponse
 async fn post_reminder(
     AxumState(app): AxumState<AppState>,
     Json(input): Json<CreateReminderInput>,
-) -> impl IntoResponse {
-    let reminder =
-        create_reminder(&app.store, &app.tx, &app.reminders, &app.reminder_tx, input).await;
-    (StatusCode::CREATED, Json(reminder))
+) -> Response {
+    match create_reminder(&app.store, &app.tx, &app.reminders, &app.reminder_tx, input).await {
+        Ok(reminder) => (StatusCode::CREATED, Json(reminder)).into_response(),
+        Err(error) => (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))).into_response(),
+    }
 }
 
 async fn delete_reminder_route(
@@ -470,9 +471,53 @@ mod tests {
                 ..Default::default()
             },
         )
-        .await;
+        .await
+        .unwrap();
         assert_eq!(reminder.text, "API");
         assert_eq!(list_reminders(&reminders).await.len(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn reminder_capacity_errors_are_preserved_by_http() {
+        const REMINDER_LIMIT: usize = 128;
+        let (store, tx) = create_state_store("idle");
+        let reminders = create_reminder_store();
+        let reminder_tx = create_reminder_broadcast();
+        let app = AppState {
+            store,
+            tx,
+            reminders: reminders.clone(),
+            reminder_tx: reminder_tx.clone(),
+            asset_root: Arc::new(RwLock::new(None)),
+            preview_root: std::env::temp_dir(),
+            public_config: Arc::new(Mutex::new(json!({}))),
+            history: Arc::new(Mutex::new(Vec::new())),
+        };
+
+        for index in 0..REMINDER_LIMIT {
+            let response = post_reminder(
+                AxumState(app.clone()),
+                Json(CreateReminderInput {
+                    id: Some(format!("bounded-{index}")),
+                    delay_ms: Some(60_000),
+                    ..Default::default()
+                }),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::CREATED);
+        }
+
+        let response = post_reminder(
+            AxumState(app.clone()),
+            Json(CreateReminderInput {
+                id: Some("overflow".to_string()),
+                delay_ms: Some(60_000),
+                ..Default::default()
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(list_reminders(&reminders).await.len(), REMINDER_LIMIT);
     }
 
     #[tokio::test]

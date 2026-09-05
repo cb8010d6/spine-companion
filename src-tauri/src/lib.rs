@@ -699,14 +699,14 @@ async fn create_reminder_cmd(
     data: State<'_, AppData>,
     input: CreateReminderInput,
 ) -> Result<Reminder, String> {
-    Ok(create_reminder(
+    create_reminder(
         &data.store,
         &data.tx,
         &data.reminders,
         &data.reminder_tx,
         input,
     )
-    .await)
+    .await
 }
 
 #[tauri::command]

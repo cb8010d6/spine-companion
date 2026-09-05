@@ -24,11 +24,16 @@ function createStateStore(config, stateMachineConfig) {
   const emitter = new EventEmitter();
   const reminders = new Map();
   const autoReturnTimers = new Set();
+  const MAX_TIMEOUT_MS = 0x7fffffff;
+  const MAX_REMINDERS = 128;
   const historyLimit = Number(config.state?.historyLimit || 50);
   const history = [];
   const remindersPath = config.state?.remindersPath || "";
   const idleTimeoutMs = Number(config.state?.idleTimeoutMs || 0);
   let idleTimer = null;
+  let stateGeneration = 0;
+  let reminderGeneration = 0;
+  let overlay = null;
   let current = {
     state: normalizeStateId(config.state?.initial || "idle"),
     message: "",
@@ -58,7 +63,34 @@ function createStateStore(config, stateMachineConfig) {
     autoReturnTimers.clear();
   }
 
-  function setState(input = {}) {
+  function cloneState(state) {
+    return state ? { ...state } : null;
+  }
+
+  function scheduleAt(deadlineMs, callback) {
+    let timer = null;
+    let cancelled = false;
+    const tick = () => {
+      if (cancelled) return;
+      const remaining = deadlineMs - Date.now();
+      if (remaining <= 0) {
+        timer = null;
+        callback();
+        return;
+      }
+      timer = setTimeout(tick, Math.min(remaining, MAX_TIMEOUT_MS));
+    };
+    tick();
+    return {
+      cancel() {
+        cancelled = true;
+        if (timer !== null) clearTimeout(timer);
+        timer = null;
+      }
+    };
+  }
+
+  function applyState(input = {}, { isOverlay = false } = {}) {
     clearAutoReturnTimers();
     if (idleTimer) {
       clearTimeout(idleTimer);
@@ -72,6 +104,12 @@ function createStateStore(config, stateMachineConfig) {
     const message = hasMessage
       ? String(input.message || "")
       : (input.preserveMessage === true || !requested ? previous.message || "" : "");
+    if (isOverlay) {
+      overlay = overlay || cloneState(previous);
+    } else if (nextState !== "reminder" || requested) {
+      overlay = null;
+    }
+    stateGeneration += 1;
     current = {
       ...previous,
       ...input,
@@ -90,13 +128,32 @@ function createStateStore(config, stateMachineConfig) {
     emitter.emit("state", snapshot());
     recordHistory(current);
 
-    const autoReturnMs = Number(input.autoReturnMs || 0);
+    const autoReturnMs = input.autoReturnMs === undefined ? 0 : Number(input.autoReturnMs);
     if (autoReturnMs > 0) {
       const stateAtSchedule = current.updatedAt;
+      const generationAtSchedule = stateGeneration;
       const timer = setTimeout(() => {
         autoReturnTimers.delete(timer);
-        if (current.updatedAt !== stateAtSchedule) return;
-        setState({
+        if (stateGeneration !== generationAtSchedule || current.updatedAt !== stateAtSchedule) return;
+        if (isOverlay && current.state === "reminder" && overlay) {
+          const underlying = overlay;
+          overlay = null;
+          const hasActiveTask = underlying.state !== "idle"
+            || underlying.source !== "system"
+            || Boolean(underlying.message);
+          const returnState = input.returnTo && !hasActiveTask
+            ? normalizeStateId(input.returnTo)
+            : normalizeStateId(underlying.state);
+          applyState({
+            ...underlying,
+            state: returnState,
+            id: returnState,
+            direction: returnState === "running" ? underlying.direction || "right" : "right",
+            message: underlying.message || ""
+          });
+          return;
+        }
+        applyState({
           state: input.returnTo || previous.state || "idle",
           source: "auto-return",
           message: ""
@@ -116,14 +173,30 @@ function createStateStore(config, stateMachineConfig) {
     return snapshot();
   }
 
+  function setState(input = {}) {
+    return applyState(input);
+  }
+
   function scheduleReminder(input = {}, existing = null) {
     const id = input.id || `rem_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
     const now = Date.now();
-    let dueAtMs = input.dueAt ? Date.parse(input.dueAt) : NaN;
-    if (!Number.isFinite(dueAtMs) && input.at) dueAtMs = Date.parse(input.at);
-    if (!Number.isFinite(dueAtMs) && input.inSeconds) dueAtMs = now + Number(input.inSeconds) * 1000;
-    if (!Number.isFinite(dueAtMs) && input.delayMs) dueAtMs = now + Number(input.delayMs);
+    let dueAtMs = input.dueAt !== undefined ? Date.parse(input.dueAt) : NaN;
+    if (!Number.isFinite(dueAtMs) && input.at !== undefined) dueAtMs = Date.parse(input.at);
+    if (!Number.isFinite(dueAtMs) && input.inSeconds !== undefined) {
+      const seconds = Number(input.inSeconds);
+      if (Number.isFinite(seconds) && seconds >= 0) dueAtMs = now + seconds * 1000;
+    }
+    if (!Number.isFinite(dueAtMs) && input.delayMs !== undefined) {
+      const delay = Number(input.delayMs);
+      if (Number.isFinite(delay) && delay >= 0) dueAtMs = now + delay;
+    }
     if (!Number.isFinite(dueAtMs)) dueAtMs = now + 10_000;
+
+    const existingEntry = reminders.get(id);
+    if (!existingEntry && reminders.size >= MAX_REMINDERS) {
+      throw new Error(`Reminder limit reached (${MAX_REMINDERS}).`);
+    }
+    const replacingFired = existingEntry?.fired === true;
 
     const reminder = {
       id,
@@ -131,27 +204,47 @@ function createStateStore(config, stateMachineConfig) {
       dueAt: new Date(dueAtMs).toISOString(),
       createdAt: existing?.createdAt || new Date(now).toISOString(),
       fired: Boolean(existing?.fired),
-      snoozeAfterMs: Number(input.snoozeAfterMs || existing?.snoozeAfterMs || 5 * 60 * 1000)
+      snoozeAfterMs: input.snoozeAfterMs === undefined
+        ? Number(existing?.snoozeAfterMs || 5 * 60 * 1000)
+        : Number(input.snoozeAfterMs)
     };
 
-    const timeout = setTimeout(() => {
-      reminder.fired = true;
-      reminder.firedAt = new Date().toISOString();
-      setState({
+    if (existingEntry?.timeout) existingEntry.timeout.cancel();
+    const generation = ++reminderGeneration;
+    const entry = { ...reminder, generation, timeout: null };
+    reminders.set(id, entry);
+    if (replacingFired
+      && current.state === "reminder"
+      && current.source === "reminder"
+      && current.reminderId === id
+      && overlay) {
+      const underlying = overlay;
+      overlay = null;
+      applyState({
+        ...underlying,
+        state: normalizeStateId(underlying.state),
+        id: normalizeStateId(underlying.state),
+        direction: underlying.state === "running" ? underlying.direction || "right" : "right",
+        message: underlying.message || ""
+      });
+    }
+    entry.timeout = scheduleAt(dueAtMs, () => {
+      const active = reminders.get(id);
+      if (active !== entry || active.generation !== generation || active.fired) return;
+      active.fired = true;
+      active.firedAt = new Date().toISOString();
+      applyState({
         state: "reminder",
         source: "reminder",
         reminderId: id,
-        message: reminder.text,
-        autoReturnMs: Number(input.durationMs || 5000),
-        returnTo: input.returnTo || "idle"
-      });
-      emitter.emit("reminder", { ...reminder });
-      reminders.set(id, { ...reminder, timeout });
+        message: active.text,
+        autoReturnMs: input.durationMs === undefined ? 5000 : Number(input.durationMs),
+        ...(input.returnTo === undefined ? {} : { returnTo: input.returnTo })
+      }, { isOverlay: true });
+      emitter.emit("reminder", { ...active });
       persistReminders();
       emitter.emit("reminders", listReminders());
-    }, Math.max(0, dueAtMs - now));
-
-    reminders.set(id, { ...reminder, timeout });
+    });
     return reminder;
   }
 
@@ -163,13 +256,13 @@ function createStateStore(config, stateMachineConfig) {
   }
 
   function listReminders() {
-    return [...reminders.values()].map(({ timeout, ...reminder }) => reminder);
+    return [...reminders.values()].map(({ timeout, generation, ...reminder }) => reminder);
   }
 
   function deleteReminder(id) {
     const reminder = reminders.get(id);
     if (!reminder) return false;
-    if (reminder.timeout) clearTimeout(reminder.timeout);
+    if (reminder.timeout) reminder.timeout.cancel();
     reminders.delete(id);
     persistReminders();
     emitter.emit("reminders", listReminders());
@@ -201,7 +294,7 @@ function createStateStore(config, stateMachineConfig) {
   function destroy() {
     clearAutoReturnTimers();
     if (idleTimer) clearTimeout(idleTimer);
-    for (const { timeout } of reminders.values()) clearTimeout(timeout);
+    for (const { timeout } of reminders.values()) timeout?.cancel();
     reminders.clear();
     emitter.removeAllListeners();
   }
