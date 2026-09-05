@@ -24,7 +24,10 @@ const AVATAR_JOB_MAX_MOTION_BYTES: usize = 64;
 const AVATAR_JOB_MAX_STORE_BYTES: u64 = 8 * 1024 * 1024;
 const AVATAR_JOB_MAX_BACKUPS: usize = 3;
 const AVATAR_JOB_LOCK_BYTES: u64 = 1024;
+// A valid owner change marks progress; bound each no-progress interval and the
+// aggregate wait so a queue cannot wait forever.
 const AVATAR_JOB_LOCK_TIMEOUT: Duration = Duration::from_secs(2);
+const AVATAR_JOB_LOCK_MAX_WAIT: Duration = Duration::from_secs(10);
 const AVATAR_JOB_LOCK_STALE_AFTER: Duration = Duration::from_secs(30);
 const AVATAR_JOB_LOCK_RETRY: Duration = Duration::from_millis(20);
 
@@ -448,6 +451,32 @@ fn avatar_job_lock_is_contended(error: &std::io::Error) -> bool {
         || error.kind() == std::io::ErrorKind::PermissionDenied
 }
 
+fn avatar_job_lock_owner(path: &Path) -> Option<String> {
+    read_bytes_bounded(path, AVATAR_JOB_LOCK_BYTES, "Avatar job lock")
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<AvatarJobLockMetadata>(&bytes).ok())
+        .map(|metadata| metadata.owner)
+        .filter(|owner| !owner.trim().is_empty())
+}
+
+fn avatar_job_lock_wait_timed_out(
+    started_at: Instant,
+    no_progress_at: &mut Instant,
+    observed_owner: &mut Option<String>,
+    owner: Option<&str>,
+    now: Instant,
+    timeout: Duration,
+    max_wait: Duration,
+) -> bool {
+    if let Some(owner) = owner.filter(|owner| !owner.trim().is_empty()) {
+        if observed_owner.as_deref() != Some(owner) {
+            *observed_owner = Some(owner.to_string());
+            *no_progress_at = now;
+        }
+    }
+    now.duration_since(*no_progress_at) >= timeout || now.duration_since(started_at) >= max_wait
+}
+
 fn acquire_avatar_job_lock_with_limits(
     config_dir: &Path,
     timeout: Duration,
@@ -456,7 +485,9 @@ fn acquire_avatar_job_lock_with_limits(
     fs::create_dir_all(config_dir).map_err(|error| error.to_string())?;
     let path = avatar_job_lock_path(config_dir);
     let owner = unique_suffix();
-    let deadline = Instant::now() + timeout;
+    let started_at = Instant::now();
+    let mut no_progress_at = started_at;
+    let mut observed_owner = None;
     loop {
         match OpenOptions::new().write(true).create_new(true).open(&path) {
             Ok(mut file) => {
@@ -492,13 +523,30 @@ fn acquire_avatar_job_lock_with_limits(
                         Err(_) => {}
                     }
                 }
-                if Instant::now() >= deadline {
+                let now = Instant::now();
+                if avatar_job_lock_wait_timed_out(
+                    started_at,
+                    &mut no_progress_at,
+                    &mut observed_owner,
+                    avatar_job_lock_owner(&path).as_deref(),
+                    now,
+                    timeout,
+                    AVATAR_JOB_LOCK_MAX_WAIT,
+                ) {
                     return Err(format!(
-                        "Avatar job store is busy; lock acquisition exceeded {} ms.",
-                        timeout.as_millis()
+                        "Avatar job store is busy; lock acquisition exceeded the {} ms no-progress timeout or {} ms hard cap.",
+                        timeout.as_millis(),
+                        AVATAR_JOB_LOCK_MAX_WAIT.as_millis()
                     ));
                 }
-                thread::sleep(AVATAR_JOB_LOCK_RETRY);
+                let no_progress_deadline = no_progress_at + timeout;
+                let hard_deadline = started_at + AVATAR_JOB_LOCK_MAX_WAIT;
+                let sleep_for = AVATAR_JOB_LOCK_RETRY
+                    .min(no_progress_deadline.saturating_duration_since(now))
+                    .min(hard_deadline.saturating_duration_since(now));
+                if !sleep_for.is_zero() {
+                    thread::sleep(sleep_for);
+                }
             }
             Err(error) => return Err(format!("Cannot acquire Avatar job lock: {error}")),
         }
@@ -2457,6 +2505,57 @@ mod tests {
     }
 
     #[test]
+    fn avatar_job_backup_remains_a_recovery_snapshot_after_update() {
+        let config = temp_pack("job-backup-snapshot");
+        create_avatar_job(
+            &config,
+            AvatarJobCreateInput {
+                job_id: "snapshot-job".to_string(),
+                phase: "planning".to_string(),
+                message: "before update".to_string(),
+                pack_path: None,
+                motions: Vec::new(),
+            },
+        )
+        .unwrap();
+        let initial_backup = avatar_job_backup_candidates(&config)
+            .unwrap()
+            .into_iter()
+            .next()
+            .expect("creating a job should produce a recovery backup");
+        assert_eq!(
+            read_avatar_jobs_file(&initial_backup, "Avatar job backup").unwrap()[0].message,
+            "before update"
+        );
+        fs::write(avatar_job_path(&config), b"{corrupt").unwrap();
+        assert_eq!(
+            load_avatar_jobs(&config).unwrap()[0].message,
+            "before update"
+        );
+
+        update_avatar_job(
+            &config,
+            AvatarJobUpdateInput {
+                job_id: "snapshot-job".to_string(),
+                phase: None,
+                message: Some("after update".to_string()),
+                pack_path: None,
+                motions: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            load_avatar_jobs(&config).unwrap()[0].message,
+            "after update"
+        );
+        assert_eq!(
+            read_avatar_jobs_file(&initial_backup, "Avatar job backup").unwrap()[0].message,
+            "before update"
+        );
+        let _ = fs::remove_dir_all(config);
+    }
+
+    #[test]
     fn avatar_jobs_reject_unsafe_ids_and_relative_pack_paths() {
         let config = temp_pack("job-validation");
         let result = create_avatar_job(
@@ -2617,6 +2716,151 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(1));
         fs::remove_file(avatar_job_lock_path(&config)).unwrap();
         let _ = fs::remove_dir_all(config);
+    }
+
+    #[test]
+    fn avatar_job_lock_wait_policy_allows_owner_progress_past_short_timeout() {
+        let started = Instant::now();
+        let mut no_progress = started;
+        let mut owner = None;
+        assert!(!avatar_job_lock_wait_timed_out(
+            started,
+            &mut no_progress,
+            &mut owner,
+            Some("owner-a"),
+            started,
+            Duration::from_secs(2),
+            AVATAR_JOB_LOCK_MAX_WAIT,
+        ));
+        assert!(!avatar_job_lock_wait_timed_out(
+            started,
+            &mut no_progress,
+            &mut owner,
+            Some("owner-a"),
+            started + Duration::from_millis(1_999),
+            Duration::from_secs(2),
+            AVATAR_JOB_LOCK_MAX_WAIT,
+        ));
+        assert!(!avatar_job_lock_wait_timed_out(
+            started,
+            &mut no_progress,
+            &mut owner,
+            Some("owner-b"),
+            started + Duration::from_millis(2_001),
+            Duration::from_secs(2),
+            AVATAR_JOB_LOCK_MAX_WAIT,
+        ));
+        assert!(!avatar_job_lock_wait_timed_out(
+            started,
+            &mut no_progress,
+            &mut owner,
+            Some("owner-c"),
+            started + Duration::from_millis(4_001),
+            Duration::from_secs(2),
+            AVATAR_JOB_LOCK_MAX_WAIT,
+        ));
+    }
+
+    #[test]
+    fn avatar_job_lock_wait_policy_times_out_without_owner_progress() {
+        let started = Instant::now();
+        let mut no_progress = started;
+        let mut owner = None;
+        assert!(!avatar_job_lock_wait_timed_out(
+            started,
+            &mut no_progress,
+            &mut owner,
+            Some("owner-a"),
+            started,
+            Duration::from_secs(2),
+            AVATAR_JOB_LOCK_MAX_WAIT,
+        ));
+        assert!(!avatar_job_lock_wait_timed_out(
+            started,
+            &mut no_progress,
+            &mut owner,
+            Some("owner-a"),
+            started + Duration::from_millis(1_999),
+            Duration::from_secs(2),
+            AVATAR_JOB_LOCK_MAX_WAIT,
+        ));
+        assert!(avatar_job_lock_wait_timed_out(
+            started,
+            &mut no_progress,
+            &mut owner,
+            Some("owner-a"),
+            started + Duration::from_secs(2),
+            Duration::from_secs(2),
+            AVATAR_JOB_LOCK_MAX_WAIT,
+        ));
+    }
+
+    #[test]
+    fn avatar_job_lock_wait_policy_ignores_invalid_owner_markers() {
+        let started = Instant::now();
+        let mut no_progress = started;
+        let mut owner = None;
+        assert!(!avatar_job_lock_wait_timed_out(
+            started,
+            &mut no_progress,
+            &mut owner,
+            Some("owner-a"),
+            started + Duration::from_millis(1_000),
+            Duration::from_secs(2),
+            AVATAR_JOB_LOCK_MAX_WAIT,
+        ));
+        assert!(!avatar_job_lock_wait_timed_out(
+            started,
+            &mut no_progress,
+            &mut owner,
+            Some(""),
+            started + Duration::from_millis(1_999),
+            Duration::from_secs(2),
+            AVATAR_JOB_LOCK_MAX_WAIT,
+        ));
+        assert!(avatar_job_lock_wait_timed_out(
+            started,
+            &mut no_progress,
+            &mut owner,
+            None,
+            started + Duration::from_millis(3_000),
+            Duration::from_secs(2),
+            AVATAR_JOB_LOCK_MAX_WAIT,
+        ));
+    }
+
+    #[test]
+    fn avatar_job_lock_wait_policy_has_a_hard_total_cap() {
+        let started = Instant::now();
+        let mut no_progress = started;
+        let mut owner = None;
+        assert!(!avatar_job_lock_wait_timed_out(
+            started,
+            &mut no_progress,
+            &mut owner,
+            Some("owner-a"),
+            started,
+            Duration::from_secs(2),
+            AVATAR_JOB_LOCK_MAX_WAIT,
+        ));
+        assert!(!avatar_job_lock_wait_timed_out(
+            started,
+            &mut no_progress,
+            &mut owner,
+            Some("owner-b"),
+            started + Duration::from_millis(9_999),
+            Duration::from_secs(2),
+            AVATAR_JOB_LOCK_MAX_WAIT,
+        ));
+        assert!(avatar_job_lock_wait_timed_out(
+            started,
+            &mut no_progress,
+            &mut owner,
+            Some("owner-c"),
+            started + AVATAR_JOB_LOCK_MAX_WAIT,
+            Duration::from_secs(2),
+            AVATAR_JOB_LOCK_MAX_WAIT,
+        ));
     }
 
     #[test]
