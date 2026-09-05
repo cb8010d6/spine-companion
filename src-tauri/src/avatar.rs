@@ -2302,7 +2302,7 @@ fn unique_suffix() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Barrier};
+    use std::sync::{mpsc, Arc, Barrier};
 
     fn temp_pack(name: &str) -> PathBuf {
         let root =
@@ -2904,6 +2904,66 @@ mod tests {
         assert!(avatar_job_lock_path(&config).exists());
         drop(replacement);
         assert!(!avatar_job_lock_path(&config).exists());
+        let _ = fs::remove_dir_all(config);
+    }
+
+    #[test]
+    fn live_avatar_job_lock_waits_through_progressing_owners() {
+        let config = temp_pack("job-lock-progress");
+        let lock = acquire_avatar_job_lock_with_limits(
+            &config,
+            Duration::from_millis(500),
+            Duration::from_secs(30),
+        )
+        .unwrap();
+        let lock_path = avatar_job_lock_path(&config);
+        let (ready_tx, ready_rx) = mpsc::sync_channel(0);
+        let (result_tx, result_rx) = mpsc::sync_channel(0);
+        let contender_config = config.clone();
+        let contender = thread::spawn(move || {
+            ready_tx.send(()).unwrap();
+            let started = Instant::now();
+            let result = acquire_avatar_job_lock_with_limits(
+                &contender_config,
+                Duration::from_millis(500),
+                Duration::from_secs(30),
+            );
+            result_tx.send((started.elapsed(), result)).unwrap();
+        });
+        ready_rx.recv().unwrap();
+
+        // Each owner interval is below the no-progress timeout, while the
+        // aggregate hold exceeds it and exercises the real retry loop.
+        for index in 0..8 {
+            thread::sleep(Duration::from_millis(100));
+            fs::write(
+                &lock_path,
+                serde_json::to_vec(&AvatarJobLockMetadata {
+                    owner: format!("progress-owner-{index}"),
+                    created_at_ms: current_timestamp_ms(),
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        fs::write(
+            &lock_path,
+            serde_json::to_vec(&AvatarJobLockMetadata {
+                owner: lock.owner.clone(),
+                created_at_ms: current_timestamp_ms(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        drop(lock);
+
+        let (elapsed, result) = result_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("contender should finish after the owner releases the lock");
+        assert!(elapsed >= Duration::from_millis(500));
+        assert!(result.is_ok(), "progressing owners must not cause timeout");
+        drop(result);
+        contender.join().unwrap();
         let _ = fs::remove_dir_all(config);
     }
 
