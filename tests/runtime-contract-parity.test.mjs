@@ -2,6 +2,8 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import runtimeContract from "../src/shared/runtime-contract.json" with { type: "json" };
+import { createStateStore } from "../src/shared/state-store.cjs";
+import stateMachine from "../src/shared/state-machine.json" with { type: "json" };
 
 const read = (path) => readFileSync(resolve(process.cwd(), path), "utf8");
 const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
@@ -96,11 +98,18 @@ describe("runtime contract parity", () => {
     expect(rust).not.toContain('.route("/ws"');
   });
 
-  it("keeps reminders session-scoped in both normal runtimes", () => {
+  it("keeps normal development reminders scoped to a runtime instance", () => {
     const javascriptConfig = read("src/backend/config.cjs");
-    const packagedState = read("src-tauri/src/state.rs");
-
     expect(javascriptConfig).not.toContain('config.state.remindersPath =');
-    expect(packagedState).toContain("reminders intentionally live only for the current runtime session");
+    const first = createStateStore({}, stateMachine);
+    const second = createStateStore({}, stateMachine);
+    try {
+      first.createReminder({ id: "session-only", delayMs: 60_000 });
+      expect(first.listReminders()).toHaveLength(1);
+      expect(second.listReminders()).toEqual([]);
+    } finally {
+      first.destroy();
+      second.destroy();
+    }
   });
 });

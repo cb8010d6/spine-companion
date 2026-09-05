@@ -25,16 +25,19 @@ import { createI18n, getLocale, t } from "../shared/i18n.js";
 import { avatarActionKey, avatarResultToastKey, avatarStatusKey } from "./avatar-ui.js";
 import {
   INTEGRATION_FILTERS,
+  bridgeReportState,
   integrationCanTest,
   integrationCompletion,
   integrationErrorKey,
+  integrationReportFromState,
   integrationReportResult,
+  integrationReportIsStale,
+  integrationReportState,
   integrationMatchesFilter,
   integrationMatchesSource,
   integrationPrimaryAction,
   integrationSummaryKey,
   integrationTestResult,
-  isIntegrationSelfTest,
   selectFilteredIntegration
 } from "./integration-ui.js";
 import { modelPreview } from "./model-preview.js";
@@ -77,6 +80,12 @@ import {
   rendererHealthCategory,
   rendererHealthFromDiagnostics
 } from "./dashboard-model.js";
+import {
+  createSessionController,
+  normalizeSessionList,
+  renderSessionList
+} from "./session-ui.js";
+import { displayEventKind } from "./state.js";
 
 const viewContainer = document.getElementById("view-container");
 const navButtons = document.querySelectorAll("nav button");
@@ -129,6 +138,8 @@ let dashboardRenderRevision = 0;
 const navigationGuard = createNavigationGuard();
 let librarySession = null;
 let libraryTab = "catalog";
+let sessionSnapshot = normalizeSessionList();
+let sessionController = null;
 let librarySelectedSource = ALL_CATALOG_SOURCES;
 let modalReturnFocus = null;
 let modalOnDismiss = null;
@@ -653,6 +664,33 @@ async function refreshUpdateStatus({ silent = false } = {}) {
   return updateStatus;
 }
 
+function dashboardSessionList(snapshot = sessionSnapshot) {
+  return renderSessionList(snapshot, {
+    locale: getLocale(),
+    labels: {
+      title: t("manager.sessions.title"),
+      empty: t("manager.sessions.empty"),
+      automatic: t("manager.sessions.automatic"),
+      grouped: t("manager.sessions.grouped"),
+      stale: t("manager.sessions.stale"),
+      ended: t("manager.sessions.ended"),
+      focused: t("manager.sessions.focused"),
+      focus: t("manager.sessions.focus"),
+      unknownTime: t("manager.sessions.unknownTime"),
+      state: (state) => t(`state.${state}`)
+    },
+    onFocus: focusDashboardSession
+  });
+}
+
+function replaceDashboardSessionList(snapshot = sessionSnapshot) {
+  if (activeView !== "dashboard") return false;
+  const current = viewContainer.querySelector(".dashboard-sessions .session-list");
+  if (!current) return false;
+  current.replaceWith(dashboardSessionList(snapshot));
+  return true;
+}
+
 async function openUpdateTarget() {
   const url = updateStatus?.downloadUrl || updateStatus?.recommendedAsset?.url || updateStatus?.url;
   if (!url) return;
@@ -681,19 +719,15 @@ async function dashboardView({ refreshData = true } = {}) {
   const lastState = latestCompanionState(liveState, history);
   const configuredIntegrations = integrations.filter((item) => item.configured);
   const sourceLabel = integrationLabelForState(lastState, integrations);
+  const eventKind = displayEventKind(lastState);
+  const taskLabel = eventKind ? `${sourceLabel} (${t(`display.${eventKind}`)})` : sourceLabel;
   const rendererHealth = rendererHealthFromDiagnostics(diagnostics);
   const rendererStatus = t(`manager.dashboard.rendererStatus.${rendererHealthCategory(rendererHealth.status)}`);
-  const bridgeReady = diagnostics.apiOk && diagnostics.mcpConfigured;
-  const bridgeValue = bridgeReady
-    ? t("manager.dashboard.connectionReady")
-    : diagnostics.apiOk
-      ? t("manager.dashboard.connectionWaiting")
-      : t("manager.dashboard.connectionOffline");
-  const bridgeDetail = bridgeReady
-    ? t("manager.dashboard.connectionReadyDetail")
-    : diagnostics.apiOk
-      ? t("manager.dashboard.connectionWaitingDetail")
-      : t("manager.dashboard.connectionOfflineDetail");
+  const bridgeState = bridgeReportState(diagnostics, integrations, Date.now(), liveState);
+  const bridgeReady = bridgeState === "report";
+  const bridgeValue = t(`panel.bridge.${bridgeState}`);
+  const bridgeDetail = t(`manager.dashboard.bridgeDetail.${bridgeState}`);
+  const sessionList = dashboardSessionList();
   const card = (title, value, detail, actions = [], tone = "neutral") => h("article", { class: "card dashboard-card", "data-tone": tone },
     h("div", { class: "dashboard-card-title" }, title),
     h("div", { class: "dashboard-card-value" }, value || "-"),
@@ -711,7 +745,7 @@ async function dashboardView({ refreshData = true } = {}) {
       card(t("manager.dashboard.model"), activeModelLabel(), config.spine?.assetDir || "", [
         h("button", { class: "btn", type: "button", onClick: () => navTo("library") }, t("manager.dashboard.openLibrary"))
       ], "model"),
-      card(t("manager.dashboard.ai"), sourceLabel || configuredIntegrations[0]?.sourceLabel || t("manager.dashboard.local"), lastState.message || t("manager.dashboard.noActiveTask"), [
+      card(t("manager.dashboard.ai"), taskLabel || configuredIntegrations[0]?.sourceLabel || t("manager.dashboard.local"), lastState.message || t("manager.dashboard.noActiveTask"), [
         h("button", { class: "btn", type: "button", onClick: () => navTo("integrations") }, t("manager.dashboard.openIntegrations"))
       ], "ai"),
       card(t("manager.dashboard.bridge"), bridgeValue, bridgeDetail, [], bridgeReady ? "success" : "warning"),
@@ -720,6 +754,22 @@ async function dashboardView({ refreshData = true } = {}) {
       card(t("manager.dashboard.renderer"), rendererStatus, rendererHealth.recoveryCount > 0
         ? t("manager.dashboard.rendererRecovered", { count: rendererHealth.recoveryCount })
         : t("manager.dashboard.rendererHealthyDetail"), [], rendererHealthCategory(rendererHealth.status) === "healthy" ? "success" : "neutral")
+    ),
+    h("section", { class: "dashboard-sessions" },
+      h("div", { class: "dashboard-sessions-header" },
+        h("div", {},
+          h("h3", {}, t("manager.sessions.title")),
+          h("p", { class: "empty-text" }, t("manager.sessions.subtitle"))
+        ),
+        h("button", {
+          class: "btn session-auto-focus",
+          type: "button",
+          "data-session-focus": "auto",
+          title: t("manager.sessions.auto"),
+          onClick: () => focusDashboardSession({ source: null })
+        }, t("manager.sessions.auto"))
+      ),
+      sessionList
     )
   );
 }
@@ -739,6 +789,23 @@ const dashboardRefresh = createCoalescedRefresh(() => {
     renderDashboard({ refreshData: false, showLoading: false });
   }
 });
+
+sessionController = createSessionController({
+  getBridge: () => window.companion,
+  onChange: (nextSnapshot, meta = {}) => {
+    sessionSnapshot = nextSnapshot;
+    const replaced = replaceDashboardSessionList(nextSnapshot);
+    if (activeView === "dashboard" && meta.reason !== "stale-tick" && !replaced) dashboardRefresh.schedule();
+  }
+});
+
+async function focusDashboardSession(selection) {
+  try {
+    await sessionController?.focus(selection);
+  } catch (error) {
+    setStatus(error?.message || String(error));
+  }
+}
 
 async function startDownload(id, catalogEntry = null, acknowledgement = false) {
   downloads[id] = beginDownloadRecord(catalogEntry, t("manager.download.initializing"));
@@ -1997,6 +2064,13 @@ async function integrationsView() {
   selectedIntegrationId = selected?.id || "";
   const testResult = selected ? integrationTestResults.get(selected.id) : null;
   const realReport = selected ? realReportFor(selected) : null;
+  const realReportStale = selected ? integrationReportIsStale(selected) : false;
+  const reportState = selected
+    ? integrationReportState(selected, testResult, Boolean(realReport))
+    : "notConfigured";
+  const reportStateLabel = selected
+    ? t(`manager.integrations.reportState.${reportState}`)
+    : t("manager.integrations.reportState.notConfigured");
   const progress = selected ? integrationCompletion(selected, testResult, Boolean(realReport)) : null;
   const action = selected ? integrationPrimaryAction(selected, testResult) : "manual";
   const statusStep = (label, done, detail) => h("div", { class: `setup-step${done ? " done" : ""}` },
@@ -2068,13 +2142,13 @@ async function integrationsView() {
             brandIcon(item, "row", itemProgress.state),
             h("span", { class: "integration-row-copy" },
               h("strong", {}, item.name),
-              h("small", {}, t(integrationSummaryKey(item, integrationTestResults.get(item.id), Boolean(itemReport))))
+              h("small", {}, `${t(integrationSummaryKey(item, integrationTestResults.get(item.id), Boolean(itemReport)))} · ${t(`manager.integrations.reportState.${integrationReportState(item, integrationTestResults.get(item.id), Boolean(itemReport))}`)}`)
             ),
             itemProgress.total ? h("span", { class: "integration-progress" }, `${itemProgress.completed}/${itemProgress.total}`) : null
           );
         }) : h("p", { class: "empty-text integration-empty" }, t("manager.integrations.noMatches"))
       ),
-      selected ? h("article", { class: "integration-detail" },
+      selected ? h("article", { class: "integration-detail", dataset: { reportState } },
         h("div", { class: "integration-detail-header" },
           h("div", { class: "integration-title-lockup" },
             brandIcon(selected, "detail"),
@@ -2084,7 +2158,10 @@ async function integrationsView() {
               h("p", { class: "model-meta" }, t(integrationSummaryKey(selected, testResult, Boolean(realReport))))
             )
           ),
-          h("span", { class: progress?.state === "ready" ? "status-value status-ok" : "status-value" }, t(integrationSummaryKey(selected, testResult, Boolean(realReport))))
+          h("div", { class: "integration-detail-status" },
+            h("span", { class: `status-value${progress?.state === "ready" && reportState !== "stale" ? " status-ok" : ""}` }, reportStateLabel),
+            realReportStale ? badge(t("manager.integrations.summaryStale"), "badge-warning") : null
+          )
         ),
         selected.configFormat !== "templateOnly" ? h("div", { class: "setup-checklist" },
           statusStep(t("manager.integrations.step.detected"), selected.installed || selected.configFound || selected.configured, selected.installed ? t("manager.integrations.installed") : t("manager.integrations.notDetected")),
@@ -2097,7 +2174,9 @@ async function integrationsView() {
             : testResult?.ok
               ? t("manager.integrations.testPassedAt", { time: testResult.testedAt ? new Intl.DateTimeFormat(getLocale(), { dateStyle: "medium", timeStyle: "short" }).format(new Date(testResult.testedAt)) : "" })
               : testResult?.error ? t(integrationErrorKey(testResult.error)) : t("manager.integrations.step.testHelp")),
-          statusStep(t("manager.integrations.step.firstReport"), Boolean(realReport), realReport
+          statusStep(t("manager.integrations.step.firstReport"), Boolean(realReport), realReportStale
+            ? t("manager.integrations.step.firstReportStale")
+            : realReport
             ? t("manager.integrations.step.firstReportAt", {
                 time: realReport.reportedAt ? new Intl.DateTimeFormat(getLocale(), { dateStyle: "medium", timeStyle: "short" }).format(new Date(realReport.reportedAt)) : ""
               })
@@ -2456,12 +2535,14 @@ async function renderView(viewName) {
   if (resolved.libraryTab) libraryTab = resolved.libraryTab;
   viewName = resolved.view;
   activeView = viewName;
+  if (viewName !== "dashboard") sessionController?.leave();
   for (const button of navButtons) button.classList.toggle("active", button.dataset.view === activeView);
   if (topbarTitle) topbarTitle.textContent = t(`manager.nav.${activeView}`);
   const navigation = navigationGuard.begin(viewName);
   librarySession = null;
   if (viewName === "dashboard") {
     setStatus(t("manager.status.viewing", { view: t("manager.nav.dashboard") }));
+    await sessionController?.enter();
     await renderDashboard();
     return;
   }
@@ -2525,6 +2606,11 @@ async function boot() {
   installManagerPreviewBridge();
   if (isTauri()) await initTauriBridge();
   await refreshConfig();
+  try {
+    liveState = await window.companion?.getState?.() || liveState;
+  } catch {
+    // The dashboard can still render from its history when the initial state read is unavailable.
+  }
   refreshUpdateStatus({ silent: true }).then((status) => {
     if (status?.updateAvailable) {
       setStatus(t("manager.status.updateAvailable", { version: status.latestVersion }));
@@ -2568,14 +2654,25 @@ async function boot() {
     else if (activeView === "dashboard") dashboardRefresh.schedule();
   });
   window.companion?.onState?.((nextState) => {
+    if (Number.isSafeInteger(nextState?.revision) && nextState.revision < liveState?.revision) return;
     liveState = nextState || null;
+    sessionController?.notifyState(nextState);
     if (activeView === "dashboard") dashboardRefresh.schedule();
-    else if (activeView === "integrations"
-      && !isIntegrationSelfTest(nextState)
-      && integrations.some((item) => integrationMatchesSource(item, nextState?.source))) {
+    else if (activeView === "integrations") {
+      const report = integrationReportFromState(nextState);
+      if (!report || !integrations.some((item) => integrationMatchesSource(item, report.source))) return;
       renderView("integrations");
     }
   });
+  const freshnessTimer = window.setInterval(() => {
+    if (document.visibilityState !== "visible") return;
+    if (activeView === "integrations" && !modalOnDismiss) renderView("integrations");
+    else if (activeView === "dashboard") dashboardRefresh.schedule();
+  }, 30000);
+  window.addEventListener("pagehide", () => {
+    window.clearInterval(freshnessTimer);
+    sessionController?.dispose();
+  }, { once: true });
   navTo(managerInitialView(config));
 }
 

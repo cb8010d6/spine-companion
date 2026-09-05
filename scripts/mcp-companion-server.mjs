@@ -32,7 +32,10 @@ function sourceForInput(input = {}) {
   const configured = configuredSource();
   return {
     ...configured,
-    source: input.source || configured.source
+    source: input.source || configured.source,
+    sourceLabel: input.source && input.source !== configured.source
+      ? sourceRegistry.sourceDisplayName(input.source)
+      : configured.sourceLabel
   };
 }
 
@@ -164,11 +167,21 @@ server.registerTool("companion_test_bridge", {
   return textResult(bridgeResult(await readBridgeProbe()));
 });
 
+const reportMetadata = {
+  sourceLabel: z.string().max(128).optional(),
+  sessionId: z.string().min(1).max(128).optional().describe("Real client session ID only. Omit when unavailable; reports will be grouped by source."),
+  eventId: z.string().min(1).max(128).optional(),
+  sequence: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
+  sessionEnded: z.boolean().optional(),
+  eventKind: z.enum(["report", "demo", "self-test"]).optional()
+};
+
 server.registerTool("companion_set_state", {
   title: "Set companion state",
   description: "Set the desktop Spine companion state for an AI coding tool.",
   inputSchema: {
     state: z.enum(states),
+    ...reportMetadata,
     source: z.string().optional(),
     message: z.string().optional(),
     direction: z.enum(["left", "right"]).optional(),
@@ -179,9 +192,9 @@ server.registerTool("companion_set_state", {
   const resolved = sourceForInput(input);
   const state = await apiJson("/state", {
     method: "POST",
-    body: JSON.stringify({ ...input, source: resolved.source })
+    body: JSON.stringify({ ...input, source: resolved.source, sourceLabel: input.sourceLabel || resolved.sourceLabel })
   });
-  return textResult({ ...state, sourceLabel: resolved.sourceLabel });
+  return textResult(state);
 });
 
 server.registerTool("companion_reminder", {
@@ -193,7 +206,7 @@ server.registerTool("companion_reminder", {
     delayMs: z.number().int().positive().optional(),
     dueAt: z.string().optional(),
     durationMs: z.number().int().positive().default(5600),
-    returnTo: z.enum(states).default("idle")
+    returnTo: z.enum(states).optional()
   }
 }, async (input) => {
   const reminder = await apiJson("/reminders", {
@@ -208,6 +221,7 @@ server.registerTool("companion_report_codex_phase", {
   description: "Compatibility alias for older Codex instructions. Uses the configured MCP source.",
   inputSchema: {
     phase: z.enum(["thinking", "editing", "running", "reviewing", "succeeded", "failed", "waiting"]),
+    ...reportMetadata,
     message: z.string().optional(),
     source: z.string().optional()
   }
@@ -218,12 +232,13 @@ server.registerTool("companion_report_ai_phase", {
   description: "Map an AI coding tool work phase to a companion state with sensible defaults.",
   inputSchema: {
     phase: z.enum(["thinking", "editing", "running", "reviewing", "succeeded", "failed", "waiting"]),
+    ...reportMetadata,
     message: z.string().optional(),
     source: z.string().optional()
   }
 }, reportPhase);
 
-async function reportPhase({ phase, message, source }) {
+async function reportPhase({ phase, message, source, ...metadata }) {
   const resolved = sourceForInput({ source });
   const map = {
     thinking: "working",
@@ -237,12 +252,14 @@ async function reportPhase({ phase, message, source }) {
   const state = await apiJson("/state", {
     method: "POST",
     body: JSON.stringify({
+      ...metadata,
       state: map[phase],
       source: resolved.source,
+      sourceLabel: metadata.sourceLabel || resolved.sourceLabel,
       message: message || phase
     })
   });
-  return textResult({ ...state, sourceLabel: resolved.sourceLabel });
+  return textResult(state);
 }
 
 const transport = new StdioServerTransport();

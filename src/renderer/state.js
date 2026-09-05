@@ -27,4 +27,10 @@ export function stateLabels() {
   }));
 }
 
+export function displayEventKind(state = {}) {
+  const kind = String(state.eventKind || "").trim().toLowerCase();
+  if (kind === "demo" || kind === "self-test") return kind;
+  return String(state.message || "").trimStart().startsWith("[Spine Companion self-test]") ? "self-test" : "";
+}
+
 export { stateMachine };

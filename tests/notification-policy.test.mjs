@@ -42,6 +42,15 @@ describe("notification policy", () => {
     });
   });
 
+  it("honors explicit suppression for restored states and demonstration events", () => {
+    for (const policy of [{ shouldNotifyState }, esmPolicy]) {
+      expect(policy.shouldNotifyState({ state: "success", source: "codex-mcp", notify: false })).toBe(false);
+      expect(policy.shouldNotifyState({ state: "reminder", notify: false })).toBe(false);
+      expect(policy.shouldNotifyState({ state: "success", source: "codex-mcp", eventKind: "demo" })).toBe(false);
+      expect(policy.shouldNotifyState({ state: "failed", source: "codex-mcp", eventKind: "self-test" })).toBe(false);
+    }
+  });
+
   it("keeps the renderer ESM wrapper aligned with the CommonJS policy", () => {
     expect(esmPolicy.shouldNotifyState({ state: "success", source: "codex-mcp" })).toBe(
       shouldNotifyState({ state: "success", source: "codex-mcp" })

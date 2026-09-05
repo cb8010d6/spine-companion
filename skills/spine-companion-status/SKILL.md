@@ -43,6 +43,7 @@ When Spine Companion MCP tools are available, proactively report work phases:
 
 Keep messages short. Do not fail the user's task just because the companion is unavailable.
 Use `companion_report_ai_phase` when available; `companion_report_codex_phase` is only a compatibility alias.
+When the advertised tool schema supports it, pass `sessionId` only from a reliable client session identifier. Do not invent it from a tool name, process ID, or MCP connection. Without a session ID, reports are grouped by source. Optional `sequence` increases within a session; retry the same event with the same `eventId`. Report only meaningful phases, never periodic keep-alives. Tests and demonstrations must use `eventKind: self-test` or `eventKind: demo` and are not real work reports.
 If MCP discovery fails but the local companion app is running, use the repo fallback:
 `bun scripts/report-status.cjs running "Running checks"`.
 

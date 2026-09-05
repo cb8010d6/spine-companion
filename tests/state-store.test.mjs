@@ -370,6 +370,251 @@ describe("createStateStore", () => {
     });
   });
 
+  describe("v0.2.7 state lifecycle", () => {
+    it("cancels a replaced reminder so an old timer cannot fire", async () => {
+      vi.useFakeTimers();
+      try {
+        const events = [];
+        store.emitter.on("state", (state) => events.push(state));
+        store.createReminder({ id: "replace-me", text: "old", delayMs: 100 });
+        store.createReminder({ id: "replace-me", text: "new", delayMs: 200 });
+
+        await vi.advanceTimersByTimeAsync(100);
+        expect(store.snapshot().state).not.toBe("reminder");
+        await vi.advanceTimersByTimeAsync(100);
+        expect(store.snapshot().state).toBe("reminder");
+        expect(events.filter((state) => state.state === "reminder")).toHaveLength(1);
+        expect(store.listReminders()).toMatchObject([{ id: "replace-me", text: "new", fired: true }]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("restores the latest live AI state after a temporary reminder display", async () => {
+      vi.useFakeTimers();
+      try {
+        store.setState({
+          state: "working",
+          source: "codex-mcp",
+          sourceLabel: "Codex",
+          sessionId: "build-1",
+          message: "Building",
+          eventKind: "report"
+        });
+        store.createReminder({ id: "break", text: "Take a break", delayMs: 0, durationMs: 100 });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(store.snapshot().state).toBe("reminder");
+
+        store.setState({
+          state: "running",
+          source: "codex-mcp",
+          sourceLabel: "Codex",
+          sessionId: "build-1",
+          message: "Running tests",
+          eventKind: "report"
+        });
+        // A report updates business state while the temporary display remains visible.
+        expect(store.snapshot().state).toBe("reminder");
+
+        await vi.advanceTimersByTimeAsync(100);
+        expect(store.snapshot()).toMatchObject({
+          state: "running",
+          source: "codex-mcp",
+          sourceLabel: "Codex",
+          sessionId: "build-1",
+          message: "Running tests"
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("ignores stale display dismissals by revision", async () => {
+      vi.useFakeTimers();
+      try {
+        store.setState({ state: "working", source: "codex-mcp", message: "Build", eventKind: "report" });
+        store.createReminder({ id: "dismiss-me", text: "Pause", delayMs: 0, durationMs: 100 });
+        await vi.advanceTimersByTimeAsync(0);
+        const displayed = store.snapshot();
+        store.setState({ state: "running", source: "codex-mcp", message: "Tests", eventKind: "report" });
+        const latest = store.snapshot();
+        expect(store.dismissDisplay(displayed.revision)).toMatchObject({ state: "reminder" });
+        expect(store.snapshot().revision).toBe(latest.revision);
+        expect(store.dismissDisplay(latest.revision)).toMatchObject({ state: "running", message: "Tests" });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("tracks explicit sessions without inventing ids and aggregates no-id reports by source", () => {
+      store.setState({ state: "working", source: "codex-mcp", sourceLabel: "Codex", sessionId: "one", message: "One", eventKind: "report" });
+      store.setState({ state: "running", source: "codex-mcp", sourceLabel: "Codex", sessionId: "two", message: "Two", eventKind: "report" });
+      store.setState({ state: "reviewing", source: "codex-mcp", sourceLabel: "Codex", message: "All", eventKind: "report" });
+
+      const listed = store.listSessions();
+      expect(listed).toMatchObject({ focused: null, staleAfterMs: 300000 });
+      expect(listed.sessions).toEqual(expect.arrayContaining([
+        expect.objectContaining({ source: "codex-mcp", sessionId: "one", granularity: "session", state: "working" }),
+        expect.objectContaining({ source: "codex-mcp", sessionId: "two", granularity: "session", state: "running" }),
+        expect.objectContaining({ source: "codex-mcp", granularity: "source", state: "reviewing" })
+      ]));
+      expect(listed.sessions.filter((item) => item.source === "codex-mcp")).toHaveLength(3);
+      expect(listed.sessions.every((item) => item.sessionId || item.granularity === "source")).toBe(true);
+    });
+
+    it("deduplicates event ids and rejects out-of-order sequence numbers", () => {
+      const events = [];
+      store.emitter.on("state", (state) => events.push(state));
+      const first = store.setState({ state: "working", source: "codex-mcp", sessionId: "one", eventId: "evt-1", sequence: 2, eventKind: "report" });
+      const duplicate = store.setState({ state: "failed", source: "codex-mcp", sessionId: "one", eventId: "evt-1", sequence: 3, eventKind: "report" });
+      const stale = store.setState({ state: "success", source: "codex-mcp", sessionId: "one", eventId: "evt-2", sequence: 1, eventKind: "report" });
+
+      expect(duplicate).toMatchObject({ state: "working", revision: first.revision });
+      expect(duplicate.lastReport).toBeUndefined();
+      expect(stale).toMatchObject({ state: "working", revision: first.revision });
+      expect(stale.lastReport).toBeUndefined();
+      expect(events).toHaveLength(1);
+      expect(store.getLastReport()).toMatchObject({ source: "codex-mcp", updatedAt: first.updatedAt });
+    });
+
+    it("does not treat demo/self-test or idle timeout as real reports", async () => {
+      vi.useFakeTimers();
+      try {
+        const s = createStateStore({ state: { initial: "idle", idleTimeoutMs: 100 } }, stateMachine);
+        s.setState({ state: "working", source: "demo", eventKind: "demo" });
+        expect(s.getLastReport()).toBeNull();
+        s.setState({ state: "working", source: "self-test", eventKind: "self-test" });
+        expect(s.getLastReport()).toBeNull();
+        await vi.advanceTimersByTimeAsync(100);
+        expect(s.snapshot().state).toBe("working");
+        expect(s.getLastReport()).toBeNull();
+        s.destroy();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("marks stale sessions without changing their business state", () => {
+      vi.useFakeTimers();
+      try {
+        store.setState({ state: "working", source: "codex-mcp", sessionId: "old", eventKind: "report" });
+        vi.advanceTimersByTime(300001);
+        const session = store.listSessions().sessions.find((item) => item.sessionId === "old");
+        expect(session).toMatchObject({ stale: true, state: "working", ended: false });
+        expect(store.snapshot().state).toBe("working");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("supports explicit and automatic session focus", () => {
+      store.setState({ state: "working", source: "codex-mcp", sessionId: "one", eventKind: "report" });
+      store.setState({ state: "running", source: "codex-mcp", sessionId: "two", eventKind: "report" });
+      expect(store.focusSession({ source: "codex-mcp", sessionId: "one" })).toMatchObject({ source: "codex-mcp", sessionId: "one" });
+      expect(store.listSessions().focused).toEqual({ source: "codex-mcp", sessionId: "one" });
+      expect(store.focusSession({ source: null })).toMatchObject({ state: "running" });
+      expect(store.listSessions().focused).toBeNull();
+    });
+
+    it("dismissing a focused completion returns to another unfinished task", () => {
+      store.setState({ state: "working", source: "codex-mcp", sessionId: "A" });
+      store.setState({ state: "success", source: "codex-mcp", sessionId: "B" });
+      const focused = store.focusSession({ source: "codex-mcp", sessionId: "B" });
+      expect(store.dismissDisplay(focused.revision)).toMatchObject({ state: "working", sessionId: "A", notify: false });
+      expect(store.listSessions().focused).toBeNull();
+    });
+
+    it("does not reopen an explicitly ended session on a late report", () => {
+      store.setState({ state: "working", source: "codex-mcp", sessionId: "A" });
+      const ended = store.setState({ source: "codex-mcp", sessionId: "A", sessionEnded: true, sequence: 2 });
+      const events = [];
+      store.emitter.on("state", (state) => events.push(state));
+      const late = store.setState({ state: "running", source: "codex-mcp", sessionId: "A", sequence: 3 });
+      expect(late.revision).toBe(ended.revision);
+      expect(store.listSessions().sessions[0]).toMatchObject({ ended: true, state: "working" });
+      expect(events).toHaveLength(0);
+    });
+
+    it("does not cancel an active reminder when focusing an unknown session", async () => {
+      vi.useFakeTimers();
+      try {
+        store.setState({ state: "working", source: "codex-mcp", message: "Building" });
+        store.createReminder({ id: "focus-race", delayMs: 100, durationMs: 200 });
+        await vi.advanceTimersByTimeAsync(100);
+        expect(() => store.focusSession({ source: "missing-mcp" })).toThrow(/session/i);
+        await vi.advanceTimersByTimeAsync(200);
+        expect(store.snapshot()).toMatchObject({ state: "working", message: "Building" });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("bounds retained session memory", () => {
+      const s = createStateStore({ state: { initial: "idle", maxSessions: 2 } }, stateMachine);
+      s.setState({ state: "success", source: "a-mcp", sessionId: "1", eventKind: "report" });
+      s.setState({ state: "working", source: "b-mcp", sessionId: "1", eventKind: "report" });
+      s.setState({ state: "working", source: "c-mcp", sessionId: "1", eventKind: "report" });
+      expect(s.listSessions().sessions).toHaveLength(2);
+      expect(s.listSessions().sessions.some((item) => item.source === "a-mcp")).toBe(false);
+      s.destroy();
+    });
+
+    it("prefers waiting for input over a newer running session", () => {
+      store.setState({ state: "waiting", source: "codex-mcp", sessionId: "approval" });
+      store.setState({ state: "running", source: "codex-mcp", sessionId: "tests" });
+      expect(store.snapshot()).toMatchObject({ state: "waiting", sessionId: "approval" });
+    });
+
+    it("rejects new sessions instead of evicting unfinished work at capacity", () => {
+      const s = createStateStore({ state: { maxSessions: 2 } }, stateMachine);
+      try {
+        s.setState({ state: "working", source: "codex-mcp", sessionId: "a" });
+        s.setState({ state: "running", source: "codex-mcp", sessionId: "b" });
+        const before = s.snapshot();
+        expect(() => s.setState({ state: "working", source: "codex-mcp", sessionId: "c" })).toThrow(/session limit/i);
+        expect(s.snapshot()).toEqual(before);
+        expect(s.listSessions().sessions.map((item) => item.sessionId).sort()).toEqual(["a", "b"]);
+      } finally {
+        s.destroy();
+      }
+    });
+
+    it("does not inherit another session state or message on a partial first report", () => {
+      store.setState({ state: "running", source: "codex-mcp", sessionId: "a", message: "A build" });
+      store.setState({ source: "codex-mcp", sessionId: "b" });
+      expect(store.listSessions().sessions.find((item) => item.sessionId === "b"))
+        .toMatchObject({ state: "idle", message: "" });
+    });
+
+    it("keeps focused stale work past retention without inventing completion", () => {
+      vi.useFakeTimers();
+      try {
+        store.setState({ state: "working", source: "codex-mcp", sessionId: "focus" });
+        store.focusSession({ source: "codex-mcp", sessionId: "focus" });
+        vi.advanceTimersByTime(24 * 60 * 60 * 1000 + 1);
+        const list = store.listSessions();
+        expect(list.focused).toEqual({ source: "codex-mcp", sessionId: "focus" });
+        expect(list.sessions).toEqual([expect.objectContaining({ state: "working", stale: true })]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("restores the current AI task even when a legacy reminder requests idle", async () => {
+      vi.useFakeTimers();
+      try {
+        store.setState({ state: "working", source: "codex-mcp", message: "Build" });
+        store.createReminder({ id: "legacy", delayMs: 100, durationMs: 200, returnTo: "idle" });
+        await vi.advanceTimersByTimeAsync(100);
+        store.setState({ state: "running", source: "codex-mcp", message: "Tests" });
+        await vi.advanceTimersByTimeAsync(200);
+        expect(store.snapshot()).toMatchObject({ state: "running", source: "codex-mcp", message: "Tests" });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
   describe("initial state", () => {
     it("respects config initial state", () => {
       const s = createStateStore({ state: { initial: "working" } }, stateMachine);

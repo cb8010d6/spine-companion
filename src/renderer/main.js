@@ -2,7 +2,7 @@ import "./styles.css";
 import { initTauriBridge, isTauri } from "./tauri-bridge.js";
 import { createStateProvider, loadRuntimeConfig } from "./providers.js";
 import { SpinePlayer } from "./spine-player.js";
-import { stateLabels } from "./state.js";
+import { displayEventKind, stateLabels } from "./state.js";
 import { createOnboarding, shouldShowOnboarding } from "./onboarding.js";
 import { createErrorCard, friendlyError } from "./error-boundary.js";
 import { bindManagerButton } from "./manager-action.js";
@@ -313,9 +313,8 @@ function updateMousePassthrough(event) {
 
 function updateHud(state) {
   const id = state.state || "idle";
-  currentState = state;
   stateLabel.textContent = id;
-  sourceLabel.textContent = state.source || "local";
+  sourceLabel.textContent = state.sourceLabel || state.source || "local";
   stateDot.dataset.state = id;
   for (const button of stateControls.querySelectorAll("button")) {
     button.classList.toggle("active", button.dataset.state === id);
@@ -324,9 +323,13 @@ function updateHud(state) {
 
 function updateBubble(state) {
   const id = state?.state || "idle";
-  if (state?.source === "drag" || state?.source === "click") {
+  if (drag || state?.source === "drag" || state?.source === "click") {
     progressBubble.hidden = true;
     return;
+  }
+  if (state?.notify === false && id === "idle") {
+    heldBubble = null;
+    window.clearTimeout(bubbleHoldTimer);
   }
   const message = String(state?.message || defaultMessageForState(id, state?.source)).trim();
   if (message && id !== "idle") {
@@ -344,8 +347,10 @@ function updateBubble(state) {
   progressBubble.hidden = !shouldShow;
   if (!shouldShow) return;
   bubbleTitle.textContent = isAiSource(displayState?.source)
-    ? sourceDisplayName(displayState?.source)
+    ? sourceDisplayName(displayState?.source, displayState?.sourceLabel)
     : displayId[0].toUpperCase() + displayId.slice(1);
+  const eventKind = displayEventKind(displayState);
+  if (eventKind) bubbleTitle.textContent += ` (${t(`display.${eventKind}`)})`;
   bubbleMessage.textContent = displayMessage;
   progressBubble.dataset.state = displayId;
   applyBubbleAnchor(player?.getAnchor?.() || currentBubbleAnchor);
@@ -355,10 +360,11 @@ function updateBubble(state) {
 }
 
 function updateCompletionToast(state) {
+  state = state?.lastReport || state;
   const id = state?.state || "idle";
   if (id !== "success" && id !== "failed") return;
   if (!shouldNotifyState(state)) return;
-  const key = `${id}:${state.updatedAt || ""}`;
+  const key = JSON.stringify([state.source, state.sessionId, state.eventId ?? state.sequence ?? state.updatedAt, id]);
   if (key === lastCompletionKey) return;
   lastCompletionKey = key;
   completionToast.hidden = false;
@@ -374,14 +380,23 @@ function updateCompletionToast(state) {
   }, 10000);
 }
 
-async function returnToIdle(source = "user") {
-  const idleState = { state: "idle", source };
-  player?.applyState(idleState, true);
-  updateHud(idleState);
+async function returnToIdle() {
+  const revision = currentState.revision;
   completionToast.hidden = true;
   window.clearTimeout(completionToastTimer);
   setMousePassthrough(true);
-  await provider?.setState?.(idleState).catch(() => {});
+  if (!Number.isSafeInteger(revision) || !provider?.dismissDisplay) return;
+  try {
+    const state = await provider.dismissDisplay(revision);
+    if (state && state.revision >= currentState.revision) {
+      currentState = state;
+      player?.applyState(state, true);
+      updateHud(state);
+      updateBubble(state);
+    }
+  } catch (error) {
+    console.warn("Unable to dismiss companion display", error);
+  }
 }
 
 function isDismissibleTaskState(state = currentState) {
@@ -399,7 +414,7 @@ async function finishNativeDrag() {
   if (!drag) return;
   clearNativeDragTimer();
   const completedDrag = drag.moved;
-  const returnState = drag.returnState || { state: "idle", source: "drag-end" };
+  const returnState = currentState;
   window.companion?.dragEnd?.();
   drag = null;
   player?.setDragActive(false);
@@ -408,9 +423,6 @@ async function finishNativeDrag() {
     player?.applyState(returnState, true);
     updateHud(returnState);
     updateBubble(returnState);
-    if (provider) {
-      await provider.setState(returnState);
-    }
   } else {
     updateBubble(returnState);
   }
@@ -652,7 +664,7 @@ async function loadPlayer(config) {
   }
   player = nextPlayer;
   player.onPresentationChange = persistActivePresentation;
-  player.onAutoReturn = (state) => provider.setState({ state, source: "renderer" });
+  player.onAutoReturn = () => player?.applyState(currentState, true);
   player.onAnchorChange = (anchor) => {
     applyBubbleAnchor(anchor);
     updateBubble(currentState);
@@ -728,7 +740,7 @@ function wireDragging() {
       setMousePassthrough(false);
       if (touchPointers.size >= 2) {
         if (drag) {
-          const returnState = drag.returnState || currentState;
+          const returnState = currentState;
           window.companion?.dragEnd?.();
           drag = null;
           player?.setDragActive(false);
@@ -859,7 +871,7 @@ function wireDragging() {
     if (event.pointerId !== drag.pointerId) return;
     if (drag.native) return;
     const completedDrag = drag.moved;
-    const returnState = drag.returnState || { state: "idle", source: "drag-end" };
+    const returnState = currentState;
     window.companion?.dragEnd?.();
     if (completedDrag) {
       player?.applyState(returnState, true);
@@ -874,9 +886,6 @@ function wireDragging() {
       if (shell.hasPointerCapture?.(event.pointerId)) shell.releasePointerCapture(event.pointerId);
     } catch {}
     if (completedDrag) {
-      if (provider) {
-        await provider.setState(returnState);
-      }
       refreshMousePassthroughSoon();
       return;
     }
@@ -892,9 +901,9 @@ function wireDragging() {
       message: ""
     };
     player?.playOneShot(clickState, () => {
-      player?.applyState(previousState, true);
-      updateHud(previousState);
-      updateBubble(previousState);
+      player?.applyState(currentState, true);
+      updateHud(currentState);
+      updateBubble(currentState);
     });
     updateBubble(previousState);
   };
@@ -948,10 +957,12 @@ async function boot() {
   await window.companion?.rendererReady?.();
 
   await provider.start((state) => {
+    if (Number.isSafeInteger(state.revision) && state.revision < currentState.revision) return;
+    currentState = state;
     updateHud(state);
     updateBubble(state);
     updateCompletionToast(state);
-    player?.applyState(state);
+    if (!drag) player?.applyState(state);
   });
 
   window.companion?.onUi((settings) => applyUiSettings(settings));

@@ -106,6 +106,23 @@ try {
     throw new Error(`Unexpected alias source: ${JSON.stringify(aliasState)}`);
   }
 
+  const report = (phase, sessionId, sequence, extra = {}) => client.callTool({
+    name: "companion_report_ai_phase",
+    arguments: { phase, sessionId, sequence, eventId: `${sessionId}-${sequence}`, ...extra }
+  });
+  await report("running", "client-session-A", 1);
+  await report("succeeded", "client-session-B", 1);
+  const sessionState = api.store.snapshot();
+  if (sessionState.state !== "running") throw new Error("A completed session hid an active session");
+  await report("failed", "client-session-B", 1);
+  if (api.store.snapshot().revision !== sessionState.revision) throw new Error("Duplicate event changed the state");
+  await report("thinking", "probe-session", 1, { eventKind: "self-test" });
+  const sessions = await fetch(`${origin}/sessions`).then((response) => response.json());
+  if (sessions.sessions.some((item) => item.sessionId === "probe-session")) throw new Error("Self-test created a real session");
+  if (!sessions.sessions.some((item) => item.sessionId === "client-session-A" && item.state === "running")) {
+    throw new Error("MCP session metadata was lost");
+  }
+
   console.log("MCP bridge check passed.");
 } finally {
   await client.close();

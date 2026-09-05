@@ -3,7 +3,10 @@ import {
   integrationCompletion,
   integrationCanTest,
   integrationErrorKey,
+  integrationReportFromState,
+  integrationReportIsStale,
   integrationReportResult,
+  integrationReportState,
   integrationMatchesFilter,
   integrationMatchesSource,
   integrationPrimaryAction,
@@ -74,6 +77,29 @@ describe("AI integration presentation model", () => {
     expect(integrationReportResult(base)).toBeNull();
     expect(isIntegrationSelfTest({ message: "[Spine Companion self-test] Codex" })).toBe(true);
     expect(isIntegrationSelfTest({ message: "Working on the real task" })).toBe(false);
+  });
+
+  it("accepts only real lastReport metadata for live integration refreshes", () => {
+    const report = { source: "codex-mcp", updatedAt: "2026-09-05T10:00:00.000Z", state: "working" };
+    expect(integrationReportFromState({ source: "stale-focus", lastReport: report })).toEqual(report);
+    expect(integrationReportFromState({ lastReport: { ...report, eventKind: "demo" } })).toBeNull();
+    expect(integrationReportFromState({ lastReport: { ...report, eventKind: "self-test" } })).toBeNull();
+    expect(integrationReportFromState({ lastReport: { source: "codex-mcp" } })).toBeNull();
+  });
+
+  it("does not render a successful self-test as ordinary work", () => {
+    expect(isIntegrationSelfTest({ eventKind: "demo", state: "working" })).toBe(true);
+    expect(integrationReportFromState({ lastReport: { source: "codex-mcp", eventKind: "demo", updatedAt: new Date().toISOString() } })).toBeNull();
+  });
+
+  it("distinguishes self-test-only, real-report, and stale integration states", () => {
+    const tested = { ...base, configured: true, lastTestOk: true, instructionsFound: true };
+    expect(integrationReportState(tested, null, false)).toBe("selfTestOnly");
+    expect(integrationReportState({ ...tested, lastReportedAt: 1_000 }, null, true, 1_000)).toBe("realReport");
+    expect(integrationReportIsStale({ lastReportedAt: 1_000 }, 301_001, 300_000)).toBe(true);
+    expect(integrationReportState({ ...tested, lastReportedAt: 1_000 }, null, true, 301_001)).toBe("stale");
+    expect(integrationReportState({ ...tested, needsRestart: true, lastReportedAt: 1_000 }, null, true, 1_000)).toBe("restart");
+    expect(integrationReportState({ ...base, configured: false }, null, false)).toBe("notConfigured");
   });
 
   it("matches canonical and legacy source aliases to the same integration", () => {

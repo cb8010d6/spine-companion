@@ -194,7 +194,7 @@ describe("release workflow contract", () => {
       workflow.indexOf("\n  publish:")
     );
 
-    expect(workflow).toContain("gh release download v0.2.6-rc.10");
+    expect(workflow).toContain("gh release download v0.2.6 --repo");
     expect(workflow).toContain("fetch-depth: 0");
     expect(workflow).toContain("git ls-remote --refs origin refs/heads/main");
     expect(workflow).toContain('refs/tags/${TAG}^{commit}');
@@ -205,7 +205,7 @@ describe("release workflow contract", () => {
     expect(workflow).toContain("release-upload SHA256SUMS.txt");
     expect(workflow).toContain("find release-upload -type f -print0");
     expect(workflow).toContain("-PreviousInstallerPath $previous");
-    expect(workflow).toContain('-PreviousInstallerSha256 "844049CC7F6478F6FEE6C0AF1AD50E7215F0D68DEF73293815837AF78A3292B1"');
+    expect(workflow).toContain('-PreviousInstallerSha256 "191C5087608C25CBA01DFD5659AE83F8F2878A2DCF72F4FF33F91D5534810090"');
     expect(artifactUpload).toContain("src-tauri/target/release/bundle/**/*.exe");
     expect(artifactUpload).not.toContain("src-tauri/target/release/spine-companion.exe");
   });
@@ -217,9 +217,9 @@ describe("release workflow contract", () => {
 
     expect(workflow).toContain("windows-package-smoke:");
     expect(workflow).toContain("bunx tauri build --bundles nsis");
-    expect(workflow).toContain("gh release download v0.2.6-rc.10");
+    expect(workflow).toContain("gh release download v0.2.6 --repo");
     expect(workflow).toContain("-PreviousInstallerPath $previous");
-    expect(workflow).toContain('-PreviousInstallerSha256 "844049CC7F6478F6FEE6C0AF1AD50E7215F0D68DEF73293815837AF78A3292B1"');
+    expect(workflow).toContain('-PreviousInstallerSha256 "191C5087608C25CBA01DFD5659AE83F8F2878A2DCF72F4FF33F91D5534810090"');
     expect(smoke).toContain('[string] $PreviousInstallerPath');
     expect(smoke).toContain("Get-FileHash -LiteralPath $previousInstaller -Algorithm SHA256");
     expect(smoke).toContain('Start-Process -FilePath $PackagePath -ArgumentList @("/S", "/D=$installDir") -WindowStyle Hidden');

@@ -1,13 +1,26 @@
 import "./panel.css";
 import { initTauriBridge, isTauri } from "./tauri-bridge.js";
 import { modelPreview } from "./model-preview.js";
-import { createI18n, t } from "../shared/i18n.js";
+import { createI18n, getLocale, t } from "../shared/i18n.js";
 import { defaultMessageForState, sourceDisplayName } from "../shared/notification-policy.js";
 import { applyThemePreference } from "./theme.js";
+import { displayEventKind } from "./state.js";
+import {
+  DEFAULT_SESSION_STALE_AFTER_MS,
+  formatSessionTime,
+  sessionIsStale
+} from "./session-ui.js";
+import {
+  bridgeReportState,
+  integrationReportFromState,
+} from "./integration-ui.js";
 
 let config = null;
 let panelPinned = false;
 let currentDiagnostics = null;
+let currentIntegrations = [];
+let currentCompanionState = null;
+let latestRealReport = null;
 let unsubscribeReminders = null;
 let interactionUnlockTimer = 0;
 let spinePreviewModulePromise = null;
@@ -44,6 +57,24 @@ function updateStaticLabels() {
   document.getElementById("ai-bridge-title").textContent = t("panel.aiBridge");
   document.getElementById("btn-manager-label").textContent = t("panel.actions.openManager");
   document.getElementById("btn-quit-label").textContent = t("panel.actions.quit");
+}
+
+function ensureTaskMeta() {
+  const taskMessage = document.getElementById("panel-task-message");
+  const section = taskMessage?.parentElement;
+  if (!section) return null;
+  let meta = section.querySelector("#panel-task-meta");
+  if (!meta) {
+    meta = document.createElement("div");
+    meta.id = "panel-task-meta";
+    meta.className = "task-meta";
+    meta.style.color = "var(--text-muted)";
+    meta.style.fontSize = "10px";
+    meta.style.lineHeight = "1.35";
+    meta.style.marginTop = "4px";
+    section.appendChild(meta);
+  }
+  return meta;
 }
 
 function isDebugPanelEnabled() {
@@ -212,11 +243,12 @@ async function updateState() {
     ]);
     currentDiagnostics = diag;
     const integrationStates = listedIntegrations.length ? listedIntegrations : (diag.mcpMatches || []);
+    currentIntegrations = integrationStates;
     document.querySelector(".codex-dot").classList.toggle("on", integrationConfigured(integrationStates, "codex"));
     document.querySelector(".claude-dot").classList.toggle("on", integrationConfigured(integrationStates, "claude-desktop"));
     document.querySelector(".cursor-dot").classList.toggle("on", integrationConfigured(integrationStates, "cursor"));
     document.querySelector(".local-dot").classList.toggle("on", diag.apiOk);
-    updateBridgeSummary(diag);
+    updateBridgeSummary(diag, currentIntegrations);
   }
 
   await refreshReminders();
@@ -239,35 +271,53 @@ async function updateState() {
   }
 }
 
-function updateBridgeSummary(diag = currentDiagnostics || {}) {
+export { bridgeReportState as panelBridgeState };
+
+function updateBridgeSummary(diag = currentDiagnostics || {}, integrations = currentIntegrations, now = Date.now(), state = { lastReport: latestRealReport }) {
   const value = document.getElementById("panel-api-value");
-  const apiOk = Boolean(diag.apiOk);
-  const aiOk = Boolean(diag.mcpConfigured || (diag.mcpMatches || []).some((m) => m.configured));
-  value.dataset.status = apiOk ? "ok" : "warn";
-  value.textContent = apiOk && aiOk
-    ? t("panel.bridge.connected")
-    : apiOk
-      ? t("panel.bridge.apiOnly")
-      : t("panel.bridge.offline");
+  const bridgeState = bridgeReportState(diag, integrations, now, state);
+  value.dataset.status = bridgeState === "report" ? "ok" : "warn";
+  value.textContent = t(`panel.bridge.${bridgeState}`);
 }
 
-function applyCompanionState(state = {}) {
+export function applyCompanionState(state = {}) {
+  if (Number.isSafeInteger(state.revision) && state.revision < currentCompanionState?.revision) return;
+  currentCompanionState = state;
+  const report = integrationReportFromState(state);
+  if (report && (!latestRealReport || Date.parse(report.updatedAt) >= Date.parse(latestRealReport.updatedAt))) latestRealReport = report;
+  // lastReport is an event for notifications/setup evidence, not the selected task.
+  const displayState = state;
   const dot = document.getElementById("global-status-dot");
   const text = document.getElementById("global-status-text");
-  const id = state.state || "idle";
-  text.textContent = stateLabel(id);
-  dot.title = stateLabel(id);
+  const id = displayState.state || "idle";
+  const eventKind = displayEventKind(displayState);
+  const stateText = eventKind ? `${stateLabel(id)} (${t(`display.${eventKind}`)})` : stateLabel(id);
+  text.textContent = stateText;
+  dot.title = stateText;
   dot.className = "dot";
   if (id === "working" || id === "thinking" || id === "running" || id === "reviewing") dot.classList.add("working");
   if (id === "failed") dot.classList.add("failed");
   if (id === "success") dot.classList.add("success");
 
-  const source = state.source || "local";
-  document.getElementById("panel-source-value").textContent = sourceDisplayName(source);
-  const message = String(state.message || defaultMessageForState(id, source) || "").trim();
+  const source = displayState.source || "local";
+  const sourceLabel = sourceDisplayName(source, displayState.sourceLabel);
+  const sourceValue = document.getElementById("panel-source-value");
+  sourceValue.textContent = sourceLabel;
+  sourceValue.title = displayState.sessionId ? `${sourceLabel} · ${displayState.sessionId}` : sourceLabel;
+  const message = String(displayState.message || defaultMessageForState(id, source) || "").trim();
   document.getElementById("panel-task-message").textContent = id === "idle"
     ? t("panel.task.none")
     : message || stateLabel(id);
+  const taskMeta = ensureTaskMeta();
+  if (taskMeta) {
+    const hasTimestamp = Boolean(String(displayState.updatedAt || "").trim());
+    const stale = sessionIsStale(displayState, Date.now(), DEFAULT_SESSION_STALE_AFTER_MS);
+    taskMeta.textContent = hasTimestamp
+      ? `${t("panel.task.updatedAt")}: ${formatSessionTime(displayState.updatedAt, getLocale(), Date.now())}${stale ? ` · ${t("panel.task.outdated")}` : ""}`
+      : "";
+    taskMeta.dataset.stale = stale ? "true" : "false";
+  }
+  updateBridgeSummary(currentDiagnostics || {}, currentIntegrations, Date.now(), { lastReport: latestRealReport });
 }
 
 async function boot() {
@@ -336,8 +386,12 @@ async function boot() {
     if (event.key === "Escape") closePanel();
   });
   window.addEventListener("focus", () => {
-    refreshReminders().catch(console.warn);
+    updateState().catch(console.warn);
   });
+  const freshnessTimer = window.setInterval(() => {
+    if (document.visibilityState === "visible" && currentCompanionState) applyCompanionState(currentCompanionState);
+  }, 30000);
+  window.addEventListener("pagehide", () => window.clearInterval(freshnessTimer), { once: true });
 
   // Tauri owns blur-to-close in Rust so it still works when the WebView itself
   // is not receiving events. Native selects temporarily hold an interaction lock.

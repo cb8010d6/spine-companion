@@ -160,6 +160,40 @@ function createCompanionServer(config, publicConfig) {
         return;
       }
 
+      if (req.method === "GET" && url.pathname === "/sessions") {
+        sendJson(res, 200, store.listSessions(), req);
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/sessions/focus") {
+        const body = await readBody(req);
+        if (!body || typeof body !== "object" || Array.isArray(body)) {
+          throw new Error("Invalid session focus payload: value must be an object");
+        }
+        if (Object.prototype.hasOwnProperty.call(body, "source")
+          && body.source !== null
+          && typeof body.source !== "string") {
+          throw new Error("Invalid session focus payload: source must be a string or null");
+        }
+        if (Object.prototype.hasOwnProperty.call(body, "sessionId")
+          && body.sessionId !== null
+          && typeof body.sessionId !== "string") {
+          throw new Error("Invalid session focus payload: sessionId must be a string or null");
+        }
+        sendJson(res, 200, store.focusSession(body), req);
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/state/dismiss") {
+        const body = await readBody(req);
+        if (!body || typeof body !== "object" || Array.isArray(body)
+          || !Number.isSafeInteger(body.revision) || body.revision < 0) {
+          throw new Error("Invalid dismiss payload: revision must be a non-negative integer");
+        }
+        sendJson(res, 200, store.dismissDisplay(body.revision), req);
+        return;
+      }
+
       if (req.method === "POST" && url.pathname === "/state") {
         sendJson(res, 200, store.setState(validateSetState(await readBody(req))), req);
         return;

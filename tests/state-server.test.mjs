@@ -186,6 +186,66 @@ describe("state-server HTTP API", () => {
     });
   });
 
+  describe("session lifecycle HTTP API", () => {
+    it("lists source/session records without inventing ids", async () => {
+      await postJson(`${baseUrl}/state`, {
+        state: "working",
+        source: "codex-mcp",
+        sourceLabel: "Codex",
+        sessionId: "build-1",
+        eventKind: "report"
+      });
+      await postJson(`${baseUrl}/state`, {
+        state: "running",
+        source: "codex-mcp",
+        sessionId: "build-2",
+        eventKind: "report"
+      });
+      await postJson(`${baseUrl}/state`, {
+        state: "reviewing",
+        source: "codex-mcp",
+        eventKind: "report"
+      });
+
+      const res = await request(`${baseUrl}/sessions`);
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ focused: null, staleAfterMs: 300000 });
+      expect(res.body.sessions).toEqual(expect.arrayContaining([
+        expect.objectContaining({ source: "codex-mcp", sessionId: "build-1", granularity: "session" }),
+        expect.objectContaining({ source: "codex-mcp", sessionId: "build-2", granularity: "session" }),
+        expect.objectContaining({ source: "codex-mcp", granularity: "source" })
+      ]));
+    });
+
+    it("focuses a session and returns to automatic focus", async () => {
+      await postJson(`${baseUrl}/state`, { state: "working", source: "codex-mcp", sessionId: "build-1", eventKind: "report" });
+      const focused = await postJson(`${baseUrl}/sessions/focus`, { source: "codex-mcp", sessionId: "build-1" });
+      expect(focused.status).toBe(200);
+      expect(focused.body).toMatchObject({ source: "codex-mcp", sessionId: "build-1" });
+      expect((await request(`${baseUrl}/sessions`)).body.focused).toEqual({ source: "codex-mcp", sessionId: "build-1" });
+
+      const automatic = await postJson(`${baseUrl}/sessions/focus`, { source: null });
+      expect(automatic.status).toBe(200);
+      expect((await request(`${baseUrl}/sessions`)).body.focused).toBeNull();
+    });
+
+    it("dismisses a temporary display by revision", async () => {
+      await postJson(`${baseUrl}/state`, { state: "working", source: "codex-mcp", message: "Build", eventKind: "report" });
+      const reminder = await postJson(`${baseUrl}/reminders`, { id: "http-dismiss", text: "Pause", delayMs: 0, durationMs: 60000 });
+      expect(reminder.status).toBe(201);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const displayed = await request(`${baseUrl}/state`);
+      expect(displayed.body.state).toBe("reminder");
+
+      const stale = await postJson(`${baseUrl}/state/dismiss`, { revision: displayed.body.revision - 1 });
+      expect(stale.status).toBe(200);
+      expect(stale.body.state).toBe("reminder");
+      const dismissed = await postJson(`${baseUrl}/state/dismiss`, { revision: displayed.body.revision });
+      expect(dismissed.status).toBe(200);
+      expect(dismissed.body).toMatchObject({ state: "working", source: "codex-mcp", message: "Build" });
+    });
+  });
+
   describe("GET /reminders", () => {
     it("returns empty list initially", async () => {
       const res = await request(`${baseUrl}/reminders`);

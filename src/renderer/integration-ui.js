@@ -1,6 +1,7 @@
 import { knownSource, normalizeSource } from "../shared/source-registry.js";
 
 export const INTEGRATION_FILTERS = ["all", "detected", "configured", "attention"];
+export const INTEGRATION_REPORT_STALE_AFTER_MS = 5 * 60 * 1000;
 
 export function integrationTestResult(item, override = null) {
   if (override) return override;
@@ -13,12 +14,52 @@ export function integrationTestResult(item, override = null) {
 }
 
 export function isIntegrationSelfTest(state = {}) {
-  return String(state?.message || "").startsWith("[Spine Companion self-test]");
+  const eventKind = String(state?.eventKind || "").trim().toLowerCase();
+  return eventKind === "demo"
+    || eventKind === "self-test"
+    || String(state?.message || "").startsWith("[Spine Companion self-test]");
 }
 
 export function integrationReportResult(item) {
   const reportedAt = Number(item?.lastReportedAt || 0);
   return reportedAt > 0 ? { reportedAt } : null;
+}
+
+export function integrationReportFromState(state = {}) {
+  const report = state?.lastReport;
+  if (!report || typeof report !== "object" || isIntegrationSelfTest(report)) return null;
+  if (!String(report.source || "").trim() || !String(report.updatedAt || "").trim()) return null;
+  return report;
+}
+
+export function integrationReportIsStale(item, now = Date.now(), staleAfterMs = INTEGRATION_REPORT_STALE_AFTER_MS) {
+  const raw = item?.lastReportedAt;
+  const reportedAt = typeof raw === "number" ? raw : Number(raw || 0) || Date.parse(String(raw || ""));
+  const threshold = Number(staleAfterMs);
+  return Boolean(reportedAt > 0 && Number.isFinite(Number(now)) && Number.isFinite(threshold) && threshold > 0
+    && Number(now) - reportedAt > threshold);
+}
+
+export function integrationReportState(item = {}, testResult = null, reportReceived = false, now = Date.now()) {
+  if (item.configFormat === "templateOnly") return "custom";
+  if (item.needsRestart) return "restart";
+  if (!item.configured) return "notConfigured";
+  if (reportReceived) return integrationReportIsStale(item, now) ? "stale" : "realReport";
+  if (integrationTestResult(item, testResult)?.ok === true) return "selfTestOnly";
+  return "notTested";
+}
+
+export function bridgeReportState(diag = {}, integrations = [], now = Date.now(), state = null) {
+  if (!diag.apiOk) return "offline";
+  const configured = (Array.isArray(integrations) ? integrations : []).filter((item) => item?.configured === true);
+  const report = integrationReportFromState(state);
+  const reportedAt = Math.max(
+    Date.parse(report?.updatedAt || "") || 0,
+    ...configured.map((item) => integrationReportResult(item)?.reportedAt || 0)
+  );
+  if (reportedAt > 0) return integrationReportIsStale({ lastReportedAt: reportedAt }, now) ? "stale" : "report";
+  if (configured.some((item) => item.needsRestart !== true && integrationTestResult(item)?.ok === true)) return "selfTestOnly";
+  return "setup";
 }
 
 export function integrationMatchesSource(item, source) {

@@ -17,8 +17,9 @@ use tokio_stream::StreamExt;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::state::{
-    create_reminder, delete_reminder, list_reminders, set_state, CreateReminderInput,
-    ReminderBroadcast, ReminderStore, SetStateInput, StateBroadcast, StateStore,
+    create_reminder, delete_reminder, dismiss_display, focus_session, get_state as read_state,
+    list_reminders, list_sessions, set_state, CreateReminderInput, ReminderBroadcast,
+    ReminderStore, SetStateInput, StateBroadcast, StateStore,
 };
 use std::sync::{Arc, Mutex};
 use tokio::sync::RwLock;
@@ -92,12 +93,12 @@ fn loopback_cors() -> CorsLayer {
 }
 
 async fn health(AxumState(app): AxumState<AppState>) -> impl IntoResponse {
-    let state = app.store.read().await.clone();
+    let state = read_state(&app.store).await;
     Json(json!({ "ok": true, "state": state }))
 }
 
 async fn get_state(AxumState(app): AxumState<AppState>) -> impl IntoResponse {
-    let state = app.store.read().await.clone();
+    let state = read_state(&app.store).await;
     Json(state)
 }
 
@@ -122,19 +123,54 @@ async fn get_history(AxumState(app): AxumState<AppState>) -> impl IntoResponse {
 async fn post_state(
     AxumState(app): AxumState<AppState>,
     Json(input): Json<SetStateInput>,
-) -> impl IntoResponse {
-    let result = set_state(&app.store, &app.tx, input).await;
-    Json(result)
+) -> Response {
+    state_response(set_state(&app.store, &app.tx, input).await)
 }
 
 async fn post_state_by_id(
     AxumState(app): AxumState<AppState>,
     Path(id): Path<String>,
     Json(mut input): Json<SetStateInput>,
-) -> impl IntoResponse {
+) -> Response {
     input.state = Some(id);
-    let result = set_state(&app.store, &app.tx, input).await;
-    Json(result)
+    state_response(set_state(&app.store, &app.tx, input).await)
+}
+
+fn state_response(result: Result<crate::state::CompanionState, String>) -> Response {
+    match result {
+        Ok(state) => Json(state).into_response(),
+        Err(error) => (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))).into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct FocusSessionInput {
+    pub source: Option<String>,
+    #[serde(default, rename = "sessionId")]
+    pub session_id: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct DismissInput {
+    revision: u64,
+}
+
+async fn get_sessions(AxumState(app): AxumState<AppState>) -> impl IntoResponse {
+    Json(list_sessions(&app.store).await)
+}
+
+async fn post_focus_session(
+    AxumState(app): AxumState<AppState>,
+    Json(input): Json<FocusSessionInput>,
+) -> Response {
+    state_response(focus_session(&app.store, &app.tx, input.source, input.session_id).await)
+}
+
+async fn post_dismiss_state(
+    AxumState(app): AxumState<AppState>,
+    Json(input): Json<DismissInput>,
+) -> impl IntoResponse {
+    Json(dismiss_display(&app.store, &app.tx, input.revision).await)
 }
 
 async fn get_reminders(AxumState(app): AxumState<AppState>) -> impl IntoResponse {
@@ -154,7 +190,7 @@ async fn delete_reminder_route(
     AxumState(app): AxumState<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let deleted = delete_reminder(&app.reminders, &app.reminder_tx, &id).await;
+    let deleted = delete_reminder(&app.store, &app.tx, &app.reminders, &app.reminder_tx, &id).await;
     let status = if deleted {
         StatusCode::OK
     } else {
@@ -166,7 +202,7 @@ async fn delete_reminder_route(
 async fn events(AxumState(app): AxumState<AppState>) -> impl IntoResponse {
     let rx = app.tx.subscribe();
     let reminder_rx = app.reminder_tx.subscribe();
-    let initial = app.store.read().await.clone();
+    let initial = read_state(&app.store).await;
     let initial_reminders = list_reminders(&app.reminders).await;
 
     let initial_event = futures::stream::once(async move {
@@ -351,6 +387,9 @@ fn build_router(app_state: AppState) -> Router {
         .route("/history", get(get_history))
         .route("/state/:id", post(post_state_by_id))
         .route("/reminders", get(get_reminders).post(post_reminder))
+        .route("/sessions", get(get_sessions))
+        .route("/sessions/focus", post(post_focus_session))
+        .route("/state/dismiss", post(post_dismiss_state))
         .route("/reminders/:id", delete(delete_reminder_route))
         .route("/events", get(events))
         .route("/assets/spine/*path", get(get_spine_asset))
@@ -473,6 +512,165 @@ mod tests {
         .await;
         assert_eq!(reminder.text, "API");
         assert_eq!(list_reminders(&reminders).await.len(), 1);
+    }
+
+    fn state_fixture() -> (Router, AppState) {
+        let (store, tx) = create_state_store("idle");
+        let data = AppState {
+            store,
+            tx,
+            reminders: create_reminder_store(),
+            reminder_tx: create_reminder_broadcast(),
+            asset_root: Arc::new(RwLock::new(None)),
+            preview_root: std::env::temp_dir(),
+            public_config: Arc::new(Mutex::new(json!({}))),
+            history: Arc::new(Mutex::new(Vec::new())),
+        };
+        (build_router(data.clone()), data)
+    }
+
+    async fn request_json(
+        app: &Router,
+        method: &str,
+        uri: &str,
+        body: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn http_cancellation_prevents_late_state_and_notification_events() {
+        let (app, data) = state_fixture();
+        let mut events = data.tx.subscribe();
+        assert_eq!(
+            request_json(
+                &app,
+                "POST",
+                "/reminders",
+                json!({"id":"cancel", "delayMs":1000})
+            )
+            .await
+            .0,
+            StatusCode::CREATED
+        );
+        assert_eq!(
+            request_json(&app, "DELETE", "/reminders/cancel", json!({}))
+                .await
+                .0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            request_json(&app, "DELETE", "/reminders/cancel", json!({}))
+                .await
+                .0,
+            StatusCode::NOT_FOUND
+        );
+        tokio::time::advance(std::time::Duration::from_secs(2)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(
+            request_json(&app, "GET", "/state", json!({})).await.1["state"],
+            "idle"
+        );
+        assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn http_sessions_preserve_aliases_reject_late_events_and_guard_dismissal() {
+        let (app, _data) = state_fixture();
+        let (status, _) = request_json(&app, "POST", "/state", json!({"id":"workING", "source":"codex-mcp", "sessionId":"A", "sequence":2, "eventId":"A-2"})).await;
+        assert_eq!(status, StatusCode::OK);
+        let (_, after_b) = request_json(&app, "POST", "/state", json!({"state":"success", "source":"codex-mcp", "sessionId":"B", "sequence":1, "eventId":"B-1"})).await;
+        assert_eq!(after_b["state"], "working");
+        assert_eq!(after_b["lastReport"]["sessionId"], "B");
+        let (_, late) = request_json(
+            &app,
+            "POST",
+            "/state",
+            json!({"state":"failed", "source":"codex-mcp", "sessionId":"A", "sequence":1}),
+        )
+        .await;
+        assert_eq!(late["revision"], after_b["revision"]);
+        let (_, duplicate) = request_json(&app, "POST", "/state", json!({"state":"failed", "source":"codex-mcp", "sessionId":"B", "sequence":1, "eventId":"B-1"})).await;
+        assert_eq!(duplicate["revision"], after_b["revision"]);
+        let (_, list) = request_json(&app, "GET", "/sessions", json!({})).await;
+        assert_eq!(list["sessions"].as_array().unwrap().len(), 2);
+        let (_, focused) = request_json(
+            &app,
+            "POST",
+            "/sessions/focus",
+            json!({"source":"codex-mcp", "sessionId":"B"}),
+        )
+        .await;
+        assert_eq!(focused["state"], "success");
+        assert!(focused.get("lastReport").is_none());
+        let (_, stale_dismiss) = request_json(
+            &app,
+            "POST",
+            "/state/dismiss",
+            json!({"revision":after_b["revision"]}),
+        )
+        .await;
+        assert_eq!(stale_dismiss["revision"], focused["revision"]);
+        assert_eq!(
+            request_json(&app, "POST", "/sessions/focus", json!({"source":null}))
+                .await
+                .1["state"],
+            "working"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn http_reminder_returns_to_latest_work_not_idle() {
+        let (app, _) = state_fixture();
+        request_json(
+            &app,
+            "POST",
+            "/state",
+            json!({"state":"working", "source":"codex-mcp"}),
+        )
+        .await;
+        request_json(
+            &app,
+            "POST",
+            "/reminders",
+            json!({"id":"break", "delayMs":1000, "durationMs":2000}),
+        )
+        .await;
+        tokio::time::advance(std::time::Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(
+            request_json(&app, "GET", "/state", json!({})).await.1["state"],
+            "reminder"
+        );
+        request_json(
+            &app,
+            "POST",
+            "/state",
+            json!({"state":"running", "source":"codex-mcp", "message":"Tests still running"}),
+        )
+        .await;
+        tokio::time::advance(std::time::Duration::from_secs(2)).await;
+        tokio::task::yield_now().await;
+        let (_, restored) = request_json(&app, "GET", "/state", json!({})).await;
+        assert_eq!(restored["state"], "running");
+        assert_eq!(restored["message"], "Tests still running");
+        assert_eq!(restored["source"], "codex-mcp");
     }
 
     #[tokio::test]
