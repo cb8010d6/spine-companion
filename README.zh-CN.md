@@ -2,8 +2,12 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-Spine Companion 把 Spine 3.8 角色变成安静的桌面陪伴：用动画、提醒和本地 AI 工具状态，
-让你随时看到工作的节奏。
+Spine Companion 是面向 AI 辅助编程的本地桌面状态陪伴。它把 AI 工具主动上报的工作阶段
+转换为角色动画、提醒和一眼可见的状态，让你不用离开日常工作区也能看到任务正在工作、
+等待你、检查中或已经完成。
+
+它是 IDE、终端和 AI 工具的补充，不会替代其中任何一个。桌宠只显示已接入工具主动上报的
+阶段，不会根据无关的桌面活动猜测 AI 状态。
 
 ## 下载
 
@@ -32,6 +36,10 @@ Library 会把下载的模型放入用户数据目录。首次使用不需要编
 该集成使用本地 stdio MCP 入口，通过 companion 的本地 HTTP API 工作。详细 MCP 字段、
 开发兜底和排障步骤见 [Codex MCP 指南](docs/guides/codex-mcp.zh-CN.md)。
 
+MCP 配置只是让上报工具可用，并不会自动揭示所有 AI 状态。AI 工具必须在工作阶段主动调用
+上报工具，且 Spine Companion 需要保持运行。请先运行安装包 MCP 自检，再启动一个真实任务，
+并在 **Manager > AI Integrations** 中确认第一次工作上报。
+
 ## 功能
 
 - 透明、置顶的 Spine 渲染，支持拖动、点击、缩放和状态动画。
@@ -39,19 +47,19 @@ Library 会把下载的模型放入用户数据目录。首次使用不需要编
 - 本地提醒、进度气泡、托盘控制和最近状态历史。
 - 支持 Codex 等 MCP AI 工具，并提供配置备份和恢复。
 - 为开发和自动化提供浏览器预览及本地 HTTP/SSE 集成。
-- Avatar Studio 支持试用和恢复本地角色变更。
+- Avatar Studio（实验功能）支持试用和恢复本地角色变更。
 
 ## 平台矩阵
 
 | 平台 | 支持目标 | Release 安装包 |
 | --- | --- | --- |
 | Windows 10/11 x64 | Stable target | NSIS `.exe` |
-| macOS Apple Silicon | Unsigned Preview | `.dmg` |
-| macOS Intel | Unsigned Preview | `.dmg` |
-| Linux x64 | Unsigned Preview | `.AppImage`、`.deb` |
+| macOS Apple Silicon | Preview | `.dmg` |
+| macOS Intel | Preview | `.dmg` |
+| Linux x64 | Preview | `.AppImage`、`.deb` |
 
-预览包可能受桌面环境、显卡驱动、窗口合成或 Gatekeeper 影响。它们用于评估，不是稳定
-支持目标。
+预览包未签名，可能受桌面环境、显卡驱动、窗口合成或 Gatekeeper 影响。它们用于评估，不是
+稳定支持目标。
 
 ## 模型兼容性与权利提示
 

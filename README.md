@@ -2,8 +2,15 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-Spine Companion turns a Spine 3.8 character into a quiet desktop companion that
-reflects your work through animation, reminders, and local AI-tool status.
+Spine Companion is a local desktop status companion for AI-assisted coding. It
+turns reported work phases into character animation, reminders, and a small
+at-a-glance status surface, so you can see when an AI task is working, waiting
+for you, reviewing, or complete without leaving your usual workspace.
+
+It complements your IDE, terminal, and AI client; it does not replace any of
+them. The companion only shows phases that an integrated client actively
+reports, which keeps the status explicit instead of guessing from unrelated
+desktop activity.
 
 ## Download
 
@@ -38,6 +45,12 @@ The integration uses a local stdio MCP entry backed by the companion's local
 HTTP API. Detailed MCP fields, fallback setup, and troubleshooting live in the
 [Codex MCP guide](docs/guides/codex-mcp.md).
 
+MCP configuration makes reporting tools available; it does not automatically
+reveal every AI state. The AI client must call the reporting tool during its
+work, and the companion must remain running. Run the packaged self-test first,
+then start a real task and confirm its first report in **Manager > AI
+Integrations**.
+
 ## Features
 
 - Transparent, always-on-top Spine rendering with drag, click, zoom, and state animations.
@@ -45,20 +58,20 @@ HTTP API. Detailed MCP fields, fallback setup, and troubleshooting live in the
 - Local reminders, progress bubble, tray controls, and recent state history.
 - Codex and other MCP-capable AI integrations with backup and restore support.
 - Browser preview and local HTTP/SSE integration for development and automation.
-- Avatar Studio for trying and restoring local character changes.
+- Avatar Studio (Experimental) for trying and restoring local character changes.
 
 ## Platform Matrix
 
 | Platform | Support target | Release package |
 | --- | --- | --- |
 | Windows 10/11 x64 | Stable target | NSIS `.exe` |
-| macOS Apple Silicon | Unsigned Preview | `.dmg` |
-| macOS Intel | Unsigned Preview | `.dmg` |
-| Linux x64 | Unsigned Preview | `.AppImage`, `.deb` |
+| macOS Apple Silicon | Preview | `.dmg` |
+| macOS Intel | Preview | `.dmg` |
+| Linux x64 | Preview | `.AppImage`, `.deb` |
 
-Preview packages may be affected by desktop environment, GPU driver, window
-compositing, or Gatekeeper behavior. They are useful for evaluation but are not
-the stable support target.
+Preview packages are unsigned and may be affected by desktop environment, GPU
+driver, window compositing, or Gatekeeper behavior. They are useful for
+evaluation but are not the stable support target.
 
 ## Model Compatibility And Rights
 
