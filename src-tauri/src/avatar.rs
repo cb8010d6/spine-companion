@@ -4,7 +4,7 @@ pub(crate) mod spine_assets;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::thread;
@@ -23,12 +23,8 @@ const AVATAR_JOB_MAX_MOTIONS: usize = 32;
 const AVATAR_JOB_MAX_MOTION_BYTES: usize = 64;
 const AVATAR_JOB_MAX_STORE_BYTES: u64 = 8 * 1024 * 1024;
 const AVATAR_JOB_MAX_BACKUPS: usize = 3;
-const AVATAR_JOB_LOCK_BYTES: u64 = 1024;
-// A valid owner change marks progress; bound each no-progress interval and the
-// aggregate wait so a queue cannot wait forever.
 const AVATAR_JOB_LOCK_TIMEOUT: Duration = Duration::from_secs(2);
 const AVATAR_JOB_LOCK_MAX_WAIT: Duration = Duration::from_secs(10);
-const AVATAR_JOB_LOCK_STALE_AFTER: Duration = Duration::from_secs(30);
 const AVATAR_JOB_LOCK_RETRY: Duration = Duration::from_millis(20);
 
 const STANDARD_LAYERS: &[&str] = &[
@@ -299,28 +295,15 @@ pub struct AvatarJob {
     pub history: Vec<AvatarJobHistoryEntry>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct AvatarJobLockMetadata {
-    owner: String,
-    created_at_ms: u64,
-}
-
 struct AvatarJobStoreLock {
-    path: PathBuf,
-    owner: String,
+    file: File,
 }
 
 impl Drop for AvatarJobStoreLock {
     fn drop(&mut self) {
-        let owner_matches =
-            read_bytes_bounded(&self.path, AVATAR_JOB_LOCK_BYTES, "Avatar job lock")
-                .ok()
-                .and_then(|bytes| serde_json::from_slice::<AvatarJobLockMetadata>(&bytes).ok())
-                .is_some_and(|metadata| metadata.owner == self.owner);
-        if owner_matches {
-            let _ = fs::remove_file(&self.path);
-        }
+        // The OS releases this handle's lock on drop as well. Explicitly unlock
+        // first so the stable lock file can be reused immediately by a waiter.
+        let _ = self.file.unlock();
     }
 }
 
@@ -430,135 +413,76 @@ fn read_bytes_bounded(path: &Path, max_bytes: u64, label: &str) -> Result<Vec<u8
     Ok(bytes)
 }
 
-fn avatar_job_lock_is_stale(path: &Path, stale_after: Duration) -> bool {
-    let stale_ms = stale_after.as_millis().min(u64::MAX as u128) as u64;
-    if let Ok(bytes) = read_bytes_bounded(path, AVATAR_JOB_LOCK_BYTES, "Avatar job lock") {
-        if let Ok(metadata) = serde_json::from_slice::<AvatarJobLockMetadata>(&bytes) {
-            if current_timestamp_ms().saturating_sub(metadata.created_at_ms) > stale_ms {
-                return true;
-            }
-        }
-    }
-    fs::metadata(path)
-        .and_then(|metadata| metadata.modified())
-        .ok()
-        .and_then(|modified| modified.elapsed().ok())
-        .is_some_and(|age| age > stale_after)
-}
-
 fn avatar_job_lock_is_contended(error: &std::io::Error) -> bool {
     error.kind() == std::io::ErrorKind::AlreadyExists
         || error.kind() == std::io::ErrorKind::PermissionDenied
-}
-
-fn avatar_job_lock_owner(path: &Path) -> Option<String> {
-    read_bytes_bounded(path, AVATAR_JOB_LOCK_BYTES, "Avatar job lock")
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<AvatarJobLockMetadata>(&bytes).ok())
-        .map(|metadata| metadata.owner)
-        .filter(|owner| !owner.trim().is_empty())
-}
-
-fn avatar_job_lock_wait_timed_out(
-    started_at: Instant,
-    no_progress_at: &mut Instant,
-    observed_owner: &mut Option<String>,
-    owner: Option<&str>,
-    now: Instant,
-    timeout: Duration,
-    max_wait: Duration,
-) -> bool {
-    if let Some(owner) = owner.filter(|owner| !owner.trim().is_empty()) {
-        if observed_owner.as_deref() != Some(owner) {
-            *observed_owner = Some(owner.to_string());
-            *no_progress_at = now;
-        }
-    }
-    now.duration_since(*no_progress_at) >= timeout || now.duration_since(started_at) >= max_wait
+        || error.kind() == std::io::ErrorKind::WouldBlock
 }
 
 fn acquire_avatar_job_lock_with_limits(
     config_dir: &Path,
     timeout: Duration,
-    stale_after: Duration,
 ) -> Result<AvatarJobStoreLock, String> {
     fs::create_dir_all(config_dir).map_err(|error| error.to_string())?;
     let path = avatar_job_lock_path(config_dir);
-    let owner = unique_suffix();
     let started_at = Instant::now();
-    let mut no_progress_at = started_at;
-    let mut observed_owner = None;
+    let wait_limit = timeout.min(AVATAR_JOB_LOCK_MAX_WAIT);
+    let deadline = started_at + wait_limit;
     loop {
-        match OpenOptions::new().write(true).create_new(true).open(&path) {
-            Ok(mut file) => {
-                let metadata = AvatarJobLockMetadata {
-                    owner: owner.clone(),
-                    created_at_ms: current_timestamp_ms(),
-                };
-                let bytes = match serde_json::to_vec(&metadata) {
-                    Ok(bytes) => bytes,
-                    Err(error) => {
-                        drop(file);
-                        let _ = fs::remove_file(&path);
-                        return Err(error.to_string());
-                    }
-                };
-                // create_new provides atomic ownership; marker metadata only needs visibility.
-                if let Err(error) = file.write_all(&bytes) {
-                    drop(file);
-                    let _ = fs::remove_file(&path);
-                    return Err(format!("Cannot initialize Avatar job lock: {error}"));
-                }
-                return Ok(AvatarJobStoreLock { path, owner });
-            }
+        let file = match OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+        {
+            Ok(file) => file,
             Err(error) if avatar_job_lock_is_contended(&error) => {
-                if avatar_job_lock_is_stale(&path, stale_after) {
-                    match fs::remove_file(&path) {
-                        Ok(()) => continue,
-                        Err(remove_error)
-                            if remove_error.kind() == std::io::ErrorKind::NotFound =>
-                        {
-                            continue
-                        }
-                        Err(_) => {}
-                    }
-                }
                 let now = Instant::now();
-                if avatar_job_lock_wait_timed_out(
-                    started_at,
-                    &mut no_progress_at,
-                    &mut observed_owner,
-                    avatar_job_lock_owner(&path).as_deref(),
-                    now,
-                    timeout,
-                    AVATAR_JOB_LOCK_MAX_WAIT,
-                ) {
+                if now.duration_since(started_at) >= wait_limit {
                     return Err(format!(
-                        "Avatar job store is busy; lock acquisition exceeded the {} ms no-progress timeout or {} ms hard cap.",
+                        "Avatar job store is busy; lock acquisition exceeded the {} ms timeout or {} ms hard cap.",
                         timeout.as_millis(),
                         AVATAR_JOB_LOCK_MAX_WAIT.as_millis()
                     ));
                 }
-                let no_progress_deadline = no_progress_at + timeout;
-                let hard_deadline = started_at + AVATAR_JOB_LOCK_MAX_WAIT;
-                let sleep_for = AVATAR_JOB_LOCK_RETRY
-                    .min(no_progress_deadline.saturating_duration_since(now))
-                    .min(hard_deadline.saturating_duration_since(now));
+                let sleep_for = AVATAR_JOB_LOCK_RETRY.min(deadline.saturating_duration_since(now));
                 if !sleep_for.is_zero() {
                     thread::sleep(sleep_for);
                 }
+                continue;
             }
-            Err(error) => return Err(format!("Cannot acquire Avatar job lock: {error}")),
+            Err(error) => return Err(format!("Cannot open Avatar job lock: {error}")),
+        };
+
+        match file.try_lock() {
+            Ok(()) => return Ok(AvatarJobStoreLock { file }),
+            Err(TryLockError::WouldBlock) => drop(file),
+            Err(TryLockError::Error(error)) if avatar_job_lock_is_contended(&error) => {
+                drop(file);
+            }
+            Err(TryLockError::Error(error)) => {
+                return Err(format!("Cannot acquire Avatar job lock: {error}"));
+            }
+        }
+
+        let now = Instant::now();
+        if now.duration_since(started_at) >= wait_limit {
+            return Err(format!(
+                "Avatar job store is busy; lock acquisition exceeded the {} ms timeout or {} ms hard cap.",
+                timeout.as_millis(),
+                AVATAR_JOB_LOCK_MAX_WAIT.as_millis()
+            ));
+        }
+        let sleep_for = AVATAR_JOB_LOCK_RETRY.min(deadline.saturating_duration_since(now));
+        if !sleep_for.is_zero() {
+            thread::sleep(sleep_for);
         }
     }
 }
 
 fn acquire_avatar_job_lock(config_dir: &Path) -> Result<AvatarJobStoreLock, String> {
-    acquire_avatar_job_lock_with_limits(
-        config_dir,
-        AVATAR_JOB_LOCK_TIMEOUT,
-        AVATAR_JOB_LOCK_STALE_AFTER,
-    )
+    acquire_avatar_job_lock_with_limits(config_dir, AVATAR_JOB_LOCK_TIMEOUT)
 }
 
 fn validate_job_text(
@@ -2311,7 +2235,14 @@ fn unique_suffix() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{mpsc, Arc, Barrier};
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::{Child, ChildStdout, Command, Stdio};
+    use std::sync::{Arc, Barrier};
+
+    const CHILD_MODE_ENV: &str = "SPINE_COMPANION_AVATAR_JOB_CHILD_MODE";
+    const CHILD_CONFIG_ENV: &str = "SPINE_COMPANION_AVATAR_JOB_CHILD_CONFIG";
+    const CHILD_GATE_ENV: &str = "SPINE_COMPANION_AVATAR_JOB_CHILD_GATE";
+    const CHILD_JOB_ID_ENV: &str = "SPINE_COMPANION_AVATAR_JOB_CHILD_ID";
 
     fn temp_pack(name: &str) -> PathBuf {
         let root =
@@ -2336,6 +2267,95 @@ mod tests {
         fs::write(exports.join(skel), []).unwrap();
         fs::write(exports.join("avatar.atlas"), "avatar.png\nsize: 1,1\n").unwrap();
         fs::write(exports.join("avatar.png"), []).unwrap();
+    }
+
+    fn spawn_lock_child(mode: &str, config: &Path) -> (Child, BufReader<ChildStdout>) {
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "avatar::tests::avatar_job_lock_child",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(CHILD_MODE_ENV, mode)
+            .env(CHILD_CONFIG_ENV, config)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn avatar job lock child");
+        let stdout = BufReader::new(child.stdout.take().expect("child stdout pipe"));
+        (child, stdout)
+    }
+
+    fn wait_for_child_ready(stdout: &mut BufReader<ChildStdout>) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            assert!(
+                stdout.read_line(&mut line).expect("read child output") > 0,
+                "avatar job lock child exited before announcing readiness"
+            );
+            if line.contains("AVATAR_LOCK_CHILD_READY") {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "avatar job lock child did not become ready"
+            );
+        }
+    }
+
+    fn wait_for_path(path: &Path, timeout: Duration) {
+        let deadline = Instant::now() + timeout;
+        while !path.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "child did not observe the inter-process test gate"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    #[ignore = "spawned by inter-process Avatar job lock tests"]
+    fn avatar_job_lock_child() {
+        let Ok(mode) = std::env::var(CHILD_MODE_ENV) else {
+            return;
+        };
+        let config = PathBuf::from(std::env::var(CHILD_CONFIG_ENV).unwrap());
+        if mode == "create" {
+            println!("AVATAR_LOCK_CHILD_READY");
+            std::io::stdout().flush().unwrap();
+            let gate = PathBuf::from(std::env::var(CHILD_GATE_ENV).unwrap());
+            wait_for_path(&gate, Duration::from_secs(10));
+            let job_id = std::env::var(CHILD_JOB_ID_ENV).unwrap();
+            create_avatar_job(
+                &config,
+                AvatarJobCreateInput {
+                    job_id,
+                    phase: "planning".to_string(),
+                    message: "inter-process create".to_string(),
+                    pack_path: None,
+                    motions: Vec::new(),
+                },
+            )
+            .unwrap();
+            return;
+        }
+        let lock = acquire_avatar_job_lock_with_limits(&config, Duration::from_secs(5)).unwrap();
+        println!("AVATAR_LOCK_CHILD_READY");
+        std::io::stdout().flush().unwrap();
+        match mode.as_str() {
+            "hold" => {
+                let mut release = String::new();
+                std::io::stdin().read_line(&mut release).unwrap();
+                drop(lock);
+            }
+            "crash" => std::process::exit(0),
+            other => panic!("unknown avatar job lock child mode: {other}"),
+        }
     }
 
     #[test]
@@ -2684,320 +2704,114 @@ mod tests {
     }
 
     #[test]
-    fn stale_avatar_job_lock_is_recovered_but_live_lock_times_out() {
-        let config = temp_pack("job-lock-recovery");
-        fs::write(
-            avatar_job_lock_path(&config),
-            serde_json::to_vec(&AvatarJobLockMetadata {
-                owner: "dead-process".to_string(),
-                created_at_ms: 0,
-            })
-            .unwrap(),
-        )
-        .unwrap();
-        let lock = acquire_avatar_job_lock_with_limits(
-            &config,
-            Duration::from_millis(100),
-            Duration::from_millis(10),
-        )
-        .unwrap();
-        drop(lock);
-        assert!(!avatar_job_lock_path(&config).exists());
+    fn interprocess_avatar_job_lock_contends_without_stale_steal_and_keeps_path() {
+        let config = temp_pack("job-lock-contention");
+        let (mut child, mut stdout) = spawn_lock_child("hold", &config);
+        wait_for_child_ready(&mut stdout);
+        let lock_path = avatar_job_lock_path(&config);
+        assert!(lock_path.is_file());
 
-        fs::write(
-            avatar_job_lock_path(&config),
-            serde_json::to_vec(&AvatarJobLockMetadata {
-                owner: "live-process".to_string(),
-                created_at_ms: current_timestamp_ms(),
-            })
-            .unwrap(),
-        )
-        .unwrap();
         let started = Instant::now();
-        let error = acquire_avatar_job_lock_with_limits(
-            &config,
-            Duration::from_millis(80),
-            Duration::from_secs(30),
-        )
-        .err()
-        .expect("a live lock should time out");
+        let error = acquire_avatar_job_lock_with_limits(&config, Duration::from_millis(120))
+            .err()
+            .expect("a child process holding the lock must block a contender");
         assert!(error.contains("busy"));
         assert!(started.elapsed() < Duration::from_secs(1));
-        fs::remove_file(avatar_job_lock_path(&config)).unwrap();
-        let _ = fs::remove_dir_all(config);
-    }
-
-    #[test]
-    fn avatar_job_lock_wait_policy_allows_owner_progress_past_short_timeout() {
-        let started = Instant::now();
-        let mut no_progress = started;
-        let mut owner = None;
-        assert!(!avatar_job_lock_wait_timed_out(
-            started,
-            &mut no_progress,
-            &mut owner,
-            Some("owner-a"),
-            started,
-            Duration::from_secs(2),
-            AVATAR_JOB_LOCK_MAX_WAIT,
-        ));
-        assert!(!avatar_job_lock_wait_timed_out(
-            started,
-            &mut no_progress,
-            &mut owner,
-            Some("owner-a"),
-            started + Duration::from_millis(1_999),
-            Duration::from_secs(2),
-            AVATAR_JOB_LOCK_MAX_WAIT,
-        ));
-        assert!(!avatar_job_lock_wait_timed_out(
-            started,
-            &mut no_progress,
-            &mut owner,
-            Some("owner-b"),
-            started + Duration::from_millis(2_001),
-            Duration::from_secs(2),
-            AVATAR_JOB_LOCK_MAX_WAIT,
-        ));
-        assert!(!avatar_job_lock_wait_timed_out(
-            started,
-            &mut no_progress,
-            &mut owner,
-            Some("owner-c"),
-            started + Duration::from_millis(4_001),
-            Duration::from_secs(2),
-            AVATAR_JOB_LOCK_MAX_WAIT,
-        ));
-    }
-
-    #[test]
-    fn avatar_job_lock_wait_policy_times_out_without_owner_progress() {
-        let started = Instant::now();
-        let mut no_progress = started;
-        let mut owner = None;
-        assert!(!avatar_job_lock_wait_timed_out(
-            started,
-            &mut no_progress,
-            &mut owner,
-            Some("owner-a"),
-            started,
-            Duration::from_secs(2),
-            AVATAR_JOB_LOCK_MAX_WAIT,
-        ));
-        assert!(!avatar_job_lock_wait_timed_out(
-            started,
-            &mut no_progress,
-            &mut owner,
-            Some("owner-a"),
-            started + Duration::from_millis(1_999),
-            Duration::from_secs(2),
-            AVATAR_JOB_LOCK_MAX_WAIT,
-        ));
-        assert!(avatar_job_lock_wait_timed_out(
-            started,
-            &mut no_progress,
-            &mut owner,
-            Some("owner-a"),
-            started + Duration::from_secs(2),
-            Duration::from_secs(2),
-            AVATAR_JOB_LOCK_MAX_WAIT,
-        ));
-    }
-
-    #[test]
-    fn avatar_job_lock_wait_policy_ignores_invalid_owner_markers() {
-        let started = Instant::now();
-        let mut no_progress = started;
-        let mut owner = None;
-        assert!(!avatar_job_lock_wait_timed_out(
-            started,
-            &mut no_progress,
-            &mut owner,
-            Some("owner-a"),
-            started + Duration::from_millis(1_000),
-            Duration::from_secs(2),
-            AVATAR_JOB_LOCK_MAX_WAIT,
-        ));
-        assert!(!avatar_job_lock_wait_timed_out(
-            started,
-            &mut no_progress,
-            &mut owner,
-            Some(""),
-            started + Duration::from_millis(1_999),
-            Duration::from_secs(2),
-            AVATAR_JOB_LOCK_MAX_WAIT,
-        ));
-        assert!(avatar_job_lock_wait_timed_out(
-            started,
-            &mut no_progress,
-            &mut owner,
-            None,
-            started + Duration::from_millis(3_000),
-            Duration::from_secs(2),
-            AVATAR_JOB_LOCK_MAX_WAIT,
-        ));
-    }
-
-    #[test]
-    fn avatar_job_lock_wait_policy_has_a_hard_total_cap() {
-        let started = Instant::now();
-        let mut no_progress = started;
-        let mut owner = None;
-        assert!(!avatar_job_lock_wait_timed_out(
-            started,
-            &mut no_progress,
-            &mut owner,
-            Some("owner-a"),
-            started,
-            Duration::from_secs(2),
-            AVATAR_JOB_LOCK_MAX_WAIT,
-        ));
-        assert!(!avatar_job_lock_wait_timed_out(
-            started,
-            &mut no_progress,
-            &mut owner,
-            Some("owner-b"),
-            started + Duration::from_millis(9_999),
-            Duration::from_secs(2),
-            AVATAR_JOB_LOCK_MAX_WAIT,
-        ));
-        assert!(avatar_job_lock_wait_timed_out(
-            started,
-            &mut no_progress,
-            &mut owner,
-            Some("owner-c"),
-            started + AVATAR_JOB_LOCK_MAX_WAIT,
-            Duration::from_secs(2),
-            AVATAR_JOB_LOCK_MAX_WAIT,
-        ));
-    }
-
-    #[test]
-    fn live_avatar_job_lock_metadata_survives_timeout_and_owned_drop_allows_reacquire() {
-        let config = temp_pack("job-lock-owned-marker");
-        let lock = acquire_avatar_job_lock_with_limits(
-            &config,
-            Duration::from_millis(500),
-            Duration::from_secs(30),
-        )
-        .unwrap();
-        let metadata = serde_json::from_slice::<AvatarJobLockMetadata>(
-            &read_bytes_bounded(
-                &avatar_job_lock_path(&config),
-                AVATAR_JOB_LOCK_BYTES,
-                "Avatar job lock",
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(metadata.owner, lock.owner);
-
-        let error = acquire_avatar_job_lock_with_limits(
-            &config,
-            Duration::from_millis(80),
-            Duration::from_secs(30),
-        )
-        .err()
-        .expect("a live lock should time out");
-        assert!(error.contains("busy"));
-        assert!(avatar_job_lock_path(&config).exists());
-        drop(lock);
-        assert!(!avatar_job_lock_path(&config).exists());
-
-        let replacement = acquire_avatar_job_lock_with_limits(
-            &config,
-            Duration::from_millis(100),
-            Duration::from_secs(30),
-        )
-        .unwrap();
-        assert!(avatar_job_lock_path(&config).exists());
-        drop(replacement);
-        assert!(!avatar_job_lock_path(&config).exists());
-        let _ = fs::remove_dir_all(config);
-    }
-
-    #[test]
-    fn live_avatar_job_lock_waits_through_progressing_owners() {
-        let config = temp_pack("job-lock-progress");
-        let lock = acquire_avatar_job_lock_with_limits(
-            &config,
-            Duration::from_millis(100),
-            Duration::from_secs(30),
-        )
-        .unwrap();
-        let lock_path = avatar_job_lock_path(&config);
-        let (ready_tx, ready_rx) = mpsc::sync_channel(0);
-        let (result_tx, result_rx) = mpsc::sync_channel(0);
-        let contender_config = config.clone();
-        let contender = thread::spawn(move || {
-            ready_tx.send(()).unwrap();
-            let started = Instant::now();
-            let result = acquire_avatar_job_lock_with_limits(
-                &contender_config,
-                Duration::from_millis(500),
-                Duration::from_secs(30),
-            );
-            result_tx.send((started.elapsed(), result)).unwrap();
-        });
-        ready_rx.recv().unwrap();
-
-        // Keep the marker live while advancing its owner identity. Every
-        // interval is below the 500 ms no-progress timeout, but the aggregate
-        // hold exceeds it and therefore exercises the real retry loop.
-        for index in 0..8 {
-            thread::sleep(Duration::from_millis(100));
-            fs::write(
-                &lock_path,
-                serde_json::to_vec(&AvatarJobLockMetadata {
-                    owner: format!("progress-owner-{index}"),
-                    created_at_ms: current_timestamp_ms(),
-                })
-                .unwrap(),
-            )
-            .unwrap();
-        }
-        // Restore the original owner before dropping the lock so its normal
-        // owner-checked cleanup can remove the marker.
-        fs::write(
-            &lock_path,
-            serde_json::to_vec(&AvatarJobLockMetadata {
-                owner: lock.owner.clone(),
-                created_at_ms: current_timestamp_ms(),
-            })
-            .unwrap(),
-        )
-        .unwrap();
-        drop(lock);
-
-        let (elapsed, result) = result_rx
-            .recv_timeout(Duration::from_secs(2))
-            .expect("contender should finish after the owner releases the lock");
         assert!(
-            elapsed >= Duration::from_millis(500),
-            "contender unexpectedly acquired before the aggregate timeout: {elapsed:?}"
+            lock_path.is_file(),
+            "contention must not delete the lock file"
         );
-        let acquired = result.expect("progressing owners must not cause timeout");
-        drop(acquired);
-        contender.join().unwrap();
+
+        child
+            .stdin
+            .as_mut()
+            .expect("child stdin pipe")
+            .write_all(b"release\n")
+            .unwrap();
+        child.wait().unwrap();
+        assert!(lock_path.is_file(), "the lock file is stable after release");
+        let replacement = acquire_avatar_job_lock_with_limits(&config, Duration::from_millis(120))
+            .expect("the lock must be reusable after the owner releases it");
+        drop(replacement);
+        assert!(lock_path.is_file());
+        let _ = fs::remove_dir_all(config);
+    }
+
+    #[test]
+    fn interprocess_avatar_job_lock_releases_after_owner_process_exit() {
+        let config = temp_pack("job-lock-crash-release");
+        let (mut child, mut stdout) = spawn_lock_child("crash", &config);
+        wait_for_child_ready(&mut stdout);
+        let status = child.wait().unwrap();
+        assert!(
+            status.success(),
+            "lock child should exit cleanly after simulating a crash"
+        );
+        assert!(avatar_job_lock_path(&config).is_file());
+
+        let lock = acquire_avatar_job_lock_with_limits(&config, Duration::from_millis(500))
+            .expect("the OS must release a crashed owner's lock");
+        drop(lock);
+        assert!(avatar_job_lock_path(&config).is_file());
+        let _ = fs::remove_dir_all(config);
+    }
+
+    #[test]
+    fn interprocess_avatar_job_creates_preserve_every_job() {
+        let config = temp_pack("job-interprocess-concurrency");
+        let gate = config.join("children-start");
+        let workers = 8;
+        let mut children = Vec::with_capacity(workers);
+        for index in 0..workers {
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--ignored",
+                    "--exact",
+                    "avatar::tests::avatar_job_lock_child",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env(CHILD_MODE_ENV, "create")
+                .env(CHILD_CONFIG_ENV, &config)
+                .env(CHILD_GATE_ENV, &gate)
+                .env(CHILD_JOB_ID_ENV, format!("interprocess-{index}"))
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped());
+            let mut child = command.spawn().expect("spawn avatar job create child");
+            let stdout = BufReader::new(child.stdout.take().expect("child stdout pipe"));
+            children.push((child, stdout));
+        }
+
+        for (_, stdout) in &mut children {
+            wait_for_child_ready(stdout);
+        }
+        fs::write(&gate, b"go").unwrap();
+        for (mut child, _stdout) in children {
+            let status = child.wait().unwrap();
+            assert!(status.success(), "avatar job create child failed");
+        }
+
+        let jobs = load_avatar_jobs(&config).unwrap();
+        assert_eq!(jobs.len(), workers);
+        for index in 0..workers {
+            assert!(jobs
+                .iter()
+                .any(|job| job.job_id == format!("interprocess-{index}")));
+        }
+        assert!(avatar_job_lock_path(&config).is_file());
         let _ = fs::remove_dir_all(config);
     }
 
     #[test]
     fn permission_denied_is_transient_lock_contention() {
-        let config = temp_pack("job-lock-contention");
-        fs::create_dir_all(&config).unwrap();
-        let lock_path = avatar_job_lock_path(&config);
-        fs::write(&lock_path, b"locked").unwrap();
-
         let permission_denied = std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "simulated Windows sharing violation",
         );
         assert!(avatar_job_lock_is_contended(&permission_denied));
-
-        fs::remove_file(&lock_path).unwrap();
-        assert!(avatar_job_lock_is_contended(&permission_denied));
-        let _ = fs::remove_dir_all(config);
+        let would_block = std::io::Error::new(std::io::ErrorKind::WouldBlock, "simulated lock");
+        assert!(avatar_job_lock_is_contended(&would_block));
     }
 
     #[test]

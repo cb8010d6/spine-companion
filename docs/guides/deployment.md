@@ -90,6 +90,12 @@ backups are kept in user data; the application version and renderer are
 replaced. If a model is not active after the upgrade, open **Manager > Library >
 Installed** and set it active again.
 
+v0.2.7 changes the Avatar Job store lock from an age-based marker to an
+OS-backed file lock. Quit every v0.2.6 Spine Companion instance before starting
+the upgraded app, and do not run old and new versions against the same config
+directory at the same time. The `avatar-jobs.lock` file may remain in the user
+data folder; its lock is released automatically when the owning process exits.
+
 For an uninstall, use the operating system's normal app removal flow. It removes
 the installed application but does not require deleting the user data folder.
 Remove that folder manually only after confirming that you no longer need the
