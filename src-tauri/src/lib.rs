@@ -23,7 +23,7 @@ use state::{
 };
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{
@@ -827,8 +827,16 @@ fn normalized_relative_path(root: &Path, path: &Path) -> Result<String, String> 
     Ok(relative.to_string_lossy().replace('\\', "/"))
 }
 
-/// Selects one skeleton's atlas and referenced pages, avoiding unrelated files in a shared folder.
-fn local_runtime_files(asset_dir: &Path, skel: &str) -> Result<Vec<String>, String> {
+#[derive(Debug)]
+struct LocalRuntimeSelection {
+    #[cfg(test)]
+    atlas_source: String,
+    atlas_destination: String,
+    atlas_text: String,
+    texture_sources: Vec<String>,
+}
+
+fn select_local_atlas(asset_dir: &Path, skel: &str) -> Result<String, String> {
     let skeleton_stem = Path::new(skel)
         .file_stem()
         .and_then(|value| value.to_str())
@@ -846,45 +854,111 @@ fn local_runtime_files(asset_dir: &Path, skel: &str) -> Result<Vec<String>, Stri
                 .is_some_and(|stem| stem.eq_ignore_ascii_case(skeleton_stem))
         })
         .collect::<Vec<_>>();
-    let atlas = if atlas_files.len() == 1 {
-        atlas_files[0].clone()
+    if atlas_files.len() == 1 {
+        Ok(atlas_files[0].clone())
     } else {
         match atlas_candidates.as_slice() {
-            [atlas] => (*atlas).clone(),
-            [] => {
-                return Err(format!(
-                    "Multiple atlas files were found. Add one named for the selected skeleton ({skeleton_stem}.atlas)."
-                ));
-            }
-            _ => {
-                return Err(format!(
-                    "Multiple atlas files match the selected skeleton ({skeleton_stem}). Select a folder with one matching atlas."
-                ));
-            }
+            [atlas] => Ok((*atlas).clone()),
+            [] => Err(format!(
+                "Multiple atlas files were found. Add one named for the selected skeleton ({skeleton_stem}.atlas)."
+            )),
+            _ => Err(format!(
+                "Multiple atlas files match the selected skeleton ({skeleton_stem}). Select a folder with one matching atlas."
+            )),
         }
-    };
+    }
+}
+
+fn read_local_atlas(asset_dir: &Path, atlas: &str) -> Result<(String, Vec<String>), String> {
     let atlas_path = asset_dir.join(
-        avatar::spine_assets::safe_relative_path(&atlas)
+        avatar::spine_assets::safe_relative_path(atlas)
             .map_err(|error| format!("Invalid atlas path: {error}"))?,
     );
-    let atlas_text = fs::read_to_string(&atlas_path)
+    let mut atlas_file = File::open(&atlas_path)
         .map_err(|error| format!("Unable to read Spine atlas file {atlas}: {error}"))?;
+    let mut atlas_bytes = Vec::new();
+    std::io::Read::by_ref(&mut atlas_file)
+        .take(MAX_MODEL_FILE_BYTES + 1)
+        .read_to_end(&mut atlas_bytes)
+        .map_err(|error| format!("Unable to read Spine atlas file {atlas}: {error}"))?;
+    if atlas_bytes.len() as u64 > MAX_MODEL_FILE_BYTES {
+        return Err(format!("Atlas {atlas} exceeds the 64 MiB per-file limit."));
+    }
+    let atlas_text = String::from_utf8(atlas_bytes)
+        .map_err(|_| format!("Spine atlas {atlas} is not valid UTF-8."))?;
     let references = avatar::spine_assets::atlas_texture_refs(&atlas_text);
     if references.is_empty() {
         return Err(format!(
             "Spine atlas {atlas} does not reference a texture page."
         ));
     }
-    let mut files = vec![skel.to_string(), atlas];
+    let mut texture_files = Vec::new();
     for texture in references {
         let relative = avatar::spine_assets::safe_relative_path(&texture)
             .map_err(|error| format!("Invalid atlas texture reference: {error}"))?;
         let texture_path = atlas_path.parent().unwrap_or(asset_dir).join(relative);
-        files.push(normalized_relative_path(asset_dir, &texture_path)?);
+        texture_files.push(normalized_relative_path(asset_dir, &texture_path)?);
     }
+    Ok((atlas_text, texture_files))
+}
+
+fn local_runtime_selection(asset_dir: &Path, skel: &str) -> Result<LocalRuntimeSelection, String> {
+    let atlas_source = select_local_atlas(asset_dir, skel)?;
+    let (atlas_text, texture_sources) = read_local_atlas(asset_dir, &atlas_source)?;
+    let skeleton_stem = Path::new(skel)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "Selected skeleton has an invalid file name.".to_string())?;
+    let atlas_destination = format!("{skeleton_stem}.atlas");
+    Ok(LocalRuntimeSelection {
+        #[cfg(test)]
+        atlas_source,
+        atlas_destination,
+        atlas_text,
+        texture_sources,
+    })
+}
+
+/// Selects one skeleton's atlas and referenced pages, avoiding unrelated files in a shared folder.
+#[cfg(test)]
+fn local_runtime_files(asset_dir: &Path, skel: &str) -> Result<Vec<String>, String> {
+    let selection = local_runtime_selection(asset_dir, skel)?;
+    let mut files = vec![skel.to_string(), selection.atlas_source];
+    files.extend(selection.texture_sources);
     files.sort_by_key(|path| path.to_ascii_lowercase());
     files.dedup();
     Ok(files)
+}
+
+fn rewrite_local_atlas(atlas_text: &str, texture_destinations: &[String]) -> String {
+    let mut texture_index = 0;
+    let mut rewritten = String::with_capacity(atlas_text.len());
+    for line in atlas_text.split_inclusive('\n') {
+        let content = line.strip_suffix('\n').unwrap_or(line);
+        let content_without_cr = content.strip_suffix('\r').unwrap_or(content);
+        let trimmed = content_without_cr.trim();
+        let is_top_level_texture = !content_without_cr
+            .chars()
+            .next()
+            .is_some_and(char::is_whitespace)
+            && Path::new(trimmed)
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| {
+                    ["png", "jpg", "jpeg", "webp"]
+                        .iter()
+                        .any(|allowed| extension.eq_ignore_ascii_case(allowed))
+                });
+        if is_top_level_texture && texture_index < texture_destinations.len() {
+            rewritten.push_str(&texture_destinations[texture_index]);
+            rewritten.push_str(&line[content_without_cr.len()..]);
+            texture_index += 1;
+        } else {
+            rewritten.push_str(line);
+        }
+    }
+    rewritten
 }
 
 fn copy_local_asset_file(
@@ -940,7 +1014,7 @@ fn copy_local_asset_file(
         .open(&destination)
         .map_err(|error| error.to_string())?;
     let copied = std::io::copy(
-        &mut input.by_ref().take(MAX_MODEL_FILE_BYTES + 1),
+        &mut std::io::Read::by_ref(&mut input).take(MAX_MODEL_FILE_BYTES + 1),
         &mut output,
     )
     .map_err(|error| error.to_string())?;
@@ -952,6 +1026,41 @@ fn copy_local_asset_file(
     }
     output.sync_all().map_err(|error| error.to_string())?;
     Ok(())
+}
+
+fn write_local_atlas_file(
+    destination_root: &Path,
+    relative: &str,
+    contents: &str,
+    total_bytes: &mut u64,
+) -> Result<(), String> {
+    let relative = avatar::spine_assets::safe_relative_path(relative)?;
+    let bytes = contents.as_bytes();
+    if bytes.len() as u64 > MAX_MODEL_FILE_BYTES {
+        return Err(format!(
+            "Atlas {} exceeds the 64 MiB per-file limit.",
+            relative.display()
+        ));
+    }
+    *total_bytes = total_bytes
+        .checked_add(bytes.len() as u64)
+        .ok_or_else(|| "Local model size overflowed.".to_string())?;
+    if *total_bytes > MAX_MODEL_TOTAL_BYTES {
+        return Err("Local model exceeds the 256 MiB total size limit.".to_string());
+    }
+    let destination = destination_root.join(&relative);
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&destination)
+        .map_err(|error| error.to_string())?;
+    output
+        .write_all(bytes)
+        .and_then(|_| output.sync_all())
+        .map_err(|error| error.to_string())
 }
 
 fn write_local_import_metadata(
@@ -977,25 +1086,30 @@ fn write_local_import_metadata(
     )
 }
 
-fn expected_local_model_config(
-    previous: Option<&[u8]>,
-    asset_dir: &Path,
+fn local_import_result(
+    data: &AppData,
+    id: &str,
+    name: &str,
     skel: &str,
-) -> Result<Vec<u8>, String> {
-    let mut config = previous
-        .and_then(|bytes| serde_json::from_slice(bytes).ok())
-        .unwrap_or_else(|| serde_json::json!({}));
-    merge_json(
-        &mut config,
-        serde_json::json!({
-            "spine": {
-                "assetDir": asset_dir.to_string_lossy().to_string(),
-                "skel": skel
-            }
-        }),
-    );
-    let text = serde_json::to_string_pretty(&config).map_err(|error| error.to_string())?;
-    Ok(format!("{text}\n").into_bytes())
+    asset_dir: &Path,
+    activated: bool,
+) -> ImportModelResult {
+    let public = public_config_with_ui(data);
+    let origin = public
+        .get("server")
+        .and_then(|server| server.get("origin"))
+        .and_then(|origin| origin.as_str())
+        .unwrap_or("http://127.0.0.1:17388");
+    ImportModelResult {
+        id: id.to_string(),
+        name: name.to_string(),
+        asset_dir: asset_dir.to_string_lossy().to_string(),
+        skel: skel.to_string(),
+        asset_url: format!("{origin}/assets/spine/{}", url_encode_path_segment(skel)),
+        local_config_path: data.local_config_path.to_string_lossy().to_string(),
+        requires_restart: false,
+        activated,
+    }
 }
 
 #[tauri::command]
@@ -1034,7 +1148,12 @@ async fn import_local_model(
         .and_then(|name| name.to_str())
         .ok_or_else(|| "Selected skeleton has an invalid file name.".to_string())?
         .to_string();
-    let files = local_runtime_files(&asset_dir, &skel)?;
+    let selection = local_runtime_selection(&asset_dir, &skel)?;
+    let mut files = vec![skel.clone()];
+    files.extend(selection.texture_sources.iter().cloned());
+    files.push(selection.atlas_destination.clone());
+    files.sort_by_key(|path| path.to_ascii_lowercase());
+    files.dedup();
     let name = local_model_name(&asset_dir, &skel);
     let id = local_model_id(&asset_dir, &name, &skel);
     let models_root = data.config_dir.join("models");
@@ -1046,8 +1165,18 @@ async fn import_local_model(
     let copy_result = (|| {
         let mut total_bytes = 0;
         for relative in &files {
+            if relative == &selection.atlas_destination {
+                continue;
+            }
             copy_local_asset_file(&asset_dir, relative, &staging, &mut total_bytes)?;
         }
+        let atlas_text = rewrite_local_atlas(&selection.atlas_text, &selection.texture_sources);
+        write_local_atlas_file(
+            &staging,
+            &selection.atlas_destination,
+            &atlas_text,
+            &mut total_bytes,
+        )?;
         write_local_import_metadata(&staging, &id, &name, &skel, &files)?;
         validate_spine_asset_dir(&staging, &skel)
     })();
@@ -1071,37 +1200,17 @@ async fn import_local_model(
             return Err(format!("Local model import failed: {error}"));
         }
     };
-    let previous_config = if input.activate {
-        fs::read(&data.local_config_path).ok()
-    } else {
-        None
-    };
-    let previous_public = data.public_config.lock().ok().map(|public| public.clone());
-    let previous_asset_root = data.asset_root.read().await.clone();
-    let expected_config = if input.activate {
-        expected_local_model_config(previous_config.as_deref(), &canonical_model_dir, &skel).ok()
-    } else {
-        None
-    };
     let result = if input.activate {
         activate_installed_model(&app, &data, &id).await
     } else {
-        let public = public_config_with_ui(&data);
-        let origin = public
-            .get("server")
-            .and_then(|server| server.get("origin"))
-            .and_then(|origin| origin.as_str())
-            .unwrap_or("http://127.0.0.1:17388");
-        Ok(ImportModelResult {
-            id: id.clone(),
-            name: name.clone(),
-            asset_dir: canonical_model_dir.to_string_lossy().to_string(),
-            skel: skel.clone(),
-            asset_url: format!("{origin}/assets/spine/{}", url_encode_path_segment(&skel)),
-            local_config_path: data.local_config_path.to_string_lossy().to_string(),
-            requires_restart: false,
-            activated: false,
-        })
+        Ok(local_import_result(
+            &data,
+            &id,
+            &name,
+            &skel,
+            &canonical_model_dir,
+            false,
+        ))
     };
     match result {
         Ok(result) => {
@@ -1114,53 +1223,19 @@ async fn import_local_model(
             Ok(result)
         }
         Err(error) => {
-            let mut result_error = error;
+            if let Some(backup) = backup {
+                let _ = fs::remove_dir_all(backup);
+            }
             if input.activate {
-                let current = fs::read(&data.local_config_path).ok();
-                if current.as_deref() == expected_config.as_deref() {
-                    let restore_result = match previous_config {
-                        Some(bytes) => fs::write(&data.local_config_path, bytes),
-                        None => match fs::remove_file(&data.local_config_path) {
-                            Ok(()) => Ok(()),
-                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                            Err(error) => Err(error),
-                        },
-                    };
-                    if let Err(restore_error) = restore_result {
-                        result_error = format!(
-                            "{result_error}; previous model config could not be restored: {restore_error}"
-                        );
-                    }
-                } else if current != previous_config {
-                    result_error = format!(
-                        "{result_error}; model config changed during activation and was preserved"
-                    );
-                }
+                let imported =
+                    local_import_result(&data, &id, &name, &skel, &canonical_model_dir, false);
+                let _ = app.emit("companion:model-imported", imported);
+                Err(format!(
+                    "Local model imported but could not be activated: {error}"
+                ))
+            } else {
+                Err(error)
             }
-            if let Some(previous_public) = previous_public {
-                if let Ok(mut public) = data.public_config.lock() {
-                    let current_dir = string_at(&public, &["spine", "assetDir"]);
-                    let current_skel = string_at(&public, &["spine", "skel"]);
-                    if current_dir == Some(canonical_model_dir.to_string_lossy().as_ref())
-                        && current_skel == Some(skel.as_str())
-                    {
-                        if let Some(previous_spine) = previous_public.get("spine") {
-                            public["spine"] = previous_spine.clone();
-                        }
-                    }
-                }
-            }
-            {
-                let mut asset_root = data.asset_root.write().await;
-                if asset_root.as_deref() == Some(canonical_model_dir.as_path()) {
-                    *asset_root = previous_asset_root;
-                }
-            }
-            let rollback = avatar::rollback_directory_replace(&model_dir, backup.as_deref());
-            if let Err(rollback_error) = rollback {
-                return Err(format!("{result_error}; rollback failed: {rollback_error}"));
-            }
-            Err(result_error)
         }
     }
 }
@@ -5849,6 +5924,48 @@ mod tests {
 
         let files = local_runtime_files(&root, "character.skel").unwrap();
         assert_eq!(files, vec!["character.skel", "page.png", "shared.atlas"]);
+        let selection = local_runtime_selection(&root, "character.skel").unwrap();
+        assert_eq!(selection.atlas_destination, "character.atlas");
+        assert_eq!(
+            rewrite_local_atlas(&selection.atlas_text, &selection.texture_sources),
+            "page.png\nsize: 1,1\n"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_import_rebases_nested_atlas_pages_to_the_staged_skeleton_root() {
+        let root = std::env::temp_dir().join(format!(
+            "spine-companion-local-import-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(root.join("atlases")).unwrap();
+        std::fs::create_dir_all(root.join("atlases").join("pages")).unwrap();
+        std::fs::write(root.join("character.skel"), b"skeleton").unwrap();
+        std::fs::write(
+            root.join("atlases").join("shared.atlas"),
+            "pages/page.png\nsize: 1,1\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("atlases").join("pages").join("page.png"),
+            b"texture",
+        )
+        .unwrap();
+
+        let selection = local_runtime_selection(&root, "character.skel").unwrap();
+        assert_eq!(selection.atlas_destination, "character.atlas");
+        assert_eq!(
+            selection.texture_sources,
+            vec!["atlases/pages/page.png".to_string()]
+        );
+        assert_eq!(
+            rewrite_local_atlas(&selection.atlas_text, &selection.texture_sources),
+            "atlases/pages/page.png\nsize: 1,1\n"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
