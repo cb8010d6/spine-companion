@@ -264,8 +264,15 @@ env = { COMPANION_API = "http://127.0.0.1:17388", USER_SETTING = "keep-user-sett
       throw "Upgrade did not preserve UI settings."
     }
     $expectedAssetDir = Join-Path $profileDir "models\upgrade-fixture"
-    if ($runtimeConfig.spine.assetDir -ne $expectedAssetDir -or $runtimeConfig.spine.skel -ne "fixture.skel") {
-      throw "Upgrade did not preserve the active model path."
+    $actualAssetDir = [string]$runtimeConfig.spine.assetDir
+    # JSON relative paths may keep forward slashes after Rust joins them to a Windows root.
+    if ([string]::IsNullOrWhiteSpace($actualAssetDir) -or -not [System.IO.Path]::IsPathFullyQualified($actualAssetDir)) {
+      throw "Upgrade returned an invalid active model directory: '$actualAssetDir'."
+    }
+    $normalizedActual = [System.IO.Path]::GetFullPath($actualAssetDir)
+    $normalizedExpected = [System.IO.Path]::GetFullPath($expectedAssetDir)
+    if (-not $normalizedActual.Equals($normalizedExpected, [System.StringComparison]::OrdinalIgnoreCase) -or $runtimeConfig.spine.skel -ne "fixture.skel") {
+      throw "Upgrade did not preserve the active model path: '$actualAssetDir', expected '$expectedAssetDir' (skeleton: '$($runtimeConfig.spine.skel)')."
     }
     foreach ($fixture in $preservedModelFiles) {
       $actualHash = (Get-FileHash -LiteralPath $fixture.Path -Algorithm SHA256).Hash
