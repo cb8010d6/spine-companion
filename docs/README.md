@@ -14,10 +14,12 @@
 
 - [Architecture overview](architecture/overview.md)
 - [Runtime bridge](architecture/runtime-bridge.md)
+- [State, sessions, and temporary displays](architecture/state-and-sessions.md)
 
 ## Maintainers
 
 - [Release plan](maintainers/release-plan.md)
+- [v0.2.7 scope and acceptance plan (Chinese)](maintainers/v0.2.7-plan.zh-CN.md)
 
 ## Releases
 

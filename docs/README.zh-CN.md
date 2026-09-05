@@ -18,6 +18,7 @@
 ## 维护者
 
 - [发布计划](maintainers/release-plan.zh-CN.md)
+- [v0.2.7 开发与验收计划](maintainers/v0.2.7-plan.zh-CN.md)
 
 ## 历史版本
 

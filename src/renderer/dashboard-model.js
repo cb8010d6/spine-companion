@@ -1,3 +1,5 @@
+import { integrationMatchesSource } from "./integration-ui.js";
+
 export function latestCompanionState(liveState, history = []) {
   if (liveState && typeof liveState === "object") return liveState;
   if (!Array.isArray(history) || history.length === 0) return {};
@@ -5,9 +7,11 @@ export function latestCompanionState(liveState, history = []) {
 }
 
 export function integrationLabelForState(state = {}, integrations = []) {
+  const label = String(state.sourceLabel || "").trim();
+  if (label) return label;
   const source = String(state.source || "");
   const match = Array.isArray(integrations)
-    ? integrations.find((item) => item.source === source)
+    ? integrations.find((item) => integrationMatchesSource(item, source))
     : null;
   return match?.sourceLabel || source;
 }

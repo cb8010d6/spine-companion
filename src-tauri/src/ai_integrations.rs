@@ -620,6 +620,8 @@ Use `companion_report_ai_phase` with a short human-readable message:
 Prefer the configured MCP source `{source}` / `{label}`. If only the compatibility alias exists, `companion_report_codex_phase` is acceptable, but it must use the configured source from the MCP environment.
 
 Do not spam updates for tiny steps. Report at meaningful phase boundaries and continue the user task if the companion app is unavailable.
+
+On servers that expose `sessionId`, pass it only when the client provides a reliable session identifier. Never invent one from the tool name, process ID, or MCP connection. Without it, reports are grouped by source. Optional `sequence` must increase within the same session; reuse `eventId` only when retrying the same event. Do not send frequent reports to simulate a heartbeat. Mark tests and demonstrations with `eventKind: self-test` or `eventKind: demo`; they are not real work reports.
 "#
     )
 }
@@ -1143,23 +1145,36 @@ pub fn record_test_result_if_revision(
 pub fn record_source_report(
     config_dir: &Path,
     source: &str,
-    message: &str,
+    reported_at: u64,
 ) -> Result<bool, String> {
     let env = match IntegrationEnv::current() {
         Some(env) => env,
         None => return Ok(false),
     };
-    record_source_report_with_env(&env, config_dir, source, message)
+    record_source_report_with_env_at(&env, config_dir, source, reported_at)
 }
 
+#[cfg(test)]
 fn record_source_report_with_env(
     env: &IntegrationEnv,
     config_dir: &Path,
     source: &str,
     message: &str,
 ) -> Result<bool, String> {
+    if message.starts_with("[Spine Companion self-test]") {
+        return Ok(false);
+    }
+    record_source_report_with_env_at(env, config_dir, source, timestamp_millis())
+}
+
+fn record_source_report_with_env_at(
+    env: &IntegrationEnv,
+    config_dir: &Path,
+    source: &str,
+    reported_at: u64,
+) -> Result<bool, String> {
     let source = source.trim();
-    if source.is_empty() || message.starts_with("[Spine Companion self-test]") {
+    if source.is_empty() || reported_at == 0 {
         return Ok(false);
     }
     let source_id = crate::source_registry::canonical_source_id(source);
@@ -1184,10 +1199,16 @@ fn record_source_report_with_env(
         .tools
         .entry(definition.id.to_string())
         .or_default();
-    if state.last_reported_at.is_some() {
+    if state
+        .last_reported_at
+        .is_some_and(|last| last >= reported_at)
+        || state
+            .last_configured_at
+            .is_some_and(|configured| configured > reported_at)
+    {
         return Ok(false);
     }
-    state.last_reported_at = Some(timestamp_millis());
+    state.last_reported_at = Some(reported_at);
     save_integration_state(config_dir, &state_file)?;
     Ok(true)
 }
@@ -1945,7 +1966,7 @@ mod tests {
     }
 
     #[test]
-    fn records_only_the_first_real_report_after_setup() {
+    fn records_real_report_times_without_replaying_older_events() {
         let root = temp_root("first-report");
         let env = fixture_env(&root);
         let config_dir = root.join("companion-config");
@@ -1976,13 +1997,16 @@ mod tests {
         let first = load_integration_state(&config_dir).unwrap().tools["codex"]
             .last_reported_at
             .unwrap();
+        assert!(!record_source_report_with_env_at(&env, &config_dir, "codex-mcp", first).unwrap());
         assert!(
-            !record_source_report_with_env(&env, &config_dir, "codex-mcp", "Running tests")
-                .unwrap()
+            record_source_report_with_env_at(&env, &config_dir, "codex-mcp", first + 10).unwrap()
+        );
+        assert!(
+            !record_source_report_with_env_at(&env, &config_dir, "codex-mcp", first + 1).unwrap()
         );
         assert_eq!(
             load_integration_state(&config_dir).unwrap().tools["codex"].last_reported_at,
-            Some(first)
+            Some(first + 10)
         );
 
         record_instruction_change(&config_dir, "codex", true).unwrap();

@@ -51,6 +51,20 @@ describe("state providers", () => {
     expect(errors).toEqual(["HTTP 503"]);
   });
 
+  it("dismisses a displayed event by revision without submitting a business state", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ state: "working", revision: 8 }) });
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = new HttpStateProvider("http://127.0.0.1:17388");
+    expect(await provider.dismissDisplay(7)).toMatchObject({ state: "working" });
+    expect(fetchMock).toHaveBeenCalledWith("http://127.0.0.1:17388/state/dismiss", expect.objectContaining({
+      method: "POST", body: JSON.stringify({ revision: 7 })
+    }));
+    const dismissDisplay = vi.fn().mockResolvedValue({ state: "working" });
+    vi.stubGlobal("window", { companion: { dismissDisplay } });
+    await new IpcStateProvider().dismissDisplay(7);
+    expect(dismissDisplay).toHaveBeenCalledWith(7);
+  });
+
   it("polls a JSON source", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,

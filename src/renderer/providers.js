@@ -19,6 +19,10 @@ export class IpcStateProvider {
     return window.companion.setState(state);
   }
 
+  dismissDisplay(revision) {
+    return window.companion.dismissDisplay(revision);
+  }
+
   createReminder(reminder) {
     return window.companion.createReminder(reminder);
   }
@@ -89,6 +93,16 @@ export class HttpStateProvider {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(reminder)
     });
+    return response.json();
+  }
+
+  async dismissDisplay(revision) {
+    const response = await fetch(`${this.baseUrl}/state/dismiss`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ revision })
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
     return response.json();
   }
 

@@ -683,7 +683,7 @@ async fn get_config(data: State<'_, AppData>) -> Result<serde_json::Value, Strin
 
 #[tauri::command]
 async fn get_state(data: State<'_, AppData>) -> Result<CompanionState, String> {
-    Ok(data.store.read().await.clone())
+    Ok(state::get_state(&data.store).await)
 }
 
 #[tauri::command]
@@ -691,7 +691,28 @@ async fn set_companion_state(
     data: State<'_, AppData>,
     input: SetStateInput,
 ) -> Result<CompanionState, String> {
-    Ok(set_state(&data.store, &data.tx, input).await)
+    set_state(&data.store, &data.tx, input).await
+}
+
+#[tauri::command]
+async fn list_ai_sessions(data: State<'_, AppData>) -> Result<state::SessionList, String> {
+    Ok(state::list_sessions(&data.store).await)
+}
+
+#[tauri::command]
+async fn focus_ai_session(
+    data: State<'_, AppData>,
+    input: server::FocusSessionInput,
+) -> Result<CompanionState, String> {
+    state::focus_session(&data.store, &data.tx, input.source, input.session_id).await
+}
+
+#[tauri::command]
+async fn dismiss_companion_display(
+    data: State<'_, AppData>,
+    revision: u64,
+) -> Result<CompanionState, String> {
+    Ok(state::dismiss_display(&data.store, &data.tx, revision).await)
 }
 
 #[tauri::command]
@@ -699,14 +720,14 @@ async fn create_reminder_cmd(
     data: State<'_, AppData>,
     input: CreateReminderInput,
 ) -> Result<Reminder, String> {
-    Ok(create_reminder(
+    create_reminder(
         &data.store,
         &data.tx,
         &data.reminders,
         &data.reminder_tx,
         input,
     )
-    .await)
+    .await
 }
 
 #[tauri::command]
@@ -719,7 +740,14 @@ async fn delete_reminder_cmd(
     data: State<'_, AppData>,
     id: String,
 ) -> Result<serde_json::Value, String> {
-    let deleted = delete_reminder(&data.reminders, &data.reminder_tx, &id).await;
+    let deleted = delete_reminder(
+        &data.store,
+        &data.tx,
+        &data.reminders,
+        &data.reminder_tx,
+        &id,
+    )
+    .await;
     Ok(serde_json::json!({ "deleted": deleted, "id": id }))
 }
 
@@ -3685,6 +3713,7 @@ async fn test_ai_integration_inner(
             "arguments": {
                 "phase": "thinking",
                 "message": format!("[Spine Companion self-test] {source_label}"),
+                "eventKind": "self-test",
                 "autoReturnMs": 2200
             }
         }
@@ -4146,11 +4175,12 @@ fn is_ai_source(source: &str) -> bool {
     source_registry::is_ai_source(source)
 }
 
-fn source_display_name(source: &str) -> String {
-    source_registry::source_display_name(source, None)
-}
-
 fn should_notify_state(state: &CompanionState) -> bool {
+    if state.notify == Some(false)
+        || matches!(state.event_kind.as_deref(), Some("demo" | "self-test"))
+    {
+        return false;
+    }
     if state.state == "reminder" {
         return true;
     }
@@ -4171,7 +4201,10 @@ fn notification_for_state(state: &CompanionState) -> Option<(String, String)> {
             },
         )),
         "success" => Some((
-            format!("{} task complete", source_display_name(&state.source)),
+            format!(
+                "{} task complete",
+                source_registry::source_display_name(&state.source, state.source_label.as_deref())
+            ),
             if state.message.is_empty() {
                 "Finished successfully".to_string()
             } else {
@@ -4179,7 +4212,10 @@ fn notification_for_state(state: &CompanionState) -> Option<(String, String)> {
             },
         )),
         "failed" => Some((
-            format!("{} task failed", source_display_name(&state.source)),
+            format!(
+                "{} task failed",
+                source_registry::source_display_name(&state.source, state.source_label.as_deref())
+            ),
             if state.message.is_empty() {
                 "Needs attention".to_string()
             } else {
@@ -5048,7 +5084,9 @@ pub fn run() {
     let asset_root_for_server = asset_root_store.clone();
     let preview_root_for_server = runtime_config.config_dir.join("preview-assets");
     let history_store: Arc<Mutex<Vec<CompanionState>>> =
-        Arc::new(Mutex::new(vec![store.blocking_read().clone()]));
+        Arc::new(Mutex::new(vec![tauri::async_runtime::block_on(
+            state::get_state(&store),
+        )]));
     let public_config_store = Arc::new(Mutex::new(runtime_config.public.clone()));
     let public_config_for_server = public_config_store.clone();
     let history_for_server = history_store.clone();
@@ -5117,6 +5155,7 @@ pub fn run() {
             // Subscribe before binding so a state posted as soon as the API is
             // reachable cannot be lost during renderer setup.
             let mut rx = tx.subscribe();
+            let mut reminder_rx = reminder_tx.subscribe();
             // Bind the local API server before the hidden window is revealed.
             // The renderer loads Spine assets from this server on startup, so
             // racing the first PIXI load against server startup can leave the
@@ -5148,12 +5187,18 @@ pub fn run() {
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     };
                     let data = app_handle.state::<AppData>();
-                    if let Ok(_guard) = data.ai_integration_lock.lock() {
-                        let _ = ai_integrations::record_source_report(
-                            &data.config_dir,
-                            &state.source,
-                            &state.message,
-                        );
+                    if let Some(report) = &state.last_report {
+                        if let Ok(reported_at) =
+                            chrono::DateTime::parse_from_rfc3339(&report.updated_at)
+                        {
+                            if let Ok(_guard) = data.ai_integration_lock.lock() {
+                                let _ = ai_integrations::record_source_report(
+                                    &data.config_dir,
+                                    &report.source,
+                                    reported_at.timestamp_millis().max(0) as u64,
+                                );
+                            }
+                        }
                     }
                     if let Ok(mut history) = data.history.lock() {
                         history.push(state.clone());
@@ -5167,12 +5212,25 @@ pub fn run() {
                         }
                     }
                     let settings = current_ui_settings(&data);
-                    maybe_show_system_notification(&app_handle, &settings, &state);
+                    let notification_state =
+                        state.last_report.as_ref().map(|report| CompanionState {
+                            state: report.state.clone(),
+                            source: report.source.clone(),
+                            source_label: report.source_label.clone(),
+                            message: report.message.clone(),
+                            notify: report.notify,
+                            event_kind: report.event_kind.clone(),
+                            ..Default::default()
+                        });
+                    maybe_show_system_notification(
+                        &app_handle,
+                        &settings,
+                        notification_state.as_ref().unwrap_or(&state),
+                    );
                     let _ = app_handle.emit("companion:state", state);
                 }
             });
             let app_handle = app.handle().clone();
-            let mut reminder_rx = reminder_tx.subscribe();
             tauri::async_runtime::spawn(async move {
                 loop {
                     let reminders = match reminder_rx.recv().await {
@@ -5317,6 +5375,9 @@ pub fn run() {
             get_state,
             set_companion_state,
             create_reminder_cmd,
+            list_ai_sessions,
+            focus_ai_session,
+            dismiss_companion_display,
             list_reminders_cmd,
             delete_reminder_cmd,
             set_ui_settings,

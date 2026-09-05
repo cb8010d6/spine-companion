@@ -85,6 +85,12 @@ fn state_schema() -> Value {
         "properties": {
             "state": { "type": "string", "enum": STATES },
             "source": { "type": "string" },
+            "sourceLabel": { "type": "string", "maxLength": 128 },
+            "sessionId": { "type": "string", "maxLength": 128, "description": "Only supply a real client session identifier. Omit when unavailable; reports are then grouped by source." },
+            "eventId": { "type": "string", "maxLength": 128 },
+            "sequence": { "type": "integer", "minimum": 0, "maximum": 9_007_199_254_740_991_u64 },
+            "sessionEnded": { "type": "boolean" },
+            "eventKind": { "type": "string", "enum": ["report", "demo", "self-test"] },
             "message": { "type": "string" },
             "direction": { "type": "string", "enum": ["left", "right"] },
             "autoReturnMs": { "type": "integer", "minimum": 0 },
@@ -106,6 +112,12 @@ fn phase_schema() -> Value {
             },
             "message": { "type": "string" },
             "source": { "type": "string" },
+            "sourceLabel": { "type": "string", "maxLength": 128 },
+            "sessionId": { "type": "string", "maxLength": 128, "description": "Only supply a real client session identifier. Omit when unavailable; reports are then grouped by source." },
+            "eventId": { "type": "string", "maxLength": 128 },
+            "sequence": { "type": "integer", "minimum": 0, "maximum": 9_007_199_254_740_991_u64 },
+            "sessionEnded": { "type": "boolean" },
+            "eventKind": { "type": "string", "enum": ["report", "demo", "self-test"] },
             "autoReturnMs": { "type": "integer", "minimum": 0 },
             "returnTo": { "type": "string", "enum": STATES }
         },
@@ -401,6 +413,27 @@ fn phase_payload(arguments: &Value, source: &SourceInfo) -> Value {
         "source": payload_source(arguments, source),
         "message": arguments.get("message").and_then(|value| value.as_str()).unwrap_or(phase)
     });
+    payload["sourceLabel"] = json!(crate::source_registry::source_display_name(
+        &payload_source(arguments, source),
+        arguments
+            .get("sourceLabel")
+            .and_then(Value::as_str)
+            .or_else(|| {
+                (payload_source(arguments, source) == source.source)
+                    .then_some(source.label.as_str())
+            }),
+    ));
+    for key in [
+        "sessionId",
+        "eventId",
+        "sequence",
+        "sessionEnded",
+        "eventKind",
+    ] {
+        if let Some(value) = arguments.get(key) {
+            payload[key] = value.clone();
+        }
+    }
     if let Some(value) = arguments
         .get("autoReturnMs")
         .and_then(|value| value.as_u64())
@@ -504,6 +537,14 @@ async fn call_tool(name: &str, arguments: Value, source: &SourceInfo) -> Result<
             let mut payload = arguments.as_object().cloned().unwrap_or_default();
             if !payload.contains_key("source") {
                 payload.insert("source".to_string(), Value::String(source.source.clone()));
+            }
+            if !payload.contains_key("sourceLabel") {
+                let label = crate::source_registry::source_display_name(
+                    &payload_source(&Value::Object(payload.clone()), source),
+                    (payload.get("source").and_then(Value::as_str) == Some(&source.source))
+                        .then_some(source.label.as_str()),
+                );
+                payload.insert("sourceLabel".into(), json!(label));
             }
             api_json("/state", Some(Value::Object(payload)))
                 .await
@@ -722,6 +763,28 @@ mod tests {
         assert_eq!(payload["state"], "working");
         assert_eq!(payload["source"], "opencode-mcp");
         assert_eq!(payload["autoReturnMs"], 2200);
+    }
+
+    #[test]
+    fn phase_payload_keeps_real_session_metadata_without_inventing_a_session() {
+        let source = SourceInfo {
+            source: "codex-mcp".into(),
+            label: "My Codex".into(),
+        };
+        let legacy = phase_payload(&json!({ "phase": "running" }), &source);
+        assert!(legacy.get("sessionId").is_none());
+        assert_eq!(legacy["sourceLabel"], "My Codex");
+        let input = json!({ "phase": "waiting", "sessionId": "client-session-A", "eventId": "event-2", "sequence": 2, "sessionEnded": false });
+        let payload = phase_payload(&input, &source);
+        for key in ["sessionId", "eventId", "sequence", "sessionEnded"] {
+            assert_eq!(payload[key], input[key]);
+        }
+        let other = phase_payload(
+            &json!({"phase":"thinking", "source":"kimi-mcp", "eventKind":"self-test"}),
+            &source,
+        );
+        assert_eq!(other["sourceLabel"], "Kimi");
+        assert_eq!(other["eventKind"], "self-test");
     }
 
     #[test]

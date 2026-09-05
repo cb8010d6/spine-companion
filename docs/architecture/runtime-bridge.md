@@ -38,3 +38,8 @@ State, reminders, and recent history are held in memory for the current
 application session. They are reset when the application exits. Model files,
 user settings, and AI configuration backups live in user data and follow the
 upgrade and restore guidance in the [deployment guide](../guides/deployment.md).
+
+The next development iteration separates reported task state from temporary
+displays and adds optional session metadata. See the
+[state and session contract](state-and-sessions.md) for cancellation, ordering,
+freshness, and backward-compatibility rules.

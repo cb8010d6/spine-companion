@@ -10,6 +10,7 @@ function isCompletionState(state) {
 }
 
 function shouldNotifyState(state = {}) {
+  if (state.notify === false || state.eventKind === "demo" || state.eventKind === "self-test") return false;
   if (state.state === "reminder") return true;
   if (!isCompletionState(state)) return false;
   return state.notify === true || isAiSource(state.source);
@@ -31,7 +32,7 @@ function defaultMessageForState(id, source) {
 
 function notificationForState(state = {}) {
   const id = state.state || "idle";
-  const source = sourceDisplayName(state.source);
+  const source = sourceDisplayName(state.source, state.sourceLabel);
   if (id === "reminder") {
     return {
       kind: "reminder",
