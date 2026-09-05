@@ -15,8 +15,10 @@ describe("local model import IPC contract", () => {
     expect(backend).toContain("async fn import_local_model(");
     expect(backend).toContain("import_local_model,");
     const command = backend.slice(backend.indexOf("async fn import_local_model("), backend.indexOf("async fn install_model_value("));
+    expect(backend).toContain("list_atlas_files");
     expect(command).toContain("validate_spine_asset_dir");
     expect(command).toContain("replace_directory_atomically");
+    expect(command).toContain('"license": "UNVERIFIED"');
     expect(command).not.toContain("spineVersion");
   });
 });

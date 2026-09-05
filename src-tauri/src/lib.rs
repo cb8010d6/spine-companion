@@ -777,7 +777,7 @@ fn local_model_name(asset_dir: &Path, skel: &str) -> String {
         .to_string()
 }
 
-fn local_model_id(asset_dir: &Path, name: &str) -> String {
+fn local_model_id(asset_dir: &Path, name: &str, skel: &str) -> String {
     let mut slug = String::new();
     let mut separator = false;
     for byte in name.bytes() {
@@ -801,6 +801,8 @@ fn local_model_id(asset_dir: &Path, name: &str) -> String {
     }
     let mut digest = Sha1::new();
     digest.update(asset_dir.to_string_lossy().as_bytes());
+    digest.update([0]);
+    digest.update(skel.as_bytes());
     let hash = format!("{:x}", digest.finalize());
     format!("local-{slug}-{}", &hash[..12])
 }
@@ -826,17 +828,16 @@ fn normalized_relative_path(root: &Path, path: &Path) -> Result<String, String> 
 }
 
 /// Selects one skeleton's atlas and referenced pages, avoiding unrelated files in a shared folder.
-fn local_runtime_files(
-    asset_dir: &Path,
-    skel: &str,
-    assets: &avatar::spine_assets::SpineAssetSet,
-) -> Result<Vec<String>, String> {
+fn local_runtime_files(asset_dir: &Path, skel: &str) -> Result<Vec<String>, String> {
     let skeleton_stem = Path::new(skel)
         .file_stem()
         .and_then(|value| value.to_str())
         .unwrap_or("");
-    let atlas_candidates = assets
-        .atlas_files
+    let atlas_files = avatar::spine_assets::list_atlas_files(asset_dir)?;
+    if atlas_files.is_empty() {
+        return Err("The selected .skel folder must also contain an .atlas file.".to_string());
+    }
+    let atlas_candidates = atlas_files
         .iter()
         .filter(|atlas| {
             Path::new(atlas)
@@ -845,18 +846,21 @@ fn local_runtime_files(
                 .is_some_and(|stem| stem.eq_ignore_ascii_case(skeleton_stem))
         })
         .collect::<Vec<_>>();
-    let atlas = match (assets.atlas_files.len(), atlas_candidates.as_slice()) {
-        (1, [atlas]) => (*atlas).clone(),
-        (_, [atlas]) => (*atlas).clone(),
-        (_, []) => {
-            return Err(format!(
-                "Multiple atlas files were found. Add one named for the selected skeleton ({skeleton_stem}.atlas)."
-            ));
-        }
-        (_, _) => {
-            return Err(format!(
-                "Multiple atlas files match the selected skeleton ({skeleton_stem}). Select a folder with one matching atlas."
-            ));
+    let atlas = if atlas_files.len() == 1 {
+        atlas_files[0].clone()
+    } else {
+        match atlas_candidates.as_slice() {
+            [atlas] => (*atlas).clone(),
+            [] => {
+                return Err(format!(
+                    "Multiple atlas files were found. Add one named for the selected skeleton ({skeleton_stem}.atlas)."
+                ));
+            }
+            _ => {
+                return Err(format!(
+                    "Multiple atlas files match the selected skeleton ({skeleton_stem}). Select a folder with one matching atlas."
+                ));
+            }
         }
     };
     let atlas_path = asset_dir.join(
@@ -963,14 +967,35 @@ fn write_local_import_metadata(
             "id": id,
             "name": name,
             "source": "Local",
-            "license": "User-owned",
-            "licenseNote": "Imported from a local Spine asset folder.",
+            "license": "UNVERIFIED",
+            "licenseNote": "Rights and redistribution terms were not verified for this local asset.",
             "skel": skel,
             "files": files,
             "category": "operator",
             "compatibilityProfile": "companion"
         }),
     )
+}
+
+fn expected_local_model_config(
+    previous: Option<&[u8]>,
+    asset_dir: &Path,
+    skel: &str,
+) -> Result<Vec<u8>, String> {
+    let mut config = previous
+        .and_then(|bytes| serde_json::from_slice(bytes).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    merge_json(
+        &mut config,
+        serde_json::json!({
+            "spine": {
+                "assetDir": asset_dir.to_string_lossy().to_string(),
+                "skel": skel
+            }
+        }),
+    );
+    let text = serde_json::to_string_pretty(&config).map_err(|error| error.to_string())?;
+    Ok(format!("{text}\n").into_bytes())
 }
 
 #[tauri::command]
@@ -1009,10 +1034,9 @@ async fn import_local_model(
         .and_then(|name| name.to_str())
         .ok_or_else(|| "Selected skeleton has an invalid file name.".to_string())?
         .to_string();
-    let assets = avatar::spine_assets::validate_spine_asset_dir(&asset_dir, &skel)?;
-    let files = local_runtime_files(&asset_dir, &skel, &assets)?;
+    let files = local_runtime_files(&asset_dir, &skel)?;
     let name = local_model_name(&asset_dir, &skel);
-    let id = local_model_id(&asset_dir, &name);
+    let id = local_model_id(&asset_dir, &name, &skel);
     let models_root = data.config_dir.join("models");
     fs::create_dir_all(&models_root).map_err(|error| error.to_string())?;
     let request_id = NEXT_DOWNLOAD_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
@@ -1040,6 +1064,13 @@ async fn import_local_model(
             return Err(format!("Local model import failed: {error}"));
         }
     };
+    let canonical_model_dir = match model_dir.canonicalize() {
+        Ok(path) => path,
+        Err(error) => {
+            let _ = avatar::rollback_directory_replace(&model_dir, backup.as_deref());
+            return Err(format!("Local model import failed: {error}"));
+        }
+    };
     let previous_config = if input.activate {
         fs::read(&data.local_config_path).ok()
     } else {
@@ -1047,33 +1078,30 @@ async fn import_local_model(
     };
     let previous_public = data.public_config.lock().ok().map(|public| public.clone());
     let previous_asset_root = data.asset_root.read().await.clone();
+    let expected_config = if input.activate {
+        expected_local_model_config(previous_config.as_deref(), &canonical_model_dir, &skel).ok()
+    } else {
+        None
+    };
     let result = if input.activate {
         activate_installed_model(&app, &data, &id).await
     } else {
-        match model_dir.canonicalize() {
-            Ok(canonical_model_dir) => {
-                let public = public_config_with_ui(&data);
-                let origin = public
-                    .get("server")
-                    .and_then(|server| server.get("origin"))
-                    .and_then(|origin| origin.as_str())
-                    .unwrap_or("http://127.0.0.1:17388");
-                Ok(ImportModelResult {
-                    id: id.clone(),
-                    name: name.clone(),
-                    asset_dir: canonical_model_dir.to_string_lossy().to_string(),
-                    skel: skel.clone(),
-                    asset_url: format!(
-                        "{origin}/assets/spine/{}",
-                        url_encode_path_segment(&skel)
-                    ),
-                    local_config_path: data.local_config_path.to_string_lossy().to_string(),
-                    requires_restart: false,
-                    activated: false,
-                })
-            }
-            Err(error) => Err(error.to_string()),
-        }
+        let public = public_config_with_ui(&data);
+        let origin = public
+            .get("server")
+            .and_then(|server| server.get("origin"))
+            .and_then(|origin| origin.as_str())
+            .unwrap_or("http://127.0.0.1:17388");
+        Ok(ImportModelResult {
+            id: id.clone(),
+            name: name.clone(),
+            asset_dir: canonical_model_dir.to_string_lossy().to_string(),
+            skel: skel.clone(),
+            asset_url: format!("{origin}/assets/spine/{}", url_encode_path_segment(&skel)),
+            local_config_path: data.local_config_path.to_string_lossy().to_string(),
+            requires_restart: false,
+            activated: false,
+        })
     };
     match result {
         Ok(result) => {
@@ -1086,29 +1114,53 @@ async fn import_local_model(
             Ok(result)
         }
         Err(error) => {
+            let mut result_error = error;
             if input.activate {
-                match previous_config {
-                    Some(bytes) => {
-                        let _ = fs::write(&data.local_config_path, bytes);
+                let current = fs::read(&data.local_config_path).ok();
+                if current.as_deref() == expected_config.as_deref() {
+                    let restore_result = match previous_config {
+                        Some(bytes) => fs::write(&data.local_config_path, bytes),
+                        None => match fs::remove_file(&data.local_config_path) {
+                            Ok(()) => Ok(()),
+                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                            Err(error) => Err(error),
+                        },
+                    };
+                    if let Err(restore_error) = restore_result {
+                        result_error = format!(
+                            "{result_error}; previous model config could not be restored: {restore_error}"
+                        );
                     }
-                    None => {
-                        let _ = fs::remove_file(&data.local_config_path);
-                    }
+                } else if current != previous_config {
+                    result_error = format!(
+                        "{result_error}; model config changed during activation and was preserved"
+                    );
                 }
             }
             if let Some(previous_public) = previous_public {
                 if let Ok(mut public) = data.public_config.lock() {
-                    *public = previous_public;
+                    let current_dir = string_at(&public, &["spine", "assetDir"]);
+                    let current_skel = string_at(&public, &["spine", "skel"]);
+                    if current_dir == Some(canonical_model_dir.to_string_lossy().as_ref())
+                        && current_skel == Some(skel.as_str())
+                    {
+                        if let Some(previous_spine) = previous_public.get("spine") {
+                            public["spine"] = previous_spine.clone();
+                        }
+                    }
                 }
             }
-            if let Ok(mut asset_root) = data.asset_root.try_write() {
-                *asset_root = previous_asset_root;
+            {
+                let mut asset_root = data.asset_root.write().await;
+                if asset_root.as_deref() == Some(canonical_model_dir.as_path()) {
+                    *asset_root = previous_asset_root;
+                }
             }
             let rollback = avatar::rollback_directory_replace(&model_dir, backup.as_deref());
             if let Err(rollback_error) = rollback {
-                return Err(format!("{error}; rollback failed: {rollback_error}"));
+                return Err(format!("{result_error}; rollback failed: {rollback_error}"));
             }
-            Err(error)
+            Err(result_error)
         }
     }
 }
@@ -5776,9 +5828,27 @@ mod tests {
         std::fs::write(root.join("amiya.png"), b"texture").unwrap();
         std::fs::write(root.join("other.png"), b"texture").unwrap();
 
-        let assets = avatar::spine_assets::validate_spine_asset_dir(&root, "amiya.skel").unwrap();
-        let files = local_runtime_files(&root, "amiya.skel", &assets).unwrap();
+        let files = local_runtime_files(&root, "amiya.skel").unwrap();
         assert_eq!(files, vec!["amiya.atlas", "amiya.png", "amiya.skel"]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_import_accepts_a_sole_atlas_with_a_different_name() {
+        let root = std::env::temp_dir().join(format!(
+            "spine-companion-local-import-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("character.skel"), b"skeleton").unwrap();
+        std::fs::write(root.join("shared.atlas"), b"page.png\nsize: 1,1\n").unwrap();
+        std::fs::write(root.join("page.png"), b"texture").unwrap();
+
+        let files = local_runtime_files(&root, "character.skel").unwrap();
+        assert_eq!(files, vec!["character.skel", "page.png", "shared.atlas"]);
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -5803,19 +5873,20 @@ mod tests {
         std::fs::write(root.join("amiya.png"), b"texture").unwrap();
         std::fs::write(root.join("alternate").join("amiya.png"), b"texture").unwrap();
 
-        let assets = avatar::spine_assets::validate_spine_asset_dir(&root, "amiya.skel").unwrap();
-        let error = local_runtime_files(&root, "amiya.skel", &assets).unwrap_err();
+        let error = local_runtime_files(&root, "amiya.skel").unwrap_err();
         assert!(error.contains("Multiple atlas files"));
         let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
     fn local_import_ids_are_stable_per_source_path() {
-        let first = local_model_id(Path::new("C:/models/amiya"), "Amiya");
-        let second = local_model_id(Path::new("C:/models/amiya"), "Amiya");
-        let other = local_model_id(Path::new("C:/models/exusiai"), "Amiya");
+        let first = local_model_id(Path::new("C:/models/amiya"), "Amiya", "model.skel");
+        let second = local_model_id(Path::new("C:/models/amiya"), "Amiya", "model.skel");
+        let other = local_model_id(Path::new("C:/models/exusiai"), "Amiya", "model.skel");
+        let sibling = local_model_id(Path::new("C:/models/amiya"), "Amiya", "alt.skel");
         assert_eq!(first, second);
         assert_ne!(first, other);
+        assert_ne!(first, sibling);
         assert!(first.starts_with("local-amiya-"));
     }
 }
