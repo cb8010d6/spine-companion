@@ -1,5 +1,7 @@
 # Spine Companion v0.2.6
 
+[English](https://github.com/cb8010d6/spine-companion/blob/v0.2.6/docs/releases/release-notes-v0.2.6.md) | [简体中文](https://github.com/cb8010d6/spine-companion/blob/v0.2.6/docs/releases/release-notes-v0.2.6.zh-CN.md)
+
 v0.2.6 是以 Tauri 为主的桌面版本，目标是在不改变 IDE、终端或 AI 工具使用方式的前提下，
 让 AI 辅助编程的工作状态清晰可见。
 
@@ -36,16 +38,17 @@ MCP 配置只是让上报工具可用，并不会自动揭示所有 AI 状态。
 
 ## 平台与已知限制
 
-- Windows 10/11 x64 是稳定支持目标。
+- Windows 10/11 x64 是稳定支持目标。安装包尚未签名，Windows 可能显示发布者警告。
 - Linux x64 以及 macOS Intel/Apple Silicon 安装包是未签名预览版，仅用于评估。透明区域的
   原生穿透只在 Windows 实现；其他平台保持可交互回退。
 - Avatar Studio 是位于 **设置 > 实验功能** 的**实验性**辅助工具，不声称已经自动完成拆层、
-  绑骨、动作制作或 Spine Editor 导出。
+  绑骨、动作制作或 Spine Editor 导出。暂不支持跨进程并发操作；请逐个完成 Avatar 包的
+  编辑和安装，不要同时从 Manager 与 MCP 客户端操作。
 - 模型目录可能引用再分发权未经验证的第三方模型。请阅读显示的来源信息，只使用你拥有
   相应权限的模型。
 - 更新通道只控制检查和推荐下载链接，应用不会静默安装更新。
 - Linux Preview 的 `glib` 依赖仍有已知告警，待兼容的 GTK/WebKit 更新后处理。
-  Windows 不包含此依赖，详见[发布计划](../maintainers/release-plan.zh-CN.md#linux-依赖告警)。
+  Windows 不包含此依赖，详见[发布计划](https://github.com/cb8010d6/spine-companion/blob/v0.2.6/docs/maintainers/release-plan.zh-CN.md#linux-依赖告警)。
 
 ## 数据与升级
 
