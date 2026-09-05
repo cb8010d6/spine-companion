@@ -46,6 +46,9 @@ failure phases.
   models for which you have permission.
 - Update channels control checks and the recommended download link; the app
   does not silently install updates.
+- Linux Preview retains a known `glib` dependency advisory pending a compatible
+  GTK/WebKit update. Windows does not include this dependency. See the
+  [release plan](../maintainers/release-plan.md#linux-dependency-advisory).
 
 ## Data And Upgrades
 
