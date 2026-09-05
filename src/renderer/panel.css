@@ -113,7 +113,7 @@ body {
   min-width: 0;
   font-size: var(--sc-font-2xs);
   color: var(--sc-text-subtle);
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
   text-transform: uppercase;
   -webkit-app-region: no-drag;
 }
@@ -236,7 +236,7 @@ body {
   color: var(--sc-text-subtle);
   font-size: var(--sc-font-2xs);
   line-height: var(--sc-line-tight);
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -644,7 +644,7 @@ button.danger:hover {
 }
 
 .pin-button[aria-pressed="true"] {
-  color: #07111d;
+  color: var(--sc-accent-foreground);
   background: var(--accent);
   border-color: var(--accent);
 }

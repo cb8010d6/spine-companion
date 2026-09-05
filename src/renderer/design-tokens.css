@@ -12,6 +12,7 @@
   --sc-accent: #75a9ff;
   --sc-accent-strong: #9bc2ff;
   --sc-accent-soft: rgba(117, 169, 255, 0.14);
+  --sc-accent-foreground: #07111d;
   --sc-secondary: #69d9bd;
   --sc-danger: #f07878;
   --sc-warning: #f0bd67;
@@ -58,6 +59,7 @@ body[data-theme="light"] {
   --sc-accent: #2f6fce;
   --sc-accent-strong: #245bb2;
   --sc-accent-soft: rgba(47, 111, 206, 0.11);
+  --sc-accent-foreground: #ffffff;
   --sc-secondary: #16735f;
   --sc-danger: #b9343e;
   --sc-warning: #945409;

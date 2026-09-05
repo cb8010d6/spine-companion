@@ -463,13 +463,17 @@ button:hover:not(:disabled) {
 button.primary {
   border-color: transparent;
   background: var(--sc-accent);
-  color: #07111d;
+  color: var(--sc-accent-foreground);
   font-weight: 650;
 }
 
 button.primary:hover:not(:disabled) {
   border-color: transparent;
   background: var(--sc-accent-strong);
+}
+
+.btn-primary {
+  color: var(--sc-accent-foreground);
 }
 
 button.danger,
@@ -1183,7 +1187,7 @@ input[type="range"] {
   color: var(--sc-text-subtle);
   font-size: var(--sc-font-2xs);
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
 }
 
 .dashboard-card-value {
