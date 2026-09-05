@@ -54,7 +54,6 @@ import {
   catalogDisplayName,
   catalogDownloadRequest,
   catalogModelSizeBytes,
-  catalogModelSourceId,
   catalogSpineDisplayVersion,
   beginDownloadRecord,
   enabledCatalogSources,
@@ -636,10 +635,6 @@ async function openUpdateTarget() {
   const url = updateStatus?.downloadUrl || updateStatus?.recommendedAsset?.url || updateStatus?.url;
   if (!url) return;
   await window.companion?.openExternal?.(url);
-}
-
-function isInstalled(id) {
-  return installedModels.some((model) => model.id === id);
 }
 
 function activeInstalledId() {
@@ -1549,27 +1544,6 @@ function check(label, checked, onChange, hint = "") {
       hint ? h("small", {}, hint) : null
     )
   );
-}
-
-function integrationStatusBadges(item) {
-  const badges = [];
-  if (item.installed) badges.push(badge(t("manager.integrations.installed"), "badge-success"));
-  if (item.configFound) badges.push(badge(t("manager.integrations.configFound"), ""));
-  if (item.configured) badges.push(badge(t("manager.integrations.configured"), "badge-success"));
-  if (item.needsRestart) badges.push(badge(t("manager.integrations.needsRestart"), "badge-warning"));
-  if (item.configFormat !== "templateOnly" && item.instructionsFound) {
-    badges.push(badge(t("manager.integrations.instructionsFound"), "badge-success"));
-  } else if (item.configFormat !== "templateOnly" && item.configured) {
-    badges.push(badge(t("manager.integrations.instructionsMissing"), "badge-warning"));
-  }
-  if (item.configFormat === "templateOnly") badges.push(badge(t("manager.integrations.templateOnly"), ""));
-  if (integrationTestResults.get(item.id)?.ok) {
-    badges.push(badge(t("manager.integrations.testPassed"), "badge-success"));
-  } else if (integrationTestResults.has(item.id)) {
-    badges.push(badge(t("manager.integrations.testFailed"), "badge-warning"));
-  }
-  if (!badges.length) badges.push(badge(t("manager.integrations.notDetected"), ""));
-  return badges;
 }
 
 async function previewIntegration(id) {
