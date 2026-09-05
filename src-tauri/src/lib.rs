@@ -827,6 +827,20 @@ fn normalized_relative_path(root: &Path, path: &Path) -> Result<String, String> 
     Ok(relative.to_string_lossy().replace('\\', "/"))
 }
 
+fn validate_local_skeleton_header(path: &Path) -> Result<String, String> {
+    let version = avatar::read_spine_binary_version(path)
+        .ok_or_else(|| "Selected .skel file is not a valid Spine binary skeleton.".to_string())?;
+    if version.trim().is_empty() {
+        return Err("Selected .skel file has no Spine runtime version.".to_string());
+    }
+    if !version.starts_with("3.8") {
+        return Err(format!(
+            "Unsupported Spine runtime version {version}; expected Spine 3.8."
+        ));
+    }
+    Ok(version)
+}
+
 #[derive(Debug)]
 struct LocalRuntimeSelection {
     #[cfg(test)]
@@ -1148,6 +1162,7 @@ async fn import_local_model(
         .and_then(|name| name.to_str())
         .ok_or_else(|| "Selected skeleton has an invalid file name.".to_string())?
         .to_string();
+    let _spine_version = validate_local_skeleton_header(&selected)?;
     let selection = local_runtime_selection(&asset_dir, &skel)?;
     let mut files = vec![skel.clone()];
     files.extend(selection.texture_sources.iter().cloned());
@@ -6005,5 +6020,46 @@ mod tests {
         assert_ne!(first, other);
         assert_ne!(first, sibling);
         assert!(first.starts_with("local-amiya-"));
+    }
+
+    #[test]
+    fn local_import_rejects_invalid_or_unsupported_skeleton_headers() {
+        let root = std::env::temp_dir().join(format!(
+            "spine-companion-local-import-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let encode = |value: &str| {
+            let mut bytes = Vec::with_capacity(value.len() + 2);
+            bytes.push((value.len() as u8).saturating_add(1));
+            bytes.extend_from_slice(value.as_bytes());
+            bytes
+        };
+        let mut valid = encode("hash");
+        valid.extend(encode("3.8.99"));
+        let valid_path = root.join("valid.skel");
+        std::fs::write(&valid_path, valid).unwrap();
+        assert_eq!(
+            validate_local_skeleton_header(&valid_path).unwrap(),
+            "3.8.99"
+        );
+
+        let invalid_path = root.join("invalid.skel");
+        std::fs::write(&invalid_path, b"not-spine").unwrap();
+        assert!(validate_local_skeleton_header(&invalid_path)
+            .unwrap_err()
+            .contains("not a valid Spine binary"));
+
+        let mut unsupported = encode("hash");
+        unsupported.extend(encode("4.0.0"));
+        let unsupported_path = root.join("unsupported.skel");
+        std::fs::write(&unsupported_path, unsupported).unwrap();
+        assert!(validate_local_skeleton_header(&unsupported_path)
+            .unwrap_err()
+            .contains("expected Spine 3.8"));
+        let _ = std::fs::remove_dir_all(root);
     }
 }
