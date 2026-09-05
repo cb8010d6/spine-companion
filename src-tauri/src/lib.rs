@@ -79,6 +79,7 @@ struct AppData {
     renderer_health: Arc<Mutex<RendererHealth>>,
     catalog_cache: Arc<Mutex<catalog::CatalogCache>>,
     ai_integration_lock: Arc<Mutex<()>>,
+    model_mutation_lock: tokio::sync::Mutex<()>,
     model_trial_previous: Arc<Mutex<Option<CurrentModel>>>,
     download_cancellations: Arc<Mutex<HashMap<String, Arc<AtomicU8>>>>,
 }
@@ -1200,6 +1201,7 @@ async fn import_local_model(
         return Err(format!("Local model import failed: {error}"));
     }
 
+    let mutation = data.model_mutation_lock.lock().await;
     let model_dir = models_root.join(&id);
     let backup = match avatar::replace_directory_atomically(&staging, &model_dir) {
         Ok(backup) => backup,
@@ -1216,7 +1218,7 @@ async fn import_local_model(
         }
     };
     let result = if input.activate {
-        activate_installed_model(&app, &data, &id).await
+        activate_installed_model(&app, &data, &id, &mutation).await
     } else {
         Ok(local_import_result(
             &data,
@@ -1229,6 +1231,9 @@ async fn import_local_model(
     };
     match result {
         Ok(result) => {
+            if result.activated {
+                clear_model_trial(&data);
+            }
             if let Some(backup) = backup {
                 let _ = fs::remove_dir_all(backup);
             }
@@ -1520,6 +1525,7 @@ async fn install_model_value_inner(
         );
         error
     })?;
+    let mutation = data.model_mutation_lock.lock().await;
     begin_download_commit(cancellation.as_ref()).inspect_err(|_| {
         let _ = remove_dir_if_exists_blocking(&temp_model_dir);
     })?;
@@ -1547,25 +1553,9 @@ async fn install_model_value_inner(
         .canonicalize()
         .map_err(|error| error.to_string())?;
     if input.activate {
-        write_local_model_config(&data.local_config_path, &canonical_model_dir, &skel).map_err(
-            |error| {
-                let message = format!("Failed to activate downloaded model: {}", error);
-                let _ = app.emit(
-                    "companion:download-progress",
-                    serde_json::json!({
-                        "id": input.id,
-                        "file": "Activation",
-                        "current": total_files,
-                        "total": total_files,
-                        "status": "failed",
-                        "error": message
-                    }),
-                );
-                message
-            },
-        )?;
-        verify_local_model_config(&data.local_config_path, &canonical_model_dir, &skel).map_err(
-            |error| {
+        commit_model_selection(data, &canonical_model_dir, &skel, Some(&model), &mutation)
+            .await
+            .map_err(|error| {
                 let message = format!("Downloaded model was not activated: {}", error);
                 let _ = app.emit(
                     "companion:download-progress",
@@ -1579,47 +1569,8 @@ async fn install_model_value_inner(
                     }),
                 );
                 message
-            },
-        )?;
-        if let Ok(mut public) = data.public_config.lock() {
-            merge_json(
-                &mut public,
-                serde_json::json!({
-                    "spine": {
-                        "assetDir": canonical_model_dir.to_string_lossy().to_string(),
-                        "assetDirConfigured": true,
-                        "skel": skel.clone(),
-                        "modelCategory": model.get("category").cloned().unwrap_or_else(|| serde_json::json!("operator")),
-                        "compatibilityProfile": model.get("compatibilityProfile").cloned().unwrap_or_else(|| serde_json::json!("companion"))
-                    }
-                }),
-            );
-        }
-        {
-            let mut asset_root = data.asset_root.write().await;
-            *asset_root = Some(canonical_model_dir.clone());
-        }
-        let public = public_config_with_ui(data);
-        let configured_dir = string_at(&public, &["spine", "assetDir"])
-            .map(PathBuf::from)
-            .unwrap_or_default();
-        if configured_dir != canonical_model_dir
-            || string_at(&public, &["spine", "skel"]) != Some(skel.as_str())
-        {
-            let message = "Downloaded model was not activated in public config".to_string();
-            let _ = app.emit(
-                "companion:download-progress",
-                serde_json::json!({
-                    "id": input.id,
-                    "file": "Activation",
-                    "current": total_files,
-                    "total": total_files,
-                    "status": "failed",
-                    "error": message
-                }),
-            );
-            return Err(message);
-        }
+            })?;
+        clear_model_trial(data);
     }
     let _ = app.emit(
         "companion:download-progress",
@@ -2243,6 +2194,7 @@ async fn save_settings(
     data: State<'_, AppData>,
     input: SaveSettingsInput,
 ) -> Result<(), String> {
+    let _mutation = data.model_mutation_lock.lock().await;
     let path = &data.local_config_path;
     let mut patch = input.patch;
     if let Some(spine) = patch.get("spine").and_then(serde_json::Value::as_object) {
@@ -2297,6 +2249,7 @@ async fn save_model_presentation(
     input: ModelPresentationInput,
 ) -> Result<serde_json::Value, String> {
     validate_model_presentation(&input)?;
+    let _mutation = data.model_mutation_lock.lock().await;
     let presentation = serde_json::json!({
         "scale": input.scale,
         "offsetX": input.offset_x,
@@ -2579,7 +2532,9 @@ fn get_installed_models(data: State<'_, AppData>) -> Result<Vec<InstalledModel>,
 }
 
 #[tauri::command]
-fn remove_model(data: State<'_, AppData>, id: String) -> Result<(), String> {
+async fn remove_model(data: State<'_, AppData>, id: String) -> Result<(), String> {
+    let _mutation = data.model_mutation_lock.lock().await;
+    validate_model_download_file_name(&id).map_err(|_| "Invalid model ID".to_string())?;
     if id.contains("..") || id.contains('/') || id.contains('\\') {
         return Err("Invalid model ID".to_string());
     }
@@ -2606,6 +2561,18 @@ fn remove_model(data: State<'_, AppData>, id: String) -> Result<(), String> {
         if active == resolved_model_dir {
             return Err("Cannot remove the active model".to_string());
         }
+    }
+    if data
+        .model_trial_previous
+        .lock()
+        .map_err(|_| "Model trial lock is poisoned".to_string())?
+        .as_ref()
+        .is_some_and(|model| {
+            PathBuf::from(&model.asset_dir).canonicalize().ok().as_ref()
+                == Some(&resolved_model_dir)
+        })
+    {
+        return Err("Finish the model trial before removing the previous model".to_string());
     }
     if model_dir.exists() {
         std::fs::remove_dir_all(model_dir).map_err(|error| error.to_string())?;
@@ -2660,7 +2627,20 @@ async fn activate_installed_model(
     app: &tauri::AppHandle,
     data: &AppData,
     id: &str,
+    mutation: &tokio::sync::MutexGuard<'_, ()>,
 ) -> Result<ImportModelResult, String> {
+    let result = select_installed_model(data, id, mutation).await?;
+    let _ = app.emit("companion:model-imported", result.clone());
+    let _ = app.emit("companion:config-changed", public_config_with_ui(data));
+    Ok(result)
+}
+
+async fn select_installed_model(
+    data: &AppData,
+    id: &str,
+    mutation: &tokio::sync::MutexGuard<'_, ()>,
+) -> Result<ImportModelResult, String> {
+    validate_model_download_file_name(id).map_err(|_| "Invalid model ID".to_string())?;
     if id.contains("..") || id.contains('/') || id.contains('\\') {
         return Err("Invalid model ID".to_string());
     }
@@ -2695,26 +2675,7 @@ async fn activate_installed_model(
     let canonical_model_dir = model_dir
         .canonicalize()
         .map_err(|error| error.to_string())?;
-    write_local_model_config(&data.local_config_path, &canonical_model_dir, &skel)?;
-    verify_local_model_config(&data.local_config_path, &canonical_model_dir, &skel)?;
-    if let Ok(mut public) = data.public_config.lock() {
-        merge_json(
-            &mut public,
-            serde_json::json!({
-                "spine": {
-                    "assetDir": canonical_model_dir.to_string_lossy().to_string(),
-                    "assetDirConfigured": true,
-                    "skel": skel.clone(),
-                    "modelCategory": model.as_ref().and_then(|value| value.get("category")).cloned().unwrap_or_else(|| serde_json::json!("operator")),
-                    "compatibilityProfile": model.as_ref().and_then(|value| value.get("compatibilityProfile")).cloned().unwrap_or_else(|| serde_json::json!("companion"))
-                }
-            }),
-        );
-    }
-    {
-        let mut asset_root = data.asset_root.write().await;
-        *asset_root = Some(canonical_model_dir.clone());
-    }
+    commit_model_selection(data, &canonical_model_dir, &skel, model.as_ref(), mutation).await?;
     let origin = public
         .get("server")
         .and_then(|server| server.get("origin"))
@@ -2734,9 +2695,42 @@ async fn activate_installed_model(
         requires_restart: false,
         activated: true,
     };
-    let _ = app.emit("companion:model-imported", result.clone());
-    let _ = app.emit("companion:config-changed", public_config_with_ui(data));
     Ok(result)
+}
+
+async fn commit_model_selection(
+    data: &AppData,
+    asset_dir: &Path,
+    skel: &str,
+    model: Option<&serde_json::Value>,
+    _mutation: &tokio::sync::MutexGuard<'_, ()>,
+) -> Result<(), String> {
+    // Acquire the asynchronous resource guard before publishing any part of the selection.
+    let mut asset_root = data.asset_root.write().await;
+    let mut public = data
+        .public_config
+        .lock()
+        .map_err(|_| "Config lock is poisoned".to_string())?;
+    write_local_model_config(&data.local_config_path, asset_dir, skel)?;
+    verify_local_model_config(&data.local_config_path, asset_dir, skel)?;
+    merge_json(
+        &mut public,
+        serde_json::json!({
+            "spine": {
+                "assetDir": asset_dir.to_string_lossy().to_string(),
+                "assetDirConfigured": !asset_dir.as_os_str().is_empty(),
+                "skel": skel,
+                "modelCategory": model.and_then(|value| value.get("category")).cloned().unwrap_or_else(|| serde_json::json!("operator")),
+                "compatibilityProfile": model.and_then(|value| value.get("compatibilityProfile")).cloned().unwrap_or_else(|| serde_json::json!("companion"))
+            }
+        }),
+    );
+    *asset_root = if asset_dir.as_os_str().is_empty() {
+        None
+    } else {
+        Some(asset_dir.to_path_buf())
+    };
+    Ok(())
 }
 
 #[tauri::command]
@@ -2745,7 +2739,10 @@ async fn set_active_model(
     data: State<'_, AppData>,
     id: String,
 ) -> Result<ImportModelResult, String> {
-    activate_installed_model(&app, &data, &id).await
+    let mutation = data.model_mutation_lock.lock().await;
+    let result = activate_installed_model(&app, &data, &id, &mutation).await?;
+    clear_model_trial(&data);
+    Ok(result)
 }
 
 #[tauri::command]
@@ -2754,6 +2751,7 @@ async fn begin_model_trial(
     data: State<'_, AppData>,
     id: String,
 ) -> Result<ImportModelResult, String> {
+    let mutation = data.model_mutation_lock.lock().await;
     let current = get_current_model(data.clone())?;
     {
         let mut previous = data
@@ -2765,7 +2763,7 @@ async fn begin_model_trial(
         }
         *previous = Some(current);
     }
-    match activate_installed_model(&app, &data, &id).await {
+    match activate_installed_model(&app, &data, &id, &mutation).await {
         Ok(result) => Ok(result),
         Err(error) => {
             if let Ok(mut previous) = data.model_trial_previous.lock() {
@@ -2777,7 +2775,8 @@ async fn begin_model_trial(
 }
 
 #[tauri::command]
-fn confirm_model_trial(data: State<'_, AppData>) -> Result<(), String> {
+async fn confirm_model_trial(data: State<'_, AppData>) -> Result<(), String> {
+    let _mutation = data.model_mutation_lock.lock().await;
     let mut previous = data
         .model_trial_previous
         .lock()
@@ -2791,39 +2790,43 @@ async fn cancel_model_trial(
     app: tauri::AppHandle,
     data: State<'_, AppData>,
 ) -> Result<Option<ImportModelResult>, String> {
+    let mutation = data.model_mutation_lock.lock().await;
     let previous = data
         .model_trial_previous
         .lock()
         .map_err(|_| "Model trial lock is poisoned".to_string())?
-        .take();
-    match previous {
-        Some(model) if !model.id.is_empty() => activate_installed_model(&app, &data, &model.id)
-            .await
-            .map(Some),
+        .clone();
+    let result = match previous {
+        Some(model) if !model.id.is_empty() => {
+            activate_installed_model(&app, &data, &model.id, &mutation)
+                .await
+                .map(Some)
+        }
         Some(model) => {
             let asset_dir = PathBuf::from(&model.asset_dir);
             if !model.asset_dir.is_empty() || !model.skel.is_empty() {
                 validate_spine_asset_dir(&asset_dir, &model.skel)?;
             }
-            write_local_model_config(&data.local_config_path, &asset_dir, &model.skel)?;
-            if let Ok(mut public) = data.public_config.lock() {
-                merge_json(
-                    &mut public,
-                    serde_json::json!({"spine": {"assetDir": model.asset_dir.clone(), "assetDirConfigured": !model.asset_dir.is_empty(), "skel": model.skel.clone()}}),
-                );
-            }
-            {
-                let mut asset_root = data.asset_root.write().await;
-                *asset_root = if asset_dir.as_os_str().is_empty() {
-                    None
-                } else {
-                    Some(asset_dir.canonicalize().unwrap_or(asset_dir))
-                };
-            }
+            let asset_dir = if asset_dir.as_os_str().is_empty() {
+                asset_dir
+            } else {
+                asset_dir.canonicalize().unwrap_or(asset_dir)
+            };
+            commit_model_selection(&data, &asset_dir, &model.skel, None, &mutation).await?;
             let _ = app.emit("companion:config-changed", public_config_with_ui(&data));
             Ok(None)
         }
         None => Ok(None),
+    };
+    if result.is_ok() {
+        clear_model_trial(&data);
+    }
+    result
+}
+
+fn clear_model_trial(data: &AppData) {
+    if let Ok(mut previous) = data.model_trial_previous.lock() {
+        *previous = None;
     }
 }
 
@@ -3509,6 +3512,7 @@ async fn import_avatar_pack(
             "registryPath": result.registry_path
         }));
     }
+    let _mutation = data.model_mutation_lock.lock().await;
     let installed = avatar::install_runtime_pack(&path, &data.config_dir)?;
     let model_id = installed.validation.id.clone();
     Ok(serde_json::json!({
@@ -5054,6 +5058,7 @@ pub fn run() {
             renderer_health: Arc::new(Mutex::new(RendererHealth::default())),
             catalog_cache: catalog_cache_store,
             ai_integration_lock: Arc::new(Mutex::new(())),
+            model_mutation_lock: tokio::sync::Mutex::new(()),
             model_trial_previous: Arc::new(Mutex::new(None)),
             download_cancellations: Arc::new(Mutex::new(HashMap::new())),
         })
@@ -5374,6 +5379,153 @@ fn read_only_cli_command(args: &[String]) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn model_test_data() -> AppData {
+        let root = std::env::temp_dir().join(format!(
+            "spine-companion-model-selection-{}-{}",
+            std::process::id(),
+            NEXT_DOWNLOAD_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let (store, tx) = create_state_store("idle");
+        let config = fallback_config();
+        let local_config_path = root.join("companion.local.json");
+        fs::write(
+            &local_config_path,
+            br#"{"ui":{"theme":"light"},"spine":{"scale":1.37}}"#,
+        )
+        .unwrap();
+        AppData {
+            store,
+            tx,
+            reminders: create_reminder_store(),
+            reminder_tx: create_reminder_broadcast(),
+            ui_settings: Arc::new(Mutex::new(ui_settings_from_config(&config))),
+            public_config: Arc::new(Mutex::new(config)),
+            config_dir: root,
+            local_config_path,
+            asset_root: Arc::new(tokio::sync::RwLock::new(None)),
+            history: Arc::new(Mutex::new(Vec::new())),
+            drag_state: Arc::new(Mutex::new(None)),
+            passthrough_enabled: Arc::new(AtomicBool::new(false)),
+            pointer_regions: Arc::new(Mutex::new(Vec::new())),
+            panel_pinned: Arc::new(AtomicBool::new(false)),
+            panel_interaction_locked: Arc::new(AtomicBool::new(false)),
+            renderer_health: Arc::new(Mutex::new(RendererHealth::default())),
+            catalog_cache: Arc::new(Mutex::new(catalog::CatalogCache::default())),
+            ai_integration_lock: Arc::new(Mutex::new(())),
+            model_mutation_lock: tokio::sync::Mutex::new(()),
+            model_trial_previous: Arc::new(Mutex::new(None)),
+            download_cancellations: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    fn install_test_model(data: &AppData, id: &str) -> PathBuf {
+        let dir = data.config_dir.join("models").join(id);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("model.skel"), b"skeleton").unwrap();
+        fs::write(dir.join("model.atlas"), "model.png\nsize: 1,1\n").unwrap();
+        fs::write(dir.join("model.png"), b"texture").unwrap();
+        dir.canonicalize().unwrap()
+    }
+
+    #[tokio::test]
+    async fn model_selection_waits_for_asset_root_before_publishing_config() {
+        let data = model_test_data();
+        let dir = install_test_model(&data, "first");
+        let before = fs::read(&data.local_config_path).unwrap();
+        let public_before = data.public_config.lock().unwrap().clone();
+        let asset_reader = data.asset_root.read().await;
+        let mutation = data.model_mutation_lock.lock().await;
+        let mut selection = Box::pin(select_installed_model(&data, "first", &mutation));
+        // Poll the real selection until it waits for the outstanding asset reader.
+        tokio::select! {
+            biased;
+            result = &mut selection => panic!("Selection should be waiting: {result:?}"),
+            () = std::future::ready(()) => {}
+        }
+        assert_eq!(fs::read(&data.local_config_path).unwrap(), before);
+        assert_eq!(*data.public_config.lock().unwrap(), public_before);
+        drop(asset_reader);
+        selection.await.unwrap();
+        verify_local_model_config(&data.local_config_path, &dir, "model.skel").unwrap();
+        assert_eq!(*data.asset_root.read().await, Some(dir));
+        fs::remove_dir_all(&data.config_dir).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_model_selections_keep_disk_public_config_and_assets_consistent() {
+        let data = Arc::new(model_test_data());
+        for id in ["first", "second"] {
+            install_test_model(&data, id);
+        }
+        let mut tasks = tokio::task::JoinSet::new();
+        for index in 0..16 {
+            let data = data.clone();
+            tasks.spawn(async move {
+                let mutation = data.model_mutation_lock.lock().await;
+                let id = if index % 2 == 0 { "first" } else { "second" };
+                let selected = select_installed_model(&data, id, &mutation).await.unwrap();
+                tokio::task::yield_now().await;
+                let dir = PathBuf::from(&selected.asset_dir);
+                verify_local_model_config(&data.local_config_path, &dir, &selected.skel).unwrap();
+                assert_eq!(*data.asset_root.read().await, Some(dir));
+                let public = data.public_config.lock().unwrap();
+                assert_eq!(public["spine"]["assetDir"], selected.asset_dir);
+                assert_eq!(public["spine"]["skel"], selected.skel);
+            });
+        }
+        while let Some(result) = tasks.join_next().await {
+            result.unwrap();
+        }
+        let saved = read_json_if_exists(&data.local_config_path).unwrap();
+        assert_eq!(saved["ui"]["theme"], "light");
+        assert_eq!(saved["spine"]["scale"], 1.37);
+        fs::remove_dir_all(&data.config_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_model_selection_preserves_the_current_model() {
+        let data = model_test_data();
+        let dir = install_test_model(&data, "first");
+        let mutation = data.model_mutation_lock.lock().await;
+        select_installed_model(&data, "first", &mutation)
+            .await
+            .unwrap();
+        let before = fs::read(&data.local_config_path).unwrap();
+        let public_before = data.public_config.lock().unwrap().clone();
+        for invalid in ["", ".", "..", "../first", "first/other"] {
+            assert!(select_installed_model(&data, invalid, &mutation)
+                .await
+                .is_err());
+        }
+        assert!(select_installed_model(&data, "missing", &mutation)
+            .await
+            .is_err());
+        assert_eq!(fs::read(&data.local_config_path).unwrap(), before);
+        assert_eq!(*data.public_config.lock().unwrap(), public_before);
+        assert_eq!(*data.asset_root.read().await, Some(dir));
+        fs::remove_dir_all(&data.config_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn model_selection_can_restore_an_unconfigured_profile() {
+        let data = model_test_data();
+        install_test_model(&data, "first");
+        let mutation = data.model_mutation_lock.lock().await;
+        select_installed_model(&data, "first", &mutation)
+            .await
+            .unwrap();
+        commit_model_selection(&data, Path::new(""), "", None, &mutation)
+            .await
+            .unwrap();
+        assert_eq!(*data.asset_root.read().await, None);
+        let public = data.public_config.lock().unwrap().clone();
+        assert_eq!(public["spine"]["assetDirConfigured"], false);
+        assert_eq!(public["spine"]["assetDir"], "");
+        verify_local_model_config(&data.local_config_path, Path::new(""), "").unwrap();
+        fs::remove_dir_all(&data.config_dir).unwrap();
+    }
 
     #[test]
     fn packaged_server_config_advertises_sse_without_websocket() {

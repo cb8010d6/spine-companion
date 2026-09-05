@@ -32,6 +32,20 @@ self-test verifies the companion bridge only. Start a real task after setup to
 confirm that the client is reporting working, waiting, reviewing, success, or
 failure phases.
 
+## Reliability Closeout
+
+- Local model imports use the native file picker, validate Spine 3.8 and atlas
+  textures, and install through a staging directory. Failed activation keeps
+  the imported files available and reports the actual error.
+- Model selection, import completion, and trial restoration serialize their
+  commits so saved configuration and served assets stay in agreement. Repeated
+  import clicks do not open duplicate dialogs.
+- Dependency updates retain the fixed Bun version and frozen lockfile checks.
+  JavaScript dependency audit, strict frontend/Rust checks, and Windows clean
+  install and upgrade-retention tests are release gates.
+- Manager and Quick Panel have denser controls and consistent theme styling;
+  the Custom AI integration icon now renders correctly.
+
 ## Platform And Known Limits
 
 - Windows 10/11 x64 is the stable support target.
