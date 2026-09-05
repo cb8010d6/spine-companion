@@ -1,5 +1,7 @@
 # Spine Companion v0.2.6
 
+[English](https://github.com/cb8010d6/spine-companion/blob/v0.2.6/docs/releases/release-notes-v0.2.6.md) | [简体中文](https://github.com/cb8010d6/spine-companion/blob/v0.2.6/docs/releases/release-notes-v0.2.6.zh-CN.md)
+
 v0.2.6 is a Tauri-first desktop release for making AI-assisted coding work
 visible without changing the way you use your IDE, terminal, or AI client.
 
@@ -49,12 +51,15 @@ failure phases.
 ## Platform And Known Limits
 
 - Windows 10/11 x64 is the stable support target.
+  The installer is unsigned and Windows may show a publisher warning.
 - Linux x64 and macOS Intel/Apple Silicon packages are unsigned previews for
   evaluation. Native transparent-area passthrough is implemented on Windows;
   other platforms keep an interactive fallback.
 - Avatar Studio is an **Experimental** secondary tool under **Settings > Labs**.
   It does not claim automatic layer separation, rigging, animation authoring,
-  or Spine Editor export.
+  or Spine Editor export. Run Avatar pack edits and installations one at a time
+  across Manager and MCP clients; concurrent cross-process operations are not
+  supported yet.
 - Catalog entries can refer to third-party models with unverified
   redistribution rights. Review the displayed source information and use only
   models for which you have permission.
@@ -62,7 +67,7 @@ failure phases.
   does not silently install updates.
 - Linux Preview retains a known `glib` dependency advisory pending a compatible
   GTK/WebKit update. Windows does not include this dependency. See the
-  [release plan](../maintainers/release-plan.md#linux-dependency-advisory).
+  [release plan](https://github.com/cb8010d6/spine-companion/blob/v0.2.6/docs/maintainers/release-plan.md#linux-dependency-advisory).
 
 ## Data And Upgrades
 
