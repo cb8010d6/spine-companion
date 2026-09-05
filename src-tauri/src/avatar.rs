@@ -2883,7 +2883,7 @@ mod tests {
         let config = temp_pack("job-lock-owned-marker");
         let lock = acquire_avatar_job_lock_with_limits(
             &config,
-            Duration::from_millis(100),
+            Duration::from_millis(500),
             Duration::from_secs(30),
         )
         .unwrap();
@@ -2927,7 +2927,7 @@ mod tests {
         let config = temp_pack("job-lock-progress");
         let lock = acquire_avatar_job_lock_with_limits(
             &config,
-            Duration::from_millis(500),
+            Duration::from_millis(100),
             Duration::from_secs(30),
         )
         .unwrap();
@@ -2947,8 +2947,9 @@ mod tests {
         });
         ready_rx.recv().unwrap();
 
-        // Each owner interval is below the no-progress timeout, while the
-        // aggregate hold exceeds it and exercises the real retry loop.
+        // Keep the marker live while advancing its owner identity. Every
+        // interval is below the 500 ms no-progress timeout, but the aggregate
+        // hold exceeds it and therefore exercises the real retry loop.
         for index in 0..8 {
             thread::sleep(Duration::from_millis(100));
             fs::write(
@@ -2961,6 +2962,8 @@ mod tests {
             )
             .unwrap();
         }
+        // Restore the original owner before dropping the lock so its normal
+        // owner-checked cleanup can remove the marker.
         fs::write(
             &lock_path,
             serde_json::to_vec(&AvatarJobLockMetadata {
@@ -2975,9 +2978,12 @@ mod tests {
         let (elapsed, result) = result_rx
             .recv_timeout(Duration::from_secs(2))
             .expect("contender should finish after the owner releases the lock");
-        assert!(elapsed >= Duration::from_millis(500));
-        assert!(result.is_ok(), "progressing owners must not cause timeout");
-        drop(result);
+        assert!(
+            elapsed >= Duration::from_millis(500),
+            "contender unexpectedly acquired before the aggregate timeout: {elapsed:?}"
+        );
+        let acquired = result.expect("progressing owners must not cause timeout");
+        drop(acquired);
         contender.join().unwrap();
         let _ = fs::remove_dir_all(config);
     }
