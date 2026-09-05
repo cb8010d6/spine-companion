@@ -762,14 +762,18 @@ mod tests {
         let rx = tx.subscribe();
         let mut stream = state_update_stream(rx, 7);
 
-        let mut snapshot = CompanionState::default();
-        snapshot.revision = 7;
+        let snapshot = CompanionState {
+            revision: 7,
+            ..Default::default()
+        };
         tx.send(snapshot).unwrap();
 
-        let mut newer = CompanionState::default();
-        newer.state = "working".to_string();
-        newer.id = "working".to_string();
-        newer.revision = 8;
+        let newer = CompanionState {
+            state: "working".to_string(),
+            id: "working".to_string(),
+            revision: 8,
+            ..Default::default()
+        };
         tx.send(newer.clone()).unwrap();
 
         assert_eq!(FuturesStreamExt::next(&mut stream).await, Some(newer));
