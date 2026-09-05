@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,7 +9,7 @@ import {
   expectedReleaseArtifacts,
   validateArtifactMatrix
 } from "../scripts/release-preflight.mjs";
-import { generateSha256Sums } from "../scripts/generate-sha256sums.mjs";
+import { generateSha256Sums, stageReleaseAssets } from "../scripts/generate-sha256sums.mjs";
 
 const temporaryRoots = [];
 
@@ -96,6 +96,45 @@ describe("release checksums", () => {
     expect(result.files).toEqual(["nested/a.bin", "z.bin"]);
     await expect(readFile(output, "utf8")).resolves.toMatch(/  nested\/a\.bin\n.*  z\.bin/s);
   });
+
+  it("stages release files with the basenames published by gh and hashes those names", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "spine-release-published-names-"));
+    temporaryRoots.push(root);
+    const artifacts = path.join(root, "release-artifacts");
+    const staged = path.join(root, "release-upload");
+    await mkdir(path.join(artifacts, "windows"), { recursive: true });
+    await mkdir(path.join(artifacts, "linux"), { recursive: true });
+    await writeFile(path.join(artifacts, "windows", "Spine Companion_1.2.3_x64-setup.exe"), "windows");
+    await writeFile(path.join(artifacts, "linux", "Spine Companion_1.2.3_amd64.deb"), "linux");
+
+    await expect(stageReleaseAssets(artifacts, staged)).resolves.toMatchObject({
+      files: ["Spine.Companion_1.2.3_amd64.deb", "Spine.Companion_1.2.3_x64-setup.exe"]
+    });
+    expect((await readdir(staged)).sort()).toEqual([
+      "Spine.Companion_1.2.3_amd64.deb",
+      "Spine.Companion_1.2.3_x64-setup.exe"
+    ]);
+
+    const output = path.join(root, "SHA256SUMS.txt");
+    const result = await generateSha256Sums(staged, output);
+    expect(result.files).toEqual([
+      "Spine.Companion_1.2.3_amd64.deb",
+      "Spine.Companion_1.2.3_x64-setup.exe"
+    ]);
+    await expect(readFile(output, "utf8")).resolves.toMatch(/  Spine\.Companion_1\.2\.3_amd64\.deb\n.*  Spine\.Companion_1\.2\.3_x64-setup\.exe/s);
+  });
+
+  it("rejects release files that collide after GitHub name normalization", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "spine-release-published-collision-"));
+    temporaryRoots.push(root);
+    const artifacts = path.join(root, "release-artifacts");
+    await mkdir(path.join(artifacts, "one"), { recursive: true });
+    await mkdir(path.join(artifacts, "two"), { recursive: true });
+    await writeFile(path.join(artifacts, "one", "Spine Companion.zip"), "one");
+    await writeFile(path.join(artifacts, "two", "Spine.Companion.zip"), "two");
+
+    await expect(stageReleaseAssets(artifacts, path.join(root, "release-upload"))).rejects.toThrow(/collision after GitHub normalization/iu);
+  });
 });
 
 describe("release workflow contract", () => {
@@ -137,6 +176,9 @@ describe("release workflow contract", () => {
     expect(workflow).toContain("--tag-commit");
     expect(workflow).toContain("--main-commit");
     expect(workflow).toContain("--artifacts release-artifacts");
+    expect(workflow).toContain("--stage release-artifacts release-upload");
+    expect(workflow).toContain("release-upload SHA256SUMS.txt");
+    expect(workflow).toContain("find release-upload -type f -print0");
     expect(workflow).toContain("-PreviousInstallerPath $previous");
     expect(workflow).toContain('-PreviousInstallerSha256 "844049CC7F6478F6FEE6C0AF1AD50E7215F0D68DEF73293815837AF78A3292B1"');
     expect(artifactUpload).toContain("src-tauri/target/release/bundle/**/*.exe");
