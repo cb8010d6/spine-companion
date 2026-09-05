@@ -2070,9 +2070,7 @@ pub(crate) fn read_spine_binary_version(path: &Path) -> Option<String> {
     const MAX_HEADER_BYTES: u64 = 64 * 1024;
     let file = File::open(path).ok()?;
     let mut data = Vec::new();
-    file.take(MAX_HEADER_BYTES)
-        .read_to_end(&mut data)
-        .ok()?;
+    file.take(MAX_HEADER_BYTES).read_to_end(&mut data).ok()?;
     let mut offset = 0;
     read_spine_string(&data, &mut offset)?;
     read_spine_string(&data, &mut offset)
