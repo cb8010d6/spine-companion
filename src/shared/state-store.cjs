@@ -16,6 +16,7 @@ const DEFAULT_STALE_AFTER_MS = 5 * 60 * 1000;
 const DEFAULT_SESSION_LIMIT = 64;
 const DEFAULT_EVENT_ID_LIMIT = 128;
 const MAX_REMINDERS = 128;
+const MAX_TIMEOUT_MS = 0x7fffffff;
 const MAX_DELAY_MS = 24 * 60 * 60 * 1000;
 const MAX_SOURCE_BYTES = 128;
 const MAX_LABEL_BYTES = 128;
@@ -156,7 +157,6 @@ function createStateStore(config = {}, stateMachineConfig = {}) {
   let destroyed = false;
   let revision = 0;
   let sessionOrder = 0;
-
   let current = {
     state: normalizeStateId(config.state?.initial || "idle"),
     message: "",
@@ -218,7 +218,7 @@ function createStateStore(config = {}, stateMachineConfig = {}) {
   }
 
   function clearAutoReturnTimers() {
-    for (const timer of autoReturnTimers) clearTimeout(timer);
+    for (const timer of autoReturnTimers) cancelTimer(timer);
     autoReturnTimers.clear();
   }
 
@@ -272,6 +272,35 @@ function createStateStore(config = {}, stateMachineConfig = {}) {
     return value;
   }
 
+  function scheduleAt(deadlineMs, callback) {
+    let timer = null;
+    let cancelled = false;
+    const tick = () => {
+      if (cancelled) return;
+      const remaining = deadlineMs - Date.now();
+      if (remaining <= 0) {
+        timer = null;
+        callback();
+        return;
+      }
+      timer = setTimeout(tick, Math.min(remaining, MAX_TIMEOUT_MS));
+    };
+    tick();
+    return {
+      cancel() {
+        cancelled = true;
+        if (timer !== null) clearTimeout(timer);
+        timer = null;
+      }
+    };
+  }
+
+  function cancelTimer(timer) {
+    if (!timer) return;
+    if (typeof timer.cancel === "function") timer.cancel();
+    else clearTimeout(timer);
+  }
+
   function clearDisplayReportMetadata(value, { preserveSession = true } = {}) {
     const result = clone(value || {});
     delete result.lastReport;
@@ -314,10 +343,11 @@ function createStateStore(config = {}, stateMachineConfig = {}) {
     for (const [key, record] of sessions) {
       const updatedAtMs = Date.parse(record.updatedAt || "");
       if (!Number.isFinite(updatedAtMs)) continue;
-      // Keep stale sessions available for inspection, but release all dormant
-      // records after the same 24-hour retention window as the Rust runtime.
+      // Keep unfinished work available even when it is stale or unfocused;
+      // only completed/explicitly ended sessions are eligible for retention.
       const isFocused = focused && key === reportKey(focused.source, focused.sessionId);
-      if (!isFocused && now - updatedAtMs > ENDED_SESSION_RETENTION_MS) sessions.delete(key);
+      if (!isFocused && recordIsFinished(record)
+        && now - updatedAtMs > ENDED_SESSION_RETENTION_MS) sessions.delete(key);
     }
     if (focused && !findFocusedRecord()) focused = null;
   }
@@ -434,7 +464,7 @@ function createStateStore(config = {}, stateMachineConfig = {}) {
   function cancelDisplayOverlay() {
     displayGeneration += 1;
     if (displayOverlay?.timer) {
-      clearTimeout(displayOverlay.timer);
+      cancelTimer(displayOverlay.timer);
       autoReturnTimers.delete(displayOverlay.timer);
     }
     displayOverlay = null;
@@ -444,7 +474,10 @@ function createStateStore(config = {}, stateMachineConfig = {}) {
     if (destroyed || !displayOverlay || displayOverlay.generation !== generation) return null;
     const overlay = displayOverlay;
     displayOverlay = null;
-    if (overlay.timer) autoReturnTimers.delete(overlay.timer);
+    if (overlay.timer) {
+      cancelTimer(overlay.timer);
+      autoReturnTimers.delete(overlay.timer);
+    }
     const restored = overlay.restore ? overlay.restore() : effectiveBusinessState();
     const next = restored || {
       state: "idle",
@@ -482,10 +515,10 @@ function createStateStore(config = {}, stateMachineConfig = {}) {
     const result = commitDisplay(value);
     const timeoutMs = Math.max(0, Number(durationMs || 0));
     if (timeoutMs > 0) {
-      const timer = setTimeout(() => {
+      const timer = scheduleAt(Date.now() + timeoutMs, () => {
         if (!displayOverlay || displayOverlay.generation !== generation) return;
         restoreOverlay(generation);
-      }, timeoutMs);
+      });
       autoReturnTimers.add(timer);
       displayOverlay = { generation, timer, restore, kind: options.kind || "temporary", reminderId: options.reminderId };
     } else {
@@ -623,8 +656,9 @@ function createStateStore(config = {}, stateMachineConfig = {}) {
       if (derivedLabel) reportState.sourceLabel = derivedLabel;
       else delete reportState.sourceLabel;
     }
+    // Notification intent belongs to this report only; do not carry a prior
+    // event's `notify: false` (or true) into a later update.
     if (input.notify !== undefined) reportState.notify = Boolean(input.notify);
-    else if (keyRecord?.notify !== undefined) reportState.notify = keyRecord.notify;
 
     const updated = updateSession(input, identity, reportState, now);
     if (!updated.accepted) return snapshot();
@@ -707,49 +741,101 @@ function createStateStore(config = {}, stateMachineConfig = {}) {
   }
 
   function scheduleReminder(input = {}, existing = null) {
-    if (input && typeof input !== "object") throw new Error("reminder input must be an object");
+    if (!input || typeof input !== "object" || Array.isArray(input)) {
+      throw new Error("reminder input must be an object");
+    }
     const id = optionalText(input.id) || `rem_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
     const now = Date.now();
-    let dueAtMs = input.dueAt ? Date.parse(input.dueAt) : NaN;
-    if (!Number.isFinite(dueAtMs) && input.at) dueAtMs = Date.parse(input.at);
-    if (!Number.isFinite(dueAtMs) && own(input, "inSeconds") && Number.isFinite(Number(input.inSeconds))) {
-      dueAtMs = now + Number(input.inSeconds) * 1000;
+    let dueAtMs;
+    const explicitDueAt = own(input, "dueAt") && input.dueAt !== undefined
+      && input.dueAt !== null && input.dueAt !== ""
+      ? input.dueAt
+      : own(input, "at") && input.at !== undefined && input.at !== null && input.at !== ""
+        ? input.at
+        : undefined;
+    if (explicitDueAt !== undefined) {
+      if (typeof explicitDueAt !== "string") throw new Error("dueAt must be an RFC3339 timestamp");
+      dueAtMs = Date.parse(explicitDueAt);
+      if (!Number.isFinite(dueAtMs)) throw new Error("dueAt must be an RFC3339 timestamp");
+    } else if (own(input, "inSeconds")) {
+      const seconds = Number(input.inSeconds);
+      if (!Number.isFinite(seconds) || seconds < 0) {
+        throw new Error("inSeconds must be a non-negative finite delay");
+      }
+      dueAtMs = now + seconds * 1000;
+    } else if (own(input, "delayMs")) {
+      const delayMs = Number(input.delayMs);
+      if (!Number.isFinite(delayMs) || delayMs < 0) {
+        throw new Error("delayMs must be a non-negative finite delay");
+      }
+      dueAtMs = now + delayMs;
+    } else {
+      dueAtMs = now + 10_000;
     }
-    if (!Number.isFinite(dueAtMs) && own(input, "delayMs") && Number.isFinite(Number(input.delayMs))) {
-      dueAtMs = now + Number(input.delayMs);
+    if (!Number.isFinite(dueAtMs) || !Number.isFinite(new Date(dueAtMs).getTime())) {
+      throw new Error("Reminder date is outside the supported range");
     }
-    if (!Number.isFinite(dueAtMs)) dueAtMs = now + 10_000;
+    const dueAt = new Date(dueAtMs).toISOString();
     const reminderText = text(input.text || input.message || "Reminder");
     if (byteLength(reminderText) > MAX_MESSAGE_BYTES) throw new Error(`text exceeds the ${MAX_MESSAGE_BYTES} byte limit`);
+    if (reminderText.includes("\0")) throw new Error("text contains a NUL byte");
     if (byteLength(id) > MAX_EVENT_ID_BYTES || id.includes("\0")) throw new Error("id exceeds the 128 byte limit");
 
     const old = reminders.get(id);
-    if (old?.timeout) clearTimeout(old.timeout);
-    if (old) reminders.delete(id);
-    if (displayOverlay?.reminderId === id) restoreOverlay(displayOverlay.generation);
+    if (!old && reminders.size >= MAX_REMINDERS) {
+      throw new Error(`Reminder limit reached (${MAX_REMINDERS}).`);
+    }
+    const replacingFired = old?.fired === true;
+    const fromPersistence = existing !== null;
+    const prior = existing;
+    const durationInput = own(input, "durationMs") ? input.durationMs : undefined;
+    const durationMs = durationInput === undefined
+      ? Number(prior?.durationMs ?? 5000)
+      : Number(durationInput);
+    if (!Number.isFinite(durationMs) || durationMs < 0) {
+      throw new Error("durationMs must be a non-negative finite duration");
+    }
+    if (durationMs > MAX_DELAY_MS) {
+      throw new Error(`durationMs exceeds the ${MAX_DELAY_MS}ms limit`);
+    }
+    const snoozeInput = own(input, "snoozeAfterMs") ? input.snoozeAfterMs : undefined;
+    const snoozeAfterMs = snoozeInput === undefined
+      ? Number(prior?.snoozeAfterMs ?? 5 * 60 * 1000)
+      : Number(snoozeInput);
+    if (!Number.isFinite(snoozeAfterMs) || snoozeAfterMs < 0) {
+      throw new Error("snoozeAfterMs must be a non-negative finite duration");
+    }
+    if (snoozeAfterMs > MAX_DELAY_MS) {
+      throw new Error(`snoozeAfterMs exceeds the ${MAX_DELAY_MS}ms limit`);
+    }
+    const returnTo = own(input, "returnTo")
+      ? optionalText(input.returnTo)
+      : (fromPersistence ? optionalText(existing?.returnTo) : undefined);
 
     const reminder = {
       id,
       text: reminderText,
-      dueAt: new Date(dueAtMs).toISOString(),
-      createdAt: existing?.createdAt || new Date(now).toISOString(),
-      fired: Boolean(existing?.fired),
-      snoozeAfterMs: own(input, "snoozeAfterMs")
-        ? Math.min(MAX_DELAY_MS, Math.max(0, Number(input.snoozeAfterMs) || 0))
-        : Math.min(MAX_DELAY_MS, Math.max(0, Number(existing?.snoozeAfterMs ?? 5 * 60 * 1000) || 0))
+      dueAt,
+      createdAt: prior?.createdAt || new Date(now).toISOString(),
+      fired: fromPersistence ? Boolean(existing?.fired) : false,
+      snoozeAfterMs
     };
-    if (existing?.firedAt) reminder.firedAt = existing.firedAt;
+    if (fromPersistence && existing?.firedAt) reminder.firedAt = existing.firedAt;
 
+    cancelTimer(old?.timeout);
     const generation = Symbol(id);
     const record = {
       ...reminder,
       generation,
-      durationMs: Math.min(
-        MAX_DELAY_MS,
-        Math.max(0, Number(own(input, "durationMs") ? input.durationMs : (existing?.durationMs ?? 5000)) || 0)
-      ),
-      returnTo: input.returnTo || existing?.returnTo
+      durationMs,
+      returnTo
     };
+    reminders.set(id, record);
+    if (replacingFired
+      && displayOverlay?.kind === "reminder"
+      && displayOverlay.reminderId === id) {
+      restoreOverlay(displayOverlay.generation);
+    }
     const fire = () => {
       const currentRecord = reminders.get(id);
       if (destroyed || currentRecord !== record || record.fired) return;
@@ -765,7 +851,10 @@ function createStateStore(config = {}, stateMachineConfig = {}) {
       };
       const restore = () => {
         const live = effectiveBusinessState() || businessState || current;
-        if (sessions.has(reportKey(live.source, live.sessionId))) return live;
+        const activeSession = live && sessions.has(reportKey(live.source, live.sessionId));
+        const activeAiTask = live && isAiSource(live.source)
+          && (live.state !== "idle" || Boolean(live.message));
+        if (activeSession || activeAiTask) return live;
         if (record.returnTo) {
           const state = normalizeStateId(record.returnTo);
           return { ...live, state, id: state, message: "", source: "auto-return" };
@@ -778,26 +867,14 @@ function createStateStore(config = {}, stateMachineConfig = {}) {
       emitter.emit("reminders", listReminders());
     };
     if (!record.fired) {
-      // Capture the bounded deadline before registering the callback so a
-      // replacement cannot accidentally inherit a stale timer's due time.
-      const delayMs = Math.min(MAX_DELAY_MS, Math.max(0, dueAtMs - now));
-      record.timeout = setTimeout(fire, delayMs);
-    } else {
-      record.timeout = null;
-    }
-    reminders.set(id, record);
-    while (reminders.size > MAX_REMINDERS) {
-      const candidate = [...reminders.values()]
-        .filter((item) => item.id !== id)
-        .sort((a, b) => {
-          const aFired = a.fired ? 0 : 1;
-          const bFired = b.fired ? 0 : 1;
-          if (aFired !== bFired) return aFired - bFired;
-          return Date.parse(a.createdAt || "") - Date.parse(b.createdAt || "");
-        })[0] || reminders.values().next().value;
-      if (!candidate) break;
-      if (candidate.timeout) clearTimeout(candidate.timeout);
-      reminders.delete(candidate.id);
+      const timer = scheduleAt(dueAtMs, fire);
+      if (record.fired) {
+        // A past deadline can fire synchronously; do not retain its completed
+        // controller as a pending timer.
+        timer.cancel();
+      } else {
+        record.timeout = timer;
+      }
     }
     return reminder;
   }
@@ -816,7 +893,7 @@ function createStateStore(config = {}, stateMachineConfig = {}) {
   function deleteReminder(id) {
     const reminder = reminders.get(id);
     if (!reminder) return false;
-    if (reminder.timeout) clearTimeout(reminder.timeout);
+    cancelTimer(reminder.timeout);
     reminders.delete(id);
     if (displayOverlay?.reminderId === id) restoreOverlay(displayOverlay.generation);
     persistReminders();
@@ -930,17 +1007,10 @@ function createStateStore(config = {}, stateMachineConfig = {}) {
     }
     for (const reminder of Array.isArray(parsed) ? parsed : []) {
       if (!reminder || !reminder.id) continue;
-      if (!reminder.fired) {
+      try {
         scheduleReminder(reminder, reminder);
-      } else {
-        const restored = scheduleReminder(reminder, reminder);
-        const stored = reminders.get(restored.id);
-        if (stored?.timeout) clearTimeout(stored.timeout);
-        if (stored) {
-          stored.fired = true;
-          stored.firedAt = reminder.firedAt;
-          stored.timeout = null;
-        }
+      } catch (error) {
+        console.warn(`[spine-companion] Ignoring invalid reminder ${String(reminder.id)}`, error);
       }
     }
   }
@@ -952,7 +1022,7 @@ function createStateStore(config = {}, stateMachineConfig = {}) {
     destroyed = true;
     clearAutoReturnTimers();
     clearIdleTimer();
-    for (const { timeout } of reminders.values()) if (timeout) clearTimeout(timeout);
+    for (const { timeout } of reminders.values()) cancelTimer(timeout);
     reminders.clear();
     sessions.clear();
     displayOverlay = null;

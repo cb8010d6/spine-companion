@@ -103,11 +103,12 @@ export function integrationCompletion(item, testResult = null, reportReceived = 
   };
 }
 
-export function integrationMatchesFilter(item, filter, testResult = null, reportReceived = false) {
+export function integrationMatchesFilter(item, filter, testResult = null, reportReceived = false, now = Date.now()) {
   if (filter === "detected") return item?.installed || item?.configFound || item?.configured;
   if (filter === "configured") return item?.configured === true;
   if (filter === "attention") {
     if (item?.needsRestart) return true;
+    if (integrationReportState(item, testResult, reportReceived, now) === "stale") return true;
     const progress = integrationCompletion(item, testResult, reportReceived);
     return progress.state !== "custom" && progress.state !== "ready";
   }

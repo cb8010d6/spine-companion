@@ -22,6 +22,8 @@ describe("dashboard model", () => {
     const integrations = [{ source: "mimocode-mcp", sourceLabel: "MiMoCode" }];
     expect(integrationLabelForState({ source: "mimocode-mcp" }, integrations)).toBe("MiMoCode");
     expect(integrationLabelForState({ source: "future-agent-mcp" }, integrations)).toBe("future-agent-mcp");
+    expect(integrationLabelForState({ source: "mimocode-mcp", sourceLabel: "My MiMo" }, integrations)).toBe("My MiMo");
+    expect(integrationLabelForState({ source: "vs-code-mcp" }, [{ source: "vscode-mcp", sourceLabel: "VS Code" }])).toBe("VS Code");
   });
 
   it("reads renderer health from the Tauri diagnostics shape", () => {

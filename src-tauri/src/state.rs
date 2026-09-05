@@ -1085,7 +1085,7 @@ fn find_session_key(
         .sessions
         .iter()
         .filter(|(key, _)| key.source == source)
-        .max_by_key(|(_, record)| record.updated_at_ms)
+        .max_by_key(|(_, record)| (record.updated_at_ms, record.order))
         .map(|(key, _)| key.clone())
 }
 
@@ -1099,7 +1099,9 @@ fn focused_from_key(key: &SessionKey) -> FocusedSession {
 fn cleanup_sessions_locked(runtime: &mut RuntimeState, now: i64) {
     let cutoff = now.saturating_sub(SESSION_RETENTION_MS);
     runtime.sessions.retain(|key, record| {
-        runtime.focused.as_ref() == Some(key) || record.updated_at_ms >= cutoff
+        runtime.focused.as_ref() == Some(key)
+            || session_priority(record).0 != 0
+            || record.updated_at_ms >= cutoff
     });
     if runtime
         .focused
@@ -1155,23 +1157,25 @@ fn parse_timestamp_ms(value: &str) -> Option<i64> {
         .map(|value| value.timestamp_millis())
 }
 
-fn due_at_ms(input: &CreateReminderInput) -> i64 {
+fn due_at_ms(input: &CreateReminderInput) -> Result<i64, String> {
     let now = chrono::Utc::now();
     if let Some(value) = input.due_at.as_deref().or(input.at.as_deref()) {
-        if let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(value) {
-            return parsed.timestamp_millis();
+        return parse_timestamp_ms(value)
+            .ok_or_else(|| "dueAt must be an RFC3339 timestamp.".to_string());
+    }
+    let delay = if let Some(seconds) = input.in_seconds {
+        if !seconds.is_finite() || seconds < 0.0 || seconds * 1000.0 > MAX_SEQUENCE as f64 {
+            return Err("inSeconds must be a non-negative finite delay.".to_string());
         }
-    }
-    if let Some(seconds) = input
-        .in_seconds
-        .filter(|value| value.is_finite() && *value >= 0.0)
-    {
-        return now.timestamp_millis() + (seconds * 1000.0).round() as i64;
-    }
-    if let Some(delay) = input.delay_ms {
-        return now.timestamp_millis() + delay.min(MAX_DELAY_MS) as i64;
-    }
-    now.timestamp_millis() + 10_000
+        (seconds * 1000.0).round() as u64
+    } else {
+        input.delay_ms.unwrap_or(10_000)
+    };
+    i64::try_from(delay)
+        .ok()
+        .and_then(|delay| now.timestamp_millis().checked_add(delay))
+        .filter(|due| chrono::DateTime::<chrono::Utc>::from_timestamp_millis(*due).is_some())
+        .ok_or_else(|| "Reminder date is outside the supported range.".to_string())
 }
 
 pub async fn list_reminders(reminders: &ReminderStore) -> Vec<Reminder> {
@@ -1184,17 +1188,22 @@ pub async fn create_reminder(
     reminders: &ReminderStore,
     reminder_tx: &ReminderBroadcast,
     input: CreateReminderInput,
-) -> Reminder {
+) -> Result<Reminder, String> {
     let now = chrono::Utc::now();
-    let due_ms = due_at_ms(&input);
-    let requested_id = input
+    let due_ms = due_at_ms(&input)?;
+    for (name, duration) in [
+        ("durationMs", input.duration_ms),
+        ("snoozeAfterMs", input.snooze_after_ms),
+    ] {
+        if duration.is_some_and(|value| value > MAX_DELAY_MS) {
+            return Err(format!("{name} exceeds the 24 hour limit."));
+        }
+    }
+    let id = input
         .id
         .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let id = requested_id
-        .filter(|value| value.len() <= MAX_EVENT_ID_LEN && !value.contains('\0'))
-        .map(str::to_string)
+        .map(|value| validate_nonempty_string("id", value, MAX_EVENT_ID_LEN))
+        .transpose()?
         .unwrap_or_else(|| {
             format!(
                 "rem_{}_{}",
@@ -1207,7 +1216,11 @@ pub async fn create_reminder(
         .clone()
         .or(input.message.clone())
         .unwrap_or_else(|| "Reminder".to_string());
-    let text = truncate_string(&text, MAX_REMINDER_TEXT_LEN);
+    validate_string("text", &text, MAX_REMINDER_TEXT_LEN)?;
+    let delay_ms = due_ms.saturating_sub(now.timestamp_millis()).max(0) as u64;
+    let deadline = tokio::time::Instant::now()
+        .checked_add(Duration::from_millis(delay_ms))
+        .ok_or_else(|| "Reminder date is outside the supported range.".to_string())?;
     let reminder = Reminder {
         id: id.clone(),
         text: text.clone(),
@@ -1226,6 +1239,17 @@ pub async fn create_reminder(
     let generation = {
         let mut runtime = store.write().await;
         let mut list = reminders.write().await;
+        if !list.iter().any(|item| item.id == id) && list.len() >= MAX_REMINDERS {
+            return Err(format!("Reminder limit reached ({MAX_REMINDERS})."));
+        }
+        if runtime
+            .overlay
+            .as_ref()
+            .is_some_and(|overlay| overlay.reminder_id.as_deref() == Some(&id))
+        {
+            let restored = restore_overlay_locked(&mut runtime);
+            let _ = tx.send(restored);
+        }
         if let Some(previous) = runtime.reminder_tasks.remove(&id) {
             previous.abort();
         }
@@ -1234,14 +1258,6 @@ pub async fn create_reminder(
         runtime.reminder_generations.insert(id.clone(), generation);
         list.retain(|item| item.id != id);
         list.push(reminder.clone());
-        while list.len() > MAX_REMINDERS {
-            let index = list.iter().position(|item| item.fired).unwrap_or(0);
-            let removed = list.remove(index);
-            runtime.reminder_generations.remove(&removed.id);
-            if let Some(task) = runtime.reminder_tasks.remove(&removed.id) {
-                task.abort();
-            }
-        }
         let _ = reminder_tx.send(list.clone());
         generation
     };
@@ -1252,16 +1268,12 @@ pub async fn create_reminder(
     let reminder_tx_for_fire = reminder_tx.clone();
     let duration_ms = input.duration_ms.unwrap_or(5000).min(MAX_DELAY_MS);
     let return_to = input.return_to.clone();
-    let delay_ms = (due_ms - chrono::Utc::now().timestamp_millis())
-        .max(0)
-        .min(MAX_DELAY_MS as i64) as u64;
-    let deadline = tokio::time::Instant::now() + Duration::from_millis(delay_ms);
     let store_for_registration = store.clone();
     let id_for_registration = id.clone();
     let task = tokio::spawn(async move {
         tokio::time::sleep_until(deadline).await;
 
-        let (state_snapshot, reminder_snapshot, token) = {
+        let token = {
             let mut runtime = store_for_fire.write().await;
             let mut list = reminders_for_fire.write().await;
             if runtime.reminder_generations.get(&id).copied() != Some(generation) {
@@ -1310,7 +1322,7 @@ pub async fn create_reminder(
                 last_report: None,
             };
             runtime.current = display.clone();
-            runtime.auto_return = Some(AutoReturnGuard {
+            runtime.auto_return = (duration_ms > 0).then_some(AutoReturnGuard {
                 token,
                 reminder_id: true,
             });
@@ -1318,19 +1330,19 @@ pub async fn create_reminder(
             runtime.reminder_tasks.remove(&id);
             let _ = reminder_tx_for_fire.send(list.clone());
             let _ = tx_for_fire.send(display.clone());
-            (display, list.clone(), token)
+            token
         };
-        let _ = reminder_snapshot;
-        let _ = state_snapshot;
-        spawn_auto_return(
-            store_for_fire,
-            tx_for_fire,
-            tokio::time::Instant::now() + Duration::from_millis(duration_ms),
-            AutoReturnGuard {
-                token,
-                reminder_id: true,
-            },
-        );
+        if duration_ms > 0 {
+            spawn_auto_return(
+                store_for_fire,
+                tx_for_fire,
+                tokio::time::Instant::now() + Duration::from_millis(duration_ms),
+                AutoReturnGuard {
+                    token,
+                    reminder_id: true,
+                },
+            );
+        }
     });
     let abort = task.abort_handle();
     let mut runtime = store_for_registration.write().await;
@@ -1345,7 +1357,7 @@ pub async fn create_reminder(
         abort.abort();
     }
 
-    reminder
+    Ok(reminder)
 }
 
 pub async fn delete_reminder(
@@ -1379,17 +1391,6 @@ pub async fn delete_reminder(
         deleted
     };
     deleted
-}
-
-fn truncate_string(value: &str, max: usize) -> String {
-    if value.len() <= max {
-        return value.to_string();
-    }
-    let mut end = max;
-    while !value.is_char_boundary(end) {
-        end = end.saturating_sub(1);
-    }
-    value[..end].to_string()
 }
 
 #[cfg(test)]
@@ -1484,7 +1485,8 @@ mod tests {
                 ..Default::default()
             },
         )
-        .await;
+        .await
+        .unwrap();
         assert_eq!(reminder.text, "Check");
         assert_eq!(list_reminders(&reminders).await.len(), 1);
         let created = reminder_rx.recv().await.unwrap();
@@ -1513,7 +1515,8 @@ mod tests {
                 ..Default::default()
             },
         )
-        .await;
+        .await
+        .unwrap();
 
         assert_eq!(list_reminders(&reminders).await.len(), 1);
         assert!(list_reminders(&create_reminder_store()).await.is_empty());
@@ -1536,7 +1539,8 @@ mod tests {
                 ..Default::default()
             },
         )
-        .await;
+        .await
+        .unwrap();
 
         for _ in 0..3 {
             tokio::task::yield_now().await;
@@ -1581,7 +1585,8 @@ mod tests {
                 ..Default::default()
             },
         )
-        .await;
+        .await
+        .unwrap();
 
         for _ in 0..3 {
             tokio::task::yield_now().await;
@@ -1898,5 +1903,594 @@ mod tests {
         assert_eq!(list.sessions.len(), 1);
         assert!(list.sessions[0].stale);
         assert_eq!(list.sessions[0].state, "working");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn ended_session_under_reminder_restores_other_work_without_late_overwrite() {
+        let (store, tx) = create_state_store("idle");
+        let reminders = create_reminder_store();
+        let reminder_tx = create_reminder_broadcast();
+        set_state(
+            &store,
+            &tx,
+            SetStateInput {
+                state: Some("running".into()),
+                source: Some("codex-mcp".into()),
+                session_id: Some("B".into()),
+                message: Some("B tests".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        set_state(
+            &store,
+            &tx,
+            SetStateInput {
+                state: Some("waiting".into()),
+                source: Some("codex-mcp".into()),
+                session_id: Some("A".into()),
+                message: Some("A question".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        create_reminder(
+            &store,
+            &tx,
+            &reminders,
+            &reminder_tx,
+            CreateReminderInput {
+                id: Some("temporary".into()),
+                delay_ms: Some(0),
+                duration_ms: Some(200),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        tokio::task::yield_now().await;
+        assert_eq!(get_state(&store).await.state, "reminder");
+        set_state(
+            &store,
+            &tx,
+            SetStateInput {
+                source: Some("codex-mcp".into()),
+                session_id: Some("A".into()),
+                session_ended: Some(true),
+                sequence: Some(2),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        tokio::time::advance(Duration::from_millis(200)).await;
+        tokio::task::yield_now().await;
+        let restored = get_state(&store).await;
+        assert_eq!(restored.session_id.as_deref(), Some("B"));
+        assert_eq!(restored.message, "B tests");
+        assert_eq!(restored.notify, Some(false));
+        let late = set_state(
+            &store,
+            &tx,
+            SetStateInput {
+                state: Some("success".into()),
+                source: Some("codex-mcp".into()),
+                session_id: Some("A".into()),
+                sequence: Some(3),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(late, restored);
+    }
+
+    #[tokio::test]
+    async fn stale_unfocused_work_is_not_removed_by_retention_cleanup() {
+        let (store, tx) = create_state_store("idle");
+        for (session, state) in [("old-work", "working"), ("old-result", "success")] {
+            set_state(
+                &store,
+                &tx,
+                SetStateInput {
+                    state: Some(state.into()),
+                    source: Some("codex-mcp".into()),
+                    session_id: Some(session.into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        }
+        {
+            let mut runtime = store.write().await;
+            for record in runtime.sessions.values_mut() {
+                record.updated_at_ms = now_ms_i64() - SESSION_RETENTION_MS - 1;
+            }
+        }
+        let sessions = list_sessions(&store).await.sessions;
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].session_id.as_deref(), Some("old-work"));
+        assert!(sessions[0].stale);
+        assert!(!sessions[0].ended);
+        assert_eq!(sessions[0].state, "working");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn invalid_reminder_replacement_leaves_existing_schedule_untouched() {
+        let (store, tx) = create_state_store("idle");
+        let reminders = create_reminder_store();
+        let reminder_tx = create_reminder_broadcast();
+        create_reminder(
+            &store,
+            &tx,
+            &reminders,
+            &reminder_tx,
+            CreateReminderInput {
+                id: Some("same".into()),
+                text: Some("Valid".into()),
+                delay_ms: Some(100),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(create_reminder(
+            &store,
+            &tx,
+            &reminders,
+            &reminder_tx,
+            CreateReminderInput {
+                id: Some("same".into()),
+                due_at: Some("not-a-date".into()),
+                ..Default::default()
+            }
+        )
+        .await
+        .is_err());
+        tokio::time::advance(Duration::from_millis(100)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(get_state(&store).await.message, "Valid");
+    }
+    #[tokio::test(start_paused = true)]
+    async fn deleting_pending_reminder_prevents_its_fire() {
+        let (store, tx) = create_state_store("idle");
+        let reminders = create_reminder_store();
+        let reminder_tx = create_reminder_broadcast();
+        let reminder = create_reminder(
+            &store,
+            &tx,
+            &reminders,
+            &reminder_tx,
+            CreateReminderInput {
+                id: Some("cancelled".to_string()),
+                text: Some("Cancel".to_string()),
+                delay_ms: Some(100),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        tokio::task::yield_now().await;
+        assert!(delete_reminder(&store, &tx, &reminders, &reminder_tx, &reminder.id).await);
+        tokio::time::advance(std::time::Duration::from_millis(100)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(get_state(&store).await.state, "idle");
+        assert!(list_reminders(&reminders).await.is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn replacing_a_reminder_id_cancels_the_previous_generation() {
+        let (store, tx) = create_state_store("idle");
+        let reminders = create_reminder_store();
+        let reminder_tx = create_reminder_broadcast();
+        create_reminder(
+            &store,
+            &tx,
+            &reminders,
+            &reminder_tx,
+            CreateReminderInput {
+                id: Some("same-id".to_string()),
+                text: Some("Old".to_string()),
+                delay_ms: Some(100),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        create_reminder(
+            &store,
+            &tx,
+            &reminders,
+            &reminder_tx,
+            CreateReminderInput {
+                id: Some("same-id".to_string()),
+                text: Some("New".to_string()),
+                delay_ms: Some(200),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        tokio::task::yield_now().await;
+        assert_eq!(list_reminders(&reminders).await.len(), 1);
+        assert_eq!(list_reminders(&reminders).await[0].text, "New");
+        tokio::time::advance(std::time::Duration::from_millis(100)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(get_state(&store).await.state, "idle");
+        tokio::time::advance(std::time::Duration::from_millis(100)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(get_state(&store).await.state, "reminder");
+        assert_eq!(get_state(&store).await.message, "New");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn reminder_overlay_restores_latest_task_details() {
+        let (store, tx) = create_state_store("idle");
+        set_state(
+            &store,
+            &tx,
+            SetStateInput {
+                state: Some("working".to_string()),
+                source: Some("codex".to_string()),
+                message: Some("Building".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let reminders = create_reminder_store();
+        let reminder_tx = create_reminder_broadcast();
+        create_reminder(
+            &store,
+            &tx,
+            &reminders,
+            &reminder_tx,
+            CreateReminderInput {
+                id: Some("overlay".to_string()),
+                text: Some("Check".to_string()),
+                delay_ms: Some(100),
+                duration_ms: Some(50),
+                return_to: Some("idle".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        tokio::task::yield_now().await;
+        set_state(
+            &store,
+            &tx,
+            SetStateInput {
+                state: Some("running".to_string()),
+                source: Some("opencode".to_string()),
+                message: Some("Testing".to_string()),
+                direction: Some("left".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        tokio::time::advance(std::time::Duration::from_millis(100)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(get_state(&store).await.state, "reminder");
+        tokio::time::advance(std::time::Duration::from_millis(50)).await;
+        tokio::task::yield_now().await;
+        let restored = get_state(&store).await;
+        assert_eq!(restored.state, "running");
+        assert_eq!(restored.source, "opencode");
+        assert_eq!(restored.message, "Testing");
+        assert_eq!(restored.direction, "left");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn newer_report_invalidates_an_old_auto_return_generation() {
+        let (store, tx) = create_state_store("idle");
+        set_state(
+            &store,
+            &tx,
+            SetStateInput {
+                state: Some("reminder".to_string()),
+                auto_return_ms: Some(100),
+                return_to: Some("idle".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        set_state(
+            &store,
+            &tx,
+            SetStateInput {
+                state: Some("working".to_string()),
+                source: Some("codex".to_string()),
+                message: Some("New report".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        tokio::time::advance(std::time::Duration::from_millis(100)).await;
+        tokio::task::yield_now().await;
+        let latest = get_state(&store).await;
+        assert_eq!(latest.state, "working");
+        assert_eq!(latest.source, "codex");
+        assert_eq!(latest.message, "New report");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn zero_duration_reminder_does_not_schedule_a_return() {
+        let (store, tx) = create_state_store("idle");
+        let reminders = create_reminder_store();
+        let reminder_tx = create_reminder_broadcast();
+        create_reminder(
+            &store,
+            &tx,
+            &reminders,
+            &reminder_tx,
+            CreateReminderInput {
+                id: Some("zero-duration".to_string()),
+                text: Some("Now".to_string()),
+                delay_ms: Some(100),
+                duration_ms: Some(0),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        tokio::task::yield_now().await;
+        tokio::time::advance(std::time::Duration::from_millis(100)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(get_state(&store).await.state, "reminder");
+        tokio::time::advance(std::time::Duration::from_millis(5000)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(get_state(&store).await.state, "reminder");
+        assert!(list_reminders(&reminders).await[0].fired);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn long_due_at_is_not_truncated_to_one_day() {
+        let (store, tx) = create_state_store("idle");
+        let reminders = create_reminder_store();
+        let reminder_tx = create_reminder_broadcast();
+        let due_at = (chrono::Utc::now() + chrono::Duration::hours(25)).to_rfc3339();
+        create_reminder(
+            &store,
+            &tx,
+            &reminders,
+            &reminder_tx,
+            CreateReminderInput {
+                id: Some("long-date".to_string()),
+                text: Some("Long".to_string()),
+                due_at: Some(due_at),
+                duration_ms: Some(0),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        tokio::task::yield_now().await;
+        tokio::time::advance(std::time::Duration::from_secs(24 * 60 * 60)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(get_state(&store).await.state, "idle");
+        tokio::time::advance(std::time::Duration::from_secs(60 * 60)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(get_state(&store).await.message, "Long");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn replacing_an_already_fired_reminder_uses_the_new_generation() {
+        let (store, tx) = create_state_store("idle");
+        let reminders = create_reminder_store();
+        let reminder_tx = create_reminder_broadcast();
+        create_reminder(
+            &store,
+            &tx,
+            &reminders,
+            &reminder_tx,
+            CreateReminderInput {
+                id: Some("fired-replacement".to_string()),
+                text: Some("Old".to_string()),
+                delay_ms: Some(100),
+                duration_ms: Some(1000),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        tokio::task::yield_now().await;
+        tokio::time::advance(std::time::Duration::from_millis(100)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(get_state(&store).await.message, "Old");
+        set_state(
+            &store,
+            &tx,
+            SetStateInput {
+                state: Some("working".to_string()),
+                source: Some("codex".to_string()),
+                message: Some("New report".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        create_reminder(
+            &store,
+            &tx,
+            &reminders,
+            &reminder_tx,
+            CreateReminderInput {
+                id: Some("fired-replacement".to_string()),
+                text: Some("New".to_string()),
+                delay_ms: Some(200),
+                duration_ms: Some(0),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(get_state(&store).await.message, "New report");
+        tokio::task::yield_now().await;
+        tokio::time::advance(std::time::Duration::from_millis(200)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(get_state(&store).await.message, "New");
+        assert_eq!(list_reminders(&reminders).await.len(), 1);
+        assert!(list_reminders(&reminders).await[0].fired);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn replacing_an_already_fired_reminder_dismisses_its_overlay() {
+        let (store, tx) = create_state_store("idle");
+        let reminders = create_reminder_store();
+        let reminder_tx = create_reminder_broadcast();
+        create_reminder(
+            &store,
+            &tx,
+            &reminders,
+            &reminder_tx,
+            CreateReminderInput {
+                id: Some("dismissed".to_string()),
+                text: Some("Old".to_string()),
+                delay_ms: Some(100),
+                duration_ms: Some(1000),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        tokio::task::yield_now().await;
+        tokio::time::advance(std::time::Duration::from_millis(100)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(get_state(&store).await.message, "Old");
+        create_reminder(
+            &store,
+            &tx,
+            &reminders,
+            &reminder_tx,
+            CreateReminderInput {
+                id: Some("dismissed".to_string()),
+                text: Some("New".to_string()),
+                delay_ms: Some(200),
+                duration_ms: Some(0),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(get_state(&store).await.state, "idle");
+        tokio::task::yield_now().await;
+        tokio::time::advance(std::time::Duration::from_millis(200)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(get_state(&store).await.message, "New");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn reminder_fire_and_delete_are_serialized_by_the_store_lock() {
+        let (store, tx) = create_state_store("idle");
+        let reminders = create_reminder_store();
+        let reminder_tx = create_reminder_broadcast();
+        let reminder = create_reminder(
+            &store,
+            &tx,
+            &reminders,
+            &reminder_tx,
+            CreateReminderInput {
+                id: Some("race".to_string()),
+                text: Some("Race".to_string()),
+                delay_ms: Some(100),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        tokio::task::yield_now().await;
+        tokio::time::advance(std::time::Duration::from_millis(100)).await;
+        assert!(delete_reminder(&store, &tx, &reminders, &reminder_tx, &reminder.id).await);
+        tokio::task::yield_now().await;
+        assert_eq!(get_state(&store).await.state, "idle");
+
+        let fired = create_reminder(
+            &store,
+            &tx,
+            &reminders,
+            &reminder_tx,
+            CreateReminderInput {
+                id: Some("race-fired".to_string()),
+                text: Some("Fired".to_string()),
+                delay_ms: Some(100),
+                duration_ms: Some(0),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        tokio::task::yield_now().await;
+        tokio::time::advance(std::time::Duration::from_millis(100)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(get_state(&store).await.message, "Fired");
+        assert!(delete_reminder(&store, &tx, &reminders, &reminder_tx, &fired.id).await);
+        assert!(!delete_reminder(&store, &tx, &reminders, &reminder_tx, &fired.id).await);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn reminder_capacity_rejects_without_replacing_existing_entries() {
+        let (store, tx) = create_state_store("idle");
+        let reminders = create_reminder_store();
+        let reminder_tx = create_reminder_broadcast();
+        for index in 0..MAX_REMINDERS {
+            create_reminder(
+                &store,
+                &tx,
+                &reminders,
+                &reminder_tx,
+                CreateReminderInput {
+                    id: Some(format!("bounded-{index}")),
+                    delay_ms: Some(60_000),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        }
+        let error = create_reminder(
+            &store,
+            &tx,
+            &reminders,
+            &reminder_tx,
+            CreateReminderInput {
+                id: Some("overflow".to_string()),
+                delay_ms: Some(60_000),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("128"));
+        assert_eq!(list_reminders(&reminders).await.len(), MAX_REMINDERS);
+        create_reminder(
+            &store,
+            &tx,
+            &reminders,
+            &reminder_tx,
+            CreateReminderInput {
+                id: Some("bounded-0".to_string()),
+                text: Some("Replacement".to_string()),
+                delay_ms: Some(60_000),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(list_reminders(&reminders).await.len(), MAX_REMINDERS);
+        assert_eq!(
+            list_reminders(&reminders)
+                .await
+                .iter()
+                .find(|item| item.id == "bounded-0")
+                .map(|item| item.text.as_str()),
+            Some("Replacement")
+        );
     }
 }

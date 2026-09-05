@@ -720,14 +720,14 @@ async fn create_reminder_cmd(
     data: State<'_, AppData>,
     input: CreateReminderInput,
 ) -> Result<Reminder, String> {
-    Ok(create_reminder(
+    create_reminder(
         &data.store,
         &data.tx,
         &data.reminders,
         &data.reminder_tx,
         input,
     )
-    .await)
+    .await
 }
 
 #[tauri::command]
@@ -5155,6 +5155,7 @@ pub fn run() {
             // Subscribe before binding so a state posted as soon as the API is
             // reachable cannot be lost during renderer setup.
             let mut rx = tx.subscribe();
+            let mut reminder_rx = reminder_tx.subscribe();
             // Bind the local API server before the hidden window is revealed.
             // The renderer loads Spine assets from this server on startup, so
             // racing the first PIXI load against server startup can leave the
@@ -5230,7 +5231,6 @@ pub fn run() {
                 }
             });
             let app_handle = app.handle().clone();
-            let mut reminder_rx = reminder_tx.subscribe();
             tauri::async_runtime::spawn(async move {
                 loop {
                     let reminders = match reminder_rx.recv().await {

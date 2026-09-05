@@ -223,6 +223,87 @@ describe("createStateStore", () => {
       const reminder = store.createReminder({});
       expect(reminder.text).toBe("Reminder");
     });
+
+    it("honors a zero duration without applying the default return timer", async () => {
+      vi.useFakeTimers();
+      try {
+        store.createReminder({ id: "zero-duration", text: "Now", delayMs: 100, durationMs: 0 });
+        await vi.advanceTimersByTimeAsync(100);
+        expect(store.snapshot().state).toBe("reminder");
+        await vi.advanceTimersByTimeAsync(5000);
+        expect(store.snapshot().state).toBe("reminder");
+        expect(store.listReminders()[0].fired).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("waits for a long due date instead of truncating it", async () => {
+      vi.useFakeTimers();
+      try {
+        const maxTimeout = 0x7fffffff;
+        store.createReminder({
+          id: "long-date",
+          text: "Long",
+          dueAt: new Date(Date.now() + maxTimeout + 1000).toISOString(),
+          durationMs: 0
+        });
+        await vi.advanceTimersByTimeAsync(maxTimeout);
+        expect(store.snapshot().state).toBe("idle");
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(store.snapshot().state).toBe("reminder");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("rejects a new reminder over the bounded capacity without cancelling existing timers", () => {
+      vi.useFakeTimers();
+      try {
+        for (let index = 0; index < 128; index += 1) {
+          store.createReminder({ id: `bounded-${index}`, delayMs: 60_000 });
+        }
+        expect(vi.getTimerCount()).toBe(128);
+        expect(() => store.createReminder({ id: "overflow", delayMs: 60_000 })).toThrow(/limit/i);
+        expect(store.listReminders()).toHaveLength(128);
+        expect(vi.getTimerCount()).toBe(128);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("replaces an already-fired reminder without letting its old generation win", async () => {
+      vi.useFakeTimers();
+      try {
+        store.createReminder({ id: "fired-replacement", text: "Old", delayMs: 100, durationMs: 1000 });
+        await vi.advanceTimersByTimeAsync(100);
+        expect(store.snapshot()).toMatchObject({ state: "reminder", message: "Old" });
+        store.setState({ state: "working", source: "codex", message: "New report" });
+        store.createReminder({ id: "fired-replacement", text: "New", delayMs: 200, durationMs: 0 });
+        expect(store.snapshot()).toMatchObject({ state: "working", message: "New report" });
+        await vi.advanceTimersByTimeAsync(200);
+        expect(store.snapshot()).toMatchObject({ state: "reminder", message: "New" });
+        expect(store.listReminders()).toHaveLength(1);
+        expect(store.listReminders()[0]).toMatchObject({ text: "New", fired: true });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("dismisses the replaced reminder overlay before scheduling its new generation", async () => {
+      vi.useFakeTimers();
+      try {
+        store.createReminder({ id: "dismissed", text: "Old", delayMs: 100, durationMs: 1000 });
+        await vi.advanceTimersByTimeAsync(100);
+        expect(store.snapshot()).toMatchObject({ state: "reminder", message: "Old" });
+        store.createReminder({ id: "dismissed", text: "New", delayMs: 200, durationMs: 0 });
+        expect(store.snapshot()).toMatchObject({ state: "idle", message: "" });
+        await vi.advanceTimersByTimeAsync(200);
+        expect(store.snapshot()).toMatchObject({ state: "reminder", message: "New" });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   describe("listReminders", () => {
@@ -246,6 +327,57 @@ describe("createStateStore", () => {
       expect(store.deleteReminder(reminder.id)).toBe(true);
       expect(store.listReminders()).toEqual([]);
       expect(store.deleteReminder(reminder.id)).toBe(false);
+    });
+
+    it("does not fire a pending reminder after it is deleted", async () => {
+      vi.useFakeTimers();
+      try {
+        const reminder = store.createReminder({ id: "cancelled", text: "Cancel", delayMs: 100 });
+        expect(store.deleteReminder(reminder.id)).toBe(true);
+        await vi.advanceTimersByTimeAsync(101);
+        expect(store.snapshot().state).toBe("idle");
+        expect(store.listReminders()).toEqual([]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("replaces an existing id without allowing the old timer to fire", async () => {
+      vi.useFakeTimers();
+      try {
+        store.createReminder({ id: "same-id", text: "Old", delayMs: 100 });
+        const replacement = store.createReminder({ id: "same-id", text: "New", delayMs: 200 });
+        expect(store.listReminders()).toEqual([
+          expect.objectContaining({ id: replacement.id, text: "New", fired: false })
+        ]);
+        await vi.advanceTimersByTimeAsync(100);
+        expect(store.snapshot().state).toBe("idle");
+        await vi.advanceTimersByTimeAsync(100);
+        expect(store.snapshot().state).toBe("reminder");
+        expect(store.snapshot().message).toBe("New");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("restores the latest task details after a reminder overlay ends", async () => {
+      vi.useFakeTimers();
+      try {
+        store.setState({ state: "working", source: "codex", message: "Building" });
+        store.createReminder({ id: "overlay", text: "Check", delayMs: 100, durationMs: 50, returnTo: "idle" });
+        store.setState({ state: "running", source: "opencode", message: "Testing", direction: "left" });
+        await vi.advanceTimersByTimeAsync(100);
+        expect(store.snapshot()).toMatchObject({ state: "reminder", message: "Check" });
+        await vi.advanceTimersByTimeAsync(50);
+        expect(store.snapshot()).toMatchObject({
+          state: "running",
+          source: "opencode",
+          message: "Testing",
+          direction: "left"
+        });
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 
@@ -364,6 +496,39 @@ describe("createStateStore", () => {
         await vi.advanceTimersByTimeAsync(1000);
         expect(store.snapshot().state).toBe("idle");
         expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("keeps a newer same-tick report after the old auto-return generation", async () => {
+      vi.useFakeTimers();
+      try {
+        store.setState({ state: "reminder", autoReturnMs: 100, returnTo: "idle" });
+        store.setState({ state: "working", source: "codex", message: "New report" });
+        await vi.advanceTimersByTimeAsync(100);
+        expect(store.snapshot()).toMatchObject({
+          state: "working",
+          source: "codex",
+          message: "New report"
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("does not replace an active report when a stale timer reaches its deadline", async () => {
+      vi.useFakeTimers();
+      try {
+        store.setState({ state: "working", source: "codex", message: "Current" });
+        store.setState({ state: "reminder", autoReturnMs: 100, returnTo: "idle" });
+        store.setState({ state: "running", source: "opencode", message: "Latest" });
+        await vi.advanceTimersByTimeAsync(100);
+        expect(store.snapshot()).toMatchObject({
+          state: "running",
+          source: "opencode",
+          message: "Latest"
+        });
       } finally {
         vi.useRealTimers();
       }
@@ -609,6 +774,99 @@ describe("createStateStore", () => {
         store.setState({ state: "running", source: "codex-mcp", message: "Tests" });
         await vi.advanceTimersByTimeAsync(200);
         expect(store.snapshot()).toMatchObject({ state: "running", source: "codex-mcp", message: "Tests" });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("restores another unfinished session when the overlaid session ends", async () => {
+      vi.useFakeTimers();
+      try {
+        store.setState({
+          state: "running",
+          source: "codex-mcp",
+          sessionId: "B",
+          sequence: 1,
+          message: "B task",
+          eventKind: "report"
+        });
+        store.setState({
+          state: "waiting",
+          source: "codex-mcp",
+          sessionId: "A",
+          sequence: 1,
+          message: "A approval",
+          eventKind: "report"
+        });
+        store.createReminder({ id: "session-end-overlay", delayMs: 0, durationMs: 100 });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(store.snapshot()).toMatchObject({ state: "reminder", message: "Reminder" });
+
+        store.setState({
+          source: "codex-mcp",
+          sessionId: "A",
+          sequence: 2,
+          sessionEnded: true,
+          eventKind: "report"
+        });
+        await vi.advanceTimersByTimeAsync(100);
+        expect(store.snapshot()).toMatchObject({
+          state: "running",
+          source: "codex-mcp",
+          sessionId: "B",
+          message: "B task",
+          notify: false
+        });
+
+        const restored = store.snapshot();
+        const late = store.setState({
+          state: "failed",
+          source: "codex-mcp",
+          sessionId: "A",
+          sequence: 3,
+          eventKind: "report"
+        });
+        expect(late).toEqual(restored);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("does not inherit notify false from an earlier report", () => {
+      store.setState({
+        state: "working",
+        source: "codex-mcp",
+        sessionId: "notify",
+        sequence: 1,
+        eventKind: "report",
+        notify: false
+      });
+      expect(store.snapshot().notify).toBe(false);
+      const next = store.setState({
+        state: "running",
+        source: "codex-mcp",
+        sessionId: "notify",
+        sequence: 2,
+        eventKind: "report"
+      });
+      expect(next.notify).toBeUndefined();
+      expect(store.getLastReport().notify).toBeUndefined();
+    });
+
+    it("retains stale unfinished work even when it is unfocused", () => {
+      vi.useFakeTimers();
+      try {
+        store.setState({
+          state: "working",
+          source: "codex-mcp",
+          sessionId: "unfocused-stale",
+          eventKind: "report"
+        });
+        vi.advanceTimersByTime(24 * 60 * 60 * 1000 + 1);
+        expect(store.listSessions().sessions).toEqual([
+          expect.objectContaining({ sessionId: "unfocused-stale", state: "working", stale: true, ended: false })
+        ]);
+        expect(store.snapshot()).toMatchObject({ state: "working", sessionId: "unfocused-stale" });
       } finally {
         vi.useRealTimers();
       }

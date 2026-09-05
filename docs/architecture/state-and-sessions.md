@@ -41,6 +41,13 @@ runtime-only, as in the previous state/history implementation. Models, user
 configuration, saved AI integration configuration, and window presentation are
 not migrated or rewritten by this feature.
 
+At most 64 records and 128 recent event IDs per record are retained. Finished or
+explicitly ended, unfocused records may expire after 24 hours or be evicted at
+capacity. Unfinished work is not expired merely for silence. At capacity with no
+eligible record, a new session is rejected without changing existing work.
+Deduplication and closed-session rejection apply only while the record is retained;
+clients must not reuse a closed session ID.
+
 ## Display Policy
 
 Each source/session retains its latest business state independently. Automatic
@@ -69,6 +76,11 @@ bubble, or notification from that schedule. If firing wins the race first, the
 already-delivered notification cannot be recalled, but cancellation removes the
 active display and prevents further callbacks. Repeated deletion returns
 `deleted: false` and HTTP 404. Old generations never fire for a replacement ID.
+Replacing an already-fired ID dismisses only its active overlay. An invalid
+replacement leaves the existing schedule untouched. At the 128-reminder limit,
+new IDs are rejected rather than silently cancelling another reminder. A zero
+display duration keeps the reminder visible until dismissed; a future `dueAt`
+is not shortened to one day.
 
 ## Freshness and Events
 
@@ -87,6 +99,11 @@ Additional local endpoints are `GET /sessions` and `POST /sessions/focus` with
 `{ "source": "codex-mcp", "sessionId": "..." }`, or `{ "source": null }`
 for automatic selection. Existing MCP tools gain optional metadata; there is no
 new task executor or mandatory client adapter.
+
+SSE state and reminder lists are independent channels, not a cross-channel
+transaction. Each starts with its snapshot followed by newer updates; consumers
+must not infer a global order between the two event names. Reconnecting consumers
+read current snapshots rather than treating them as new real reports.
 
 ## Separate Follow-ups
 

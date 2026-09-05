@@ -45,6 +45,13 @@ describe("AI integration presentation model", () => {
     expect(integrationCompletion(custom).state).toBe("custom");
   });
 
+  it("keeps a stale real report in the attention filter without undoing completed setup", () => {
+    const ready = { ...base, configured: true, instructionsFound: true, lastTestOk: true, lastReportedAt: 1_000 };
+    expect(integrationCompletion(ready, null, true).state).toBe("ready");
+    expect(integrationMatchesFilter(ready, "attention", null, true, 1_000)).toBe(false);
+    expect(integrationMatchesFilter(ready, "attention", null, true, 301_001)).toBe(true);
+  });
+
   it("supports copy-only project instructions without blocking Kimi MCP testing", () => {
     const kimi = { ...base, configured: true, instructionsPath: "", instructionsFound: false };
     expect(integrationPrimaryAction(kimi)).toBe("test");

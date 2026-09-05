@@ -18,11 +18,11 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::state::{
     create_reminder, delete_reminder, dismiss_display, focus_session, get_state as read_state,
-    list_reminders, list_sessions, set_state, CreateReminderInput, ReminderBroadcast,
-    ReminderStore, SetStateInput, StateBroadcast, StateStore,
+    list_reminders, list_sessions, set_state, CompanionState, CreateReminderInput, Reminder,
+    ReminderBroadcast, ReminderStore, SetStateInput, StateBroadcast, StateStore,
 };
 use std::sync::{Arc, Mutex};
-use tokio::sync::RwLock;
+use tokio::sync::{broadcast, RwLock};
 
 pub type AssetRootStore = Arc<RwLock<Option<PathBuf>>>;
 pub type PublicConfigStore = Arc<Mutex<serde_json::Value>>;
@@ -180,10 +180,11 @@ async fn get_reminders(AxumState(app): AxumState<AppState>) -> impl IntoResponse
 async fn post_reminder(
     AxumState(app): AxumState<AppState>,
     Json(input): Json<CreateReminderInput>,
-) -> impl IntoResponse {
-    let reminder =
-        create_reminder(&app.store, &app.tx, &app.reminders, &app.reminder_tx, input).await;
-    (StatusCode::CREATED, Json(reminder))
+) -> Response {
+    match create_reminder(&app.store, &app.tx, &app.reminders, &app.reminder_tx, input).await {
+        Ok(reminder) => (StatusCode::CREATED, Json(reminder)).into_response(),
+        Err(error) => (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))).into_response(),
+    }
 }
 
 async fn delete_reminder_route(
@@ -199,11 +200,74 @@ async fn delete_reminder_route(
     (status, Json(json!({ "deleted": deleted, "id": id })))
 }
 
+async fn subscribe_state_channel(
+    store: &StateStore,
+    tx: &StateBroadcast,
+) -> (broadcast::Receiver<CompanionState>, CompanionState) {
+    // The state store does not expose its internal runtime fields here.  Subscribe
+    // first, then use the monotonic display revision to discard events that belong
+    // to the snapshot (or an earlier one) while retaining every newer update.
+    let rx = tx.subscribe();
+    let initial = read_state(store).await;
+    (rx, initial)
+}
+
+async fn subscribe_reminder_channel(
+    reminders: &ReminderStore,
+    tx: &ReminderBroadcast,
+) -> (broadcast::Receiver<Vec<Reminder>>, Vec<Reminder>) {
+    // All reminder producers hold this store's write lock while broadcasting.  A
+    // read lock therefore makes subscription and cloning one indivisible boundary:
+    // events before it are represented by the snapshot, and events after it remain
+    // queued for the receiver.
+    let list = reminders.read().await;
+    let rx = tx.subscribe();
+    (rx, list.clone())
+}
+
+fn state_update_stream(
+    rx: broadcast::Receiver<CompanionState>,
+    initial_revision: u64,
+) -> impl futures::Stream<Item = CompanionState> {
+    BroadcastStream::new(rx).filter_map(move |result| {
+        result
+            .ok()
+            .filter(|state| state.revision > initial_revision)
+    })
+}
+
+fn state_event_stream(
+    rx: broadcast::Receiver<CompanionState>,
+    initial_revision: u64,
+) -> impl futures::Stream<Item = Result<Event, Infallible>> {
+    state_update_stream(rx, initial_revision)
+        .map(|state| Ok::<_, Infallible>(Event::default().event("state").json_data(state).unwrap()))
+}
+
+fn reminder_event_stream(
+    rx: broadcast::Receiver<Vec<Reminder>>,
+) -> impl futures::Stream<Item = Result<Event, Infallible>> {
+    BroadcastStream::new(rx).filter_map(|result| {
+        result.ok().map(|reminders| {
+            Ok::<_, Infallible>(
+                Event::default()
+                    .event("reminders")
+                    .json_data(reminders)
+                    .unwrap(),
+            )
+        })
+    })
+}
+
+/*
+ * State and reminder events are independent channels; no ordering guarantee is
+ * made between their respective SSE event names.
+ */
 async fn events(AxumState(app): AxumState<AppState>) -> impl IntoResponse {
-    let rx = app.tx.subscribe();
-    let reminder_rx = app.reminder_tx.subscribe();
-    let initial = read_state(&app.store).await;
-    let initial_reminders = list_reminders(&app.reminders).await;
+    let (rx, initial) = subscribe_state_channel(&app.store, &app.tx).await;
+    let initial_revision = initial.revision;
+    let (reminder_rx, initial_reminders) =
+        subscribe_reminder_channel(&app.reminders, &app.reminder_tx).await;
 
     let initial_event = futures::stream::once(async move {
         Ok::<_, Infallible>(Event::default().event("state").json_data(initial).unwrap())
@@ -217,21 +281,8 @@ async fn events(AxumState(app): AxumState<AppState>) -> impl IntoResponse {
         )
     });
 
-    let stream = BroadcastStream::new(rx).filter_map(|result| {
-        result.ok().map(|state| {
-            Ok::<_, Infallible>(Event::default().event("state").json_data(state).unwrap())
-        })
-    });
-    let reminder_stream = BroadcastStream::new(reminder_rx).filter_map(|result| {
-        result.ok().map(|reminders| {
-            Ok::<_, Infallible>(
-                Event::default()
-                    .event("reminders")
-                    .json_data(reminders)
-                    .unwrap(),
-            )
-        })
-    });
+    let stream = state_event_stream(rx, initial_revision);
+    let reminder_stream = reminder_event_stream(reminder_rx);
 
     let live_stream = futures::stream::select(stream, reminder_stream);
     Sse::new(
@@ -433,6 +484,7 @@ mod tests {
     use super::*;
     use crate::state::{create_reminder_broadcast, create_reminder_store, create_state_store};
     use axum::{body::Body, http::Request};
+    use futures::StreamExt as FuturesStreamExt;
     use tower::ServiceExt;
 
     #[test]
@@ -509,7 +561,8 @@ mod tests {
                 ..Default::default()
             },
         )
-        .await;
+        .await
+        .unwrap();
         assert_eq!(reminder.text, "API");
         assert_eq!(list_reminders(&reminders).await.len(), 1);
     }
@@ -552,6 +605,36 @@ mod tests {
             .await
             .unwrap();
         (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn reminder_capacity_errors_are_preserved_by_http() {
+        let (app, data) = state_fixture();
+        for index in 0..128 {
+            assert_eq!(
+                request_json(
+                    &app,
+                    "POST",
+                    "/reminders",
+                    json!({"id":format!("bounded-{index}"), "delayMs":60000})
+                )
+                .await
+                .0,
+                StatusCode::CREATED
+            );
+        }
+        assert_eq!(
+            request_json(
+                &app,
+                "POST",
+                "/reminders",
+                json!({"id":"overflow", "delayMs":60000})
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(list_reminders(&data.reminders).await.len(), 128);
     }
 
     #[tokio::test(start_paused = true)]
@@ -671,6 +754,84 @@ mod tests {
         assert_eq!(restored["state"], "running");
         assert_eq!(restored["message"], "Tests still running");
         assert_eq!(restored["source"], "codex-mcp");
+    }
+
+    #[tokio::test]
+    async fn state_sse_drops_snapshot_revision_but_keeps_newer_updates() {
+        let (tx, _) = broadcast::channel(8);
+        let rx = tx.subscribe();
+        let mut stream = state_update_stream(rx, 7);
+
+        let mut snapshot = CompanionState::default();
+        snapshot.revision = 7;
+        tx.send(snapshot).unwrap();
+
+        let mut newer = CompanionState::default();
+        newer.state = "working".to_string();
+        newer.id = "working".to_string();
+        newer.revision = 8;
+        tx.send(newer.clone()).unwrap();
+
+        assert_eq!(FuturesStreamExt::next(&mut stream).await, Some(newer));
+    }
+
+    #[tokio::test]
+    async fn reminder_sse_snapshot_boundary_does_not_replay_locked_update() {
+        let reminders = create_reminder_store();
+        let reminder_tx = create_reminder_broadcast();
+        let first = Reminder {
+            id: "first".to_string(),
+            text: "First".to_string(),
+            due_at: "2026-01-01T00:00:00Z".to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            fired: false,
+            fired_at: None,
+            snooze_after_ms: 300_000,
+        };
+
+        // Match the producer critical section: mutate, broadcast, then release
+        // the write lock. The subscriber must observe this in its initial list,
+        // rather than replaying the already-accounted-for broadcast.
+        let mut writer = reminders.write().await;
+        writer.push(first.clone());
+        let preexisting_receiver = reminder_tx.subscribe();
+        reminder_tx.send(writer.clone()).unwrap();
+        drop(preexisting_receiver);
+        let reminders_for_subscriber = reminders.clone();
+        let tx_for_subscriber = reminder_tx.clone();
+        let subscriber = tokio::spawn(async move {
+            subscribe_reminder_channel(&reminders_for_subscriber, &tx_for_subscriber).await
+        });
+        tokio::task::yield_now().await;
+        drop(writer);
+
+        let (mut rx, initial) = subscriber.await.unwrap();
+        assert_eq!(initial.len(), 1);
+        assert_eq!(initial[0].id, "first");
+        assert!(matches!(
+            rx.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+
+        let second = Reminder {
+            id: "second".to_string(),
+            text: "Second".to_string(),
+            due_at: "2026-01-01T00:00:01Z".to_string(),
+            created_at: "2026-01-01T00:00:01Z".to_string(),
+            fired: false,
+            fired_at: None,
+            snooze_after_ms: 300_000,
+        };
+        let update = {
+            let mut writer = reminders.write().await;
+            writer.push(second);
+            let update = writer.clone();
+            reminder_tx.send(update.clone()).unwrap();
+            update
+        };
+        let observed = rx.recv().await.unwrap();
+        assert_eq!(observed.len(), update.len());
+        assert_eq!(observed.last().map(|item| item.id.as_str()), Some("second"));
     }
 
     #[tokio::test]
